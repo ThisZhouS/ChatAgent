@@ -366,6 +366,31 @@ own bubbles leak?  false
 - `@fastify/static` 8.0.4 → **10.1.3**（路径穿越，修掉 1 条 high；已用 `/assets/../package.json` 探测返回 404）。
 - 桌面端：electron/electron-builder 的升级尝试因镜像不稳定失败（postinstall 下载超时），已回退到可用的 33.2.0 / 25.1.8 并从本地缓存恢复二进制；其 dev-only 工具链漏洞在限制章节标注为**已接受风险**，`audit-deps.mjs` 会持续列出。
 
+## 8.20 一条命令含依赖审计（2026-09-13 22:20）
+
+`node scripts/acceptance.mjs` 现在有 **7 步**（含 `--skip-e2e` 时 6 步）：类型检查 → 测试 → 构建 → 重启服务 → 接口冒烟 → **依赖审计（critical 门禁）** → 客户端 E2E。依赖审计用 `scripts/audit-deps.mjs --level critical`：有 critical 就非零退出，离线时明确报 UNVERIFIED 且不阻塞。
+
+```
+PASS  typecheck (tsc + vue-tsc)          · 12.0s
+PASS  unit / integration tests           199 cases · 24.7s
+PASS  build (server + web)               built in 8.78s · 25.3s
+PASS  restart server                     health: {"ok":true,"storage":{"pending":false}} · 3.5s
+PASS  API smoke (27 checks)              27/27 checks passed · 1.7s
+PASS  dependency audit (critical gate)   17 advisories · 3.0s
+PASS  client E2E (packaged exe)          34/34 UI checks passed
+```
+
+## 8.21 复核轮 8：脱敏改为「片段替换」（2026-09-13 22:35）
+
+第八轮复核（提交 `7c8cbf2`）确认引用校验无 oracle、break-glass 作用域基本正确、回归全绿，但指出**撤回脱敏仍是「整串相等」启发式**：AI 的**回声/包装文本**（`收到：「<正文> 请整理」`、`【通知】<正文>`）以及**群召唤去掉提及前缀后的 goal** 逃逸。已改为**片段替换**：
+
+- 新增 `recalledFragments()` / `scrubRecalledText()`：从被撤回正文派生片段（正文本身、去掉 `@提及` 的变体，以及**当任务 goal 是正文的子串时把 goal 本身作为片段**），在字符串内做**出现即替换**而不是整串比对；
+- 覆盖四处读取面：任务记录（goal/input.history/result/outcome.message）、任务事件（REST）、**审批载荷 `action.text`**、以及**实时任务 SSE 的每一帧**（片段集在流内按 ≤3 秒刷新，解决「撤回后新订阅者仍收到原始帧」）；
+- 事件脱敏的片段集从**原始任务**派生（此前用已脱敏的 goal 派生，导致派生文本无法再被识别）；
+- 产物 break-glass 误报修复：产物所在会话包含该管理员时不再写 `file.admin_access`（与上传同一规则）。
+
+现场验证（真实服务端）：群召唤 `@ChatAgent 助理 <密文> 请整理` → 撤回后任务 goal 为 `[已撤回]`、`result` 中不含 `请整理`、**事件与任务列表中均无密文**；审批列表中无密文。
+
 ## 9. 生产档位实测（2026-09-13 04:35）
 
 `CHATAGENT_AUTH_MODE=production` + 独立数据目录，无凭据请求一律 401：

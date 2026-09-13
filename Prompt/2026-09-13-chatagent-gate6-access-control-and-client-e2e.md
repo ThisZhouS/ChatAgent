@@ -124,6 +124,11 @@ node scripts/ui-e2e.mjs            # 30/30（真实 exe + 截图）
 - 修复：SSE 回放脱敏（P2）、群召唤 goal 双向匹配脱敏（P2）、审批载荷脱敏、旧接口 replyTo 校验、文件列表不写 break-glass、产物 break-glass 审计、引用校验移到授权之后、引用条随撤回清空。
 - 依赖漏洞扫描解除 BLOCKED：新增 `scripts/audit-deps.mjs`（公共 registry），overrides + xlsx 0.20.3 + @fastify/static 10.1.3 把 critical 从 2 降到 0。
 
+### 复核轮 8（22:35）
+
+- 撤回脱敏从「整串相等」改为「片段出现即替换」，片段含正文、去提及变体与派生 goal；覆盖任务记录/事件/审批载荷/实时 SSE（流内 ≤3 秒刷新片段集）；事件片段集改从原始任务派生；产物 break-glass 误报修复。
+- 验收链增至 7 步（依赖审计 critical 门禁）。
+
 ## 未完成 / BLOCKED
 
 - 依赖 CVE 扫描：BLOCKED（npmmirror 无 audit 端点）。

@@ -1326,21 +1326,13 @@ export class ChatAgentService {
     const recalled = await this.recalledTextsOf(task);
     if (recalled.length === 0) return task;
 
-    const redacted = history.map((entry) =>
-      recalled.some((text) => entry.content.includes(text))
-        ? { ...entry, content: '[已撤回]' }
-        : entry,
-    );
-    if (redacted.length === 0 && !recalled.some((text) => task.goal.includes(text))) return task;
-    // The goal is the message text itself, and the recorded result may quote it
-    // back (the assistant echoed it), so both are redacted as well.
-    // A group summon strips the "@name" prefix, so the stored goal is a
-    // substring of the recalled text rather than equal to it: both directions
-    // count as "derived from a recalled message".
-    const scrub = (value: string): string =>
-      recalled.some((text) => value.includes(text) || (value.trim() !== '' && text.includes(value.trim())))
-        ? '[已撤回]'
-        : value;
+    const fragments = recalledFragments(recalled, task.goal);
+    const redacted = history.map((entry) => ({ ...entry, content: scrubRecalledText(entry.content, fragments) }));
+    const changed = (value: string): boolean => scrubRecalledText(value, fragments) !== value;
+    if (redacted.length === 0 && !changed(task.goal)) return task;
+    // The goal, the recorded result and the outcome message all quote the body
+    // (the assistant echoes it), so every fragment is replaced in place.
+    const scrub = (value: string): string => scrubRecalledText(value, fragments);
     const goal = scrub(task.goal);
     const result = typeof task.result === 'string' ? scrub(task.result) : task.result;
     const outcome = task.outcome
@@ -1386,10 +1378,22 @@ export class ChatAgentService {
   }
 
   async getTaskEvents(principal: Principal, id: string): Promise<TaskEvent[]> {
+    // Authorization runs on the redacted view, but the fragment set must be
+    // derived from the RAW task: the redacted goal is already "[已撤回]" and can
+    // no longer tell us which derived text has to disappear.
     const task = await this.getTask(principal, id);
     const events = this.taskEngine.getEvents(id);
-    const recalled = await this.recalledTextsOf(task);
-    return recalled.length === 0 ? events : redactEventPayloads(events, recalled);
+    const raw = (await this.taskEngine.get(id)) ?? task;
+    const recalled = await this.recalledTextsOf(raw);
+    if (recalled.length === 0) return events;
+    return redactEventPayloads(events, recalledFragments(recalled, raw.goal));
+  }
+
+  /** Recalled-message fragments for a task, ready for substitution. */
+  async recalledFragmentsForTask(taskId: string): Promise<string[]> {
+    const task = await this.taskEngine.get(taskId);
+    if (!task) return [];
+    return recalledFragments(await this.recalledTextsOf(task), task.goal);
   }
 
   /** Bodies of messages recalled in the task's conversation. */
@@ -1468,10 +1472,11 @@ export class ChatAgentService {
     if (!task) return approval;
     const recalled = await this.recalledTextsOf(task);
     if (recalled.length === 0) return approval;
-    const matches = (value: string): boolean =>
-      recalled.some((text) => value.includes(text) || (value.trim() !== '' && text.includes(value.trim())));
-    if (typeof approval.action.text !== 'string' || !matches(approval.action.text)) return approval;
-    return { ...approval, action: { ...approval.action, text: '[已撤回]' } };
+    if (typeof approval.action.text !== 'string') return approval;
+    const fragments = recalledFragments(recalled, task.goal);
+    const scrubbed = scrubRecalledText(approval.action.text, fragments);
+    if (scrubbed === approval.action.text) return approval;
+    return { ...approval, action: { ...approval.action, text: scrubbed } };
   }
 
   /** Records an approve/reject decision; the requester can never self-approve. */
@@ -1698,8 +1703,19 @@ export class ChatAgentService {
     const task = artifact.taskId ? await this.taskEngine.get(artifact.taskId) : undefined;
     if (canReadArtifact(principal, artifact, task)) {
       // Same break-glass rule as uploads: an admin reading an artifact outside
-      // their conversations leaves a trace.
-      if (auditBreakGlass && artifact.ownerId !== principal.id && isOrgAdmin(principal)) {
+      // their conversations leaves a trace — but an artifact produced in a
+      // conversation the admin participates in is a normal read.
+      let sharedWithAdmin = false;
+      if (task?.conversationId) {
+        const conversation = await this.conversations.get(task.conversationId);
+        sharedWithAdmin = conversation?.participantIds.includes(principal.id) === true;
+      }
+      if (
+        auditBreakGlass &&
+        !sharedWithAdmin &&
+        artifact.ownerId !== principal.id &&
+        isOrgAdmin(principal)
+      ) {
         this.audit?.({
           action: 'file.admin_access',
           outcome: 'ok',
@@ -2293,14 +2309,48 @@ export class ChatAgentService {
 }
 
 /**
- * Replaces any string that contains a recalled body inside an event payload.
+ * The pieces of a recalled message that must disappear from every reading path:
+ * the body itself, its mention-stripped form (a group summon stores the goal
+ * without the "@name" prefix), and the trimmed variants. Assistant replies and
+ * provider wrappers quote these fragments, so matching has to be by fragment
+ * substitution rather than by whole-string equality.
+ */
+export function recalledFragments(texts: string[], goal?: string): string[] {
+  const fragments = new Set<string>();
+  for (const text of texts) {
+    const trimmed = text.trim();
+    if (trimmed === '') continue;
+    fragments.add(trimmed);
+    const stripped = trimmed.replace(/^(\s*@[^\s@]+\s*)+/, '').trim();
+    if (stripped !== '') fragments.add(stripped);
+  }
+  // A group summon stores the goal with the whole "@Display Name" prefix removed,
+  // which no simple strip can reconstruct: if the goal came out of a recalled
+  // body, the goal itself is the fragment that has to disappear.
+  const wanted = goal?.trim();
+  if (wanted !== undefined && wanted !== '' && texts.some((text) => text.includes(wanted))) {
+    fragments.add(wanted);
+  }
+  return [...fragments];
+}
+
+/** Replaces every occurrence of a recalled fragment inside one string. */
+export function scrubRecalledText(value: string, fragments: string[]): string {
+  let out = value;
+  for (const fragment of fragments) {
+    if (fragment === '') continue;
+    if (out.includes(fragment)) out = out.split(fragment).join('[已撤回]');
+  }
+  return out;
+}
+
+/**
+ * Replaces every occurrence of a recalled fragment inside an event payload.
  * Task events embed the goal and progress text, so they are a read path too.
  */
-function redactEventPayloads(events: TaskEvent[], recalled: string[]): TaskEvent[] {
+export function redactEventPayloads(events: TaskEvent[], fragments: string[]): TaskEvent[] {
   const scrub = (value: unknown): unknown => {
-    if (typeof value === 'string') {
-      return recalled.some((text) => value.includes(text)) ? '[已撤回]' : value;
-    }
+    if (typeof value === 'string') return scrubRecalledText(value, fragments);
     if (Array.isArray(value)) return value.map(scrub);
     if (value && typeof value === 'object') {
       return Object.fromEntries(

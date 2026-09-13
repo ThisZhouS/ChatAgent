@@ -93,7 +93,7 @@ pnpm build:desktop
 一条命令跑完整条验收链（类型检查 → 测试 → 构建 → 重启服务 → 接口冒烟 → 真实客户端 E2E）：
 
 ```bash
-node scripts/acceptance.mjs        # 6/6 步骤，任一步失败即非零退出；--skip-e2e 可在无桌面环境运行
+node scripts/acceptance.mjs        # 7 步，任一步失败即非零退出；--skip-e2e 可在无桌面环境运行（6 步）
 ```
 
 分步执行：

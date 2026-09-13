@@ -722,8 +722,14 @@ async function main() {
       button.click();
       return true;
     })()`);
-    await sleep(600);
-    const darkClass = await cdp.evaluate(`document.documentElement.classList.contains('dark')`);
+    // Wait for the class to actually land instead of sleeping a fixed time: under
+    // load the toggle can take longer, and measuring early reports bogus contrast.
+    const darkClass = await waitFor(
+      cdp,
+      `document.documentElement.classList.contains('dark')`,
+      8000,
+      'dark theme class',
+    ).catch(() => false);
     record('theme switch toggles dark mode', Boolean(toggled) && darkClass === true, `dark=${String(darkClass)}`);
     await cdp.screenshot('05-dark-mode');
     const darkContrast = await cdp.evaluate(

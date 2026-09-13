@@ -18,7 +18,7 @@ pnpm start                 # 或双击 start-server.cmd
 不想逐步走查时，按顺序执行下面四条即可覆盖五大维度：
 
 ```bash
-node scripts/acceptance.mjs                   # 一条命令：类型检查 → 测试 → 构建 → 重启 → 冒烟 → 客户端 E2E（6/6）
+node scripts/acceptance.mjs                   # 一条命令：类型检查 → 测试 → 构建 → 重启 → 冒烟 → 依赖审计 → 客户端 E2E（7/7）
 ```
 
 需要分步时：

@@ -1193,6 +1193,8 @@ describe('message recall', () => {
 
     const task = await app.inject({ method: 'GET', url: `/api/tasks/${taskId}`, headers: auth(aliceToken) });
     expect(JSON.stringify(task.json())).not.toContain('GROUP-SECRET-X9');
+    // Derived text (the assistant's echo of the stripped goal) must be scrubbed too.
+    expect(JSON.stringify(task.json().result ?? '')).not.toContain('请整理');
     const events = await app.inject({
       method: 'GET',
       url: `/api/tasks/${taskId}/events`,

@@ -3,7 +3,8 @@
  * One-command acceptance run.
  *
  * Executes the whole verification chain in the order a reviewer would:
- * typecheck -> tests -> build -> restart the server -> API smoke -> client E2E,
+ * typecheck -> tests -> build -> restart the server -> API smoke -> dependency
+ * audit -> client E2E,
  * and prints a single PASS/FAIL table with the evidence line of each step.
  *
  * Usage:
@@ -82,6 +83,13 @@ const steps = [
       summary: /\d+\/\d+ checks passed/,
     }),
 ];
+
+steps.push(() =>
+  run('dependency audit (critical gate)', process.execPath, [join(root, 'scripts', 'audit-deps.mjs'), '--level', 'critical'], {
+    capture: true,
+    summary: /(\d+ advisories|[0-9]+ at or above)/,
+  }),
+);
 
 if (!skipE2e) {
   steps.push(() =>

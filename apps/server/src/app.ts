@@ -31,6 +31,7 @@ import {
 } from '@chatagent/im-gateway';
 import { HermesAgentRuntime } from '@chatagent/hermes';
 import { buildDocumentTools, buildMessageTools, buildProvider } from './agent';
+import { redactEventPayloads } from './service';
 import { ApprovalStore, OutboxStore } from './approvals';
 import { AuditLog } from './audit';
 import {
@@ -1165,8 +1166,24 @@ async function streamTaskEvents(
   const past = await service.getTaskEvents(principal, taskId);
   for (const event of past) writeSSE(reply.raw, event);
 
+  // A recall can happen while the stream is open, so the fragment set is
+  // refreshed (at most every few seconds) and applied to every live frame.
+  let fragments = await service.recalledFragmentsForTask(taskId);
+  let fragmentsAt = Date.now();
+  const refreshFragments = async (): Promise<void> => {
+    if (Date.now() - fragmentsAt < 3000) return;
+    fragmentsAt = Date.now();
+    fragments = await service.recalledFragmentsForTask(taskId);
+  };
   const unsubscribe = service.taskEngine.onEvent((event) => {
-    if (event.taskId === taskId) writeSSE(reply.raw, event);
+    if (event.taskId !== taskId) return;
+    if (fragments.length === 0) {
+      writeSSE(reply.raw, event);
+      void refreshFragments();
+      return;
+    }
+    const [scrubbed] = redactEventPayloads([event], fragments);
+    writeSSE(reply.raw, scrubbed ?? event);
   });
   const heartbeat = setInterval(() => {
     if (!writeAndCheck(reply.raw, ': ping\n\n')) close();
