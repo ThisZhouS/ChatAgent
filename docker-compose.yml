@@ -1,0 +1,20 @@
+services:
+  chatagent:
+    build: .
+    container_name: chatagent
+    ports:
+      - "8787:8787"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      CHATAGENT_DATA_DIR: /data
+      # 接入真实模型时取消注释并填写：
+      # CHATAGENT_MODEL_BASE_URL: https://your-gateway/v1
+      # CHATAGENT_MODEL_API_KEY: sk-...
+      # CHATAGENT_MODEL_NAME: your-model
+    volumes:
+      - chatagent-data:/data
+    restart: unless-stopped
+
+volumes:
+  chatagent-data:

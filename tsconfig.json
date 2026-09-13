@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@chatagent/contracts": ["packages/contracts/src/index.ts"],
+      "@chatagent/hermes": ["packages/hermes/src/index.ts"],
+      "@chatagent/im-gateway": ["packages/im-gateway/src/index.ts"],
+      "@chatagent/document": ["packages/document/src/index.ts"],
+      "@chatagent/task-engine": ["packages/task-engine/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "apps/server/src/**/*.ts"
+  ]
+}

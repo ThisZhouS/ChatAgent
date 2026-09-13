@@ -1,0 +1,32 @@
+{
+  "name": "chatagent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ChatAgent — AI runs its own IM account and completes real enterprise work (Word, Excel, file forwarding), not just chat.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@11.6.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @chatagent/server --filter @chatagent/web run dev",
+    "dev:server": "pnpm --filter @chatagent/server run dev",
+    "dev:web": "pnpm --filter @chatagent/web run dev",
+    "desktop:dev": "pnpm --filter @chatagent/desktop run dev",
+    "build:desktop": "pnpm --filter @chatagent/desktop run build",
+    "build": "pnpm typecheck && pnpm --filter @chatagent/server run build && pnpm --filter @chatagent/web run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && pnpm --filter @chatagent/web run typecheck",
+    "test": "vitest run && pnpm --filter @chatagent/web run test",
+    "start": "node apps/server/dist/index.js",
+    "member:add": "node scripts/add-member.mjs",
+    "clean": "pnpm --recursive --if-present exec rimraf dist .turbo node_modules/.cache"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChatAgent</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+        background: #f5f7fa;
+        color: #303133;
+      }
+      .card {
+        max-width: 460px;
+        padding: 32px;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      p {
+        color: #909399;
+        line-height: 1.6;
+      }
+      button {
+        margin-top: 8px;
+        padding: 10px 18px;
+        border: none;
+        border-radius: 8px;
+        background: #409eff;
+        color: #fff;
+        cursor: pointer;
+        font: inherit;
+      }
+      code {
+        background: #f0f2f5;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>无法连接到 ChatAgent 服务</h1>
+      <p>请确认服务端已启动，地址为：<br /><code id="url"></code></p>
+      <button onclick="retry()">重试连接</button>
+    </div>
+    <script>
+      const url = new URLSearchParams(location.search).get('url') || 'http://localhost:8787';
+      document.getElementById('url').textContent = url;
+      function retry() {
+        location.href = url;
+      }
+    </script>
+  </body>
+</html>

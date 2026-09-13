@@ -1,0 +1,773 @@
+#!/usr/bin/env node
+/**
+ * Browser-level end-to-end test of the ChatAgent client.
+ *
+ * The desktop shell is Electron, so the packaged (or dev) client exposes a
+ * Chrome DevTools Protocol endpoint. This script drives the real UI through
+ * that endpoint: it types into the login form, opens the AI conversation,
+ * sends messages, waits for the AI reply and captures screenshots as evidence.
+ *
+ * Usage:
+ *   node scripts/ui-e2e.mjs                       # packaged exe if built, else dev electron
+ *   node scripts/ui-e2e.mjs --server http://localhost:8787 --debug-port 9333
+ *   node scripts/ui-e2e.mjs --keep-open           # leave the client running for manual review
+ *
+ * Prerequisites: a running ChatAgent server (node scripts/restart-server.mjs)
+ * and a built web bundle (pnpm build), because the client loads the server URL.
+ */
+import { spawn, execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { request } from 'node:http';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const args = process.argv.slice(2);
+const argValue = (name, fallback) => {
+  const index = args.indexOf(name);
+  return index === -1 ? fallback : args[index + 1];
+};
+
+const serverUrl = (argValue('--server', process.env.CHATAGENT_SERVER_URL ?? 'http://localhost:8787')).replace(/\/+$/, '');
+const debugPort = Number(argValue('--debug-port', '9333'));
+const memberId = argValue('--member', process.env.SMOKE_MEMBER ?? 'u_alice');
+const memberToken = argValue('--token', process.env.SMOKE_TOKEN ?? 'alice-dev-token');
+const shotDir = resolve(argValue('--shots', join(root, 'Temp', 'ui-shots')));
+const keepOpen = args.includes('--keep-open');
+const packagedExe = join(root, 'apps', 'desktop', 'release', 'win-unpacked', 'ChatAgent.exe');
+const devElectron = join(root, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'electron.exe');
+
+const results = [];
+const screenshots = [];
+
+function record(name, ok, detail = '') {
+  results.push({ name, ok, detail });
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+function httpGetJson(port, path) {
+  return new Promise((resolvePromise) => {
+    const req = request(
+      { host: '127.0.0.1', port, path, method: 'GET', agent: false, timeout: 3000 },
+      (response) => {
+        let raw = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          raw += chunk;
+        });
+        response.on('end', () => {
+          try {
+            resolvePromise(JSON.parse(raw));
+          } catch {
+            resolvePromise(undefined);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolvePromise(undefined));
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.end();
+  });
+}
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/** Minimal Chrome DevTools Protocol client over the page target websocket. */
+class Cdp {
+  constructor(ws) {
+    this.ws = ws;
+    this.nextId = 1;
+    this.pending = new Map();
+    ws.addEventListener('message', (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (typeof message.id !== 'number') return;
+      const entry = this.pending.get(message.id);
+      if (!entry) return;
+      this.pending.delete(message.id);
+      if (message.error) entry.reject(new Error(message.error.message));
+      else entry.resolve(message.result);
+    });
+  }
+
+  send(method, params = {}) {
+    const id = this.nextId++;
+    const payload = JSON.stringify({ id, method, params });
+    return new Promise((resolvePromise, rejectPromise) => {
+      this.pending.set(id, { resolve: resolvePromise, reject: rejectPromise });
+      this.ws.send(payload);
+      setTimeout(() => {
+        if (this.pending.delete(id)) rejectPromise(new Error(`${method} timed out`));
+      }, 30000);
+    });
+  }
+
+  async evaluate(expression) {
+    const result = await this.send('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+      userGesture: true,
+    });
+    if (result.exceptionDetails) {
+      throw new Error(result.exceptionDetails.exception?.description ?? 'evaluate failed');
+    }
+    return result.result?.value;
+  }
+
+  async screenshot(name) {
+    const result = await this.send('Page.captureScreenshot', { format: 'png' });
+    const file = join(shotDir, `${name}.png`);
+    writeFileSync(file, Buffer.from(result.data, 'base64'));
+    screenshots.push(file);
+    return file;
+  }
+}
+
+function normaliseText(value) {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+async function waitFor(cdp, expression, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    try {
+      last = await cdp.evaluate(expression);
+      if (last) return last;
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(400);
+  }
+  throw new Error(`timed out waiting for ${label} (last=${JSON.stringify(last)})`);
+}
+
+/** Helper expression: click the first element matching a selector whose text contains value. */
+function clickByTextExpr(selector, text) {
+  return `(() => {
+    const nodes = [...document.querySelectorAll(${JSON.stringify(selector)})];
+    const hit = nodes.find((node) => (node.textContent || '').includes(${JSON.stringify(text)}));
+    if (!hit) return false;
+    hit.click();
+    return true;
+  })()`;
+}
+
+/** Helper expression: resolve the element carrying a data-testid marker. */
+function findExpr(testId) {
+  const id = JSON.stringify(testId);
+  return `document.querySelector('[data-testid=' + ${id} + ']')`;
+}
+
+/** Helper expression: the interactive control behind a marker (Element Plus puts
+ * the attribute either on the inner control or on the wrapper element). */
+function fieldExpr(testId) {
+  return `(() => {
+    const host = ${findExpr(testId)};
+    if (!host) return null;
+    return host.matches('input, textarea') ? host : host.querySelector('input, textarea');
+  })()`;
+}
+
+/** Helper expression: set a Vue-bound field value through the native setter. */
+function setFieldExpr(testId, value) {
+  return `(() => {
+    const field = ${fieldExpr(testId)};
+    if (!field) return false;
+    const proto = field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(field, ${JSON.stringify(value)});
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`;
+}
+
+/**
+ * Opens the 1:1 conversation with an AI account by clicking the side item that
+ * carries the "AI" tag. Titles and previews are ambiguous (a group preview can
+ * mention the assistant too), so the tag is the reliable marker.
+ */
+function clickAiContactExpr() {
+  return `(() => {
+    const items = [...document.querySelectorAll('.side-item')];
+    const hit = items.find((item) =>
+      [...item.querySelectorAll('.el-tag')].some((tag) => (tag.textContent || '').trim() === 'AI'),
+    );
+    if (!hit) return false;
+    hit.click();
+    return true;
+  })()`;
+}
+
+function clickTestIdExpr(testId) {
+  return `(() => {
+    const host = ${findExpr(testId)};
+    if (!host) return false;
+    const target = host.closest('button') || host.querySelector('button') || host;
+    target.click();
+    return true;
+  })()`;
+}
+
+async function waitForHealth(timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const body = await httpGetJson(new URL(serverUrl).port ? Number(new URL(serverUrl).port) : 80, '/health');
+    if (body && body.ok === true) return body;
+    await sleep(400);
+  }
+  return undefined;
+}
+
+function launchClient() {
+  const usePackaged = existsSync(packagedExe);
+  const command = usePackaged ? packagedExe : devElectron;
+  if (!existsSync(command)) return undefined;
+  // A stale profile keeps serving the previous hashed bundle from the HTTP
+  // cache; every run starts from a clean profile and disables caching.
+  rmSync(join(root, 'Temp', 'electron-profile'), { recursive: true, force: true });
+  const child = spawn(
+    command,
+    [
+      `--remote-debugging-port=${debugPort}`,
+      `--user-data-dir=${join(root, 'Temp', 'electron-profile')}`,
+      ...(usePackaged ? [] : [resolve(root, 'apps', 'desktop')]),
+    ],
+    { detached: false, stdio: 'ignore', windowsHide: true },
+  );
+  return { child, kind: usePackaged ? 'packaged exe' : 'dev electron' };
+}
+
+async function connectToPage(timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const targets = await httpGetJson(debugPort, '/json/list');
+    const page = Array.isArray(targets) ? targets.find((item) => item.type === 'page' && item.webSocketDebuggerUrl) : undefined;
+    if (page) {
+      const ws = new WebSocket(page.webSocketDebuggerUrl);
+      await new Promise((resolvePromise, rejectPromise) => {
+        ws.addEventListener('open', () => resolvePromise());
+        ws.addEventListener('error', () => rejectPromise(new Error('websocket failed')));
+        setTimeout(() => rejectPromise(new Error('websocket connect timed out')), 10000);
+      });
+      return new Cdp(ws);
+    }
+    await sleep(500);
+  }
+  return undefined;
+}
+
+function stopClient() {
+  try {
+    execFileSync('taskkill', ['/IM', 'ChatAgent.exe', '/F', '/T'], { stdio: 'ignore' });
+  } catch {
+    // already gone
+  }
+  try {
+    execFileSync('taskkill', ['/IM', 'electron.exe', '/F', '/T'], { stdio: 'ignore' });
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * Counts matches of a selector until the value stops changing, so assertions
+ * run against a fully loaded conversation instead of a partially rendered one.
+ */
+async function waitForStableCount(cdp, selector, timeoutMs = 20000) {
+  const expression = `document.querySelectorAll(${JSON.stringify(selector)}).length`;
+  const deadline = Date.now() + timeoutMs;
+  let previous = -1;
+  let stableRounds = 0;
+  while (Date.now() < deadline) {
+    const current = Number(await cdp.evaluate(expression));
+    if (current === previous) stableRounds += 1;
+    else stableRounds = 0;
+    previous = current;
+    if (current > 0 && stableRounds >= 2) return current;
+    await sleep(500);
+  }
+  return previous;
+}
+
+/**
+ * Waits until a bubble beyond `baseline` matches the pattern and returns its
+ * text; messages that existed before the interaction never satisfy the check.
+ */
+async function waitForNewBubble(cdp, baseline, pattern, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  let lastText = '';
+  while (Date.now() < deadline) {
+    const found = await cdp.evaluate(`(() => {
+      const bubbles = [...document.querySelectorAll('[data-testid="message-bubble"]')];
+      if (bubbles.length <= ${baseline}) return '';
+      const fresh = bubbles.slice(${baseline}).map((b) => (b.innerText || '').replace(/\s+/g, ' ')).filter(Boolean);
+      return fresh.length > 0 ? fresh[fresh.length - 1] : '';
+    })()`);
+    if (typeof found === 'string' && found !== '') {
+      lastText = found;
+      if (pattern.test(found)) return found;
+    }
+    await sleep(500);
+  }
+  throw new Error(`timed out waiting for ${label} (last new bubble: ${lastText || 'none'})`);
+}
+
+/**
+ * Collects computed text/background color pairs for a set of selectors and
+ * returns WCAG contrast ratios. Used to verify readability objectively instead
+ * of eyeballing a screenshot.
+ */
+function contrastExpr(selectors) {
+  return `(() => {
+    // Parsed without a regular expression on purpose: this expression travels
+    // through two layers of string literals, and a backslash that survives only
+    // one of them silently turns the pattern into something that never matches.
+    const parse = (value) => {
+      const text = String(value || '');
+      const open = text.indexOf('(');
+      const close = text.lastIndexOf(')');
+      if (open < 0 || close <= open) return null;
+      const parts = text.slice(open + 1, close).split(',').map((n) => Number.parseFloat(n));
+      if (parts.length < 3 || parts.slice(0, 3).some((n) => Number.isNaN(n))) return null;
+      return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+    };
+    const luminance = ({ r, g, b }) => {
+      const channel = (v) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    };
+    const background = (element) => {
+      let node = element;
+      while (node && node !== document.documentElement.parentNode) {
+        const color = parse(getComputedStyle(node).backgroundColor);
+        if (color && color.a > 0.05) return color;
+        node = node.parentElement;
+      }
+      return { r: 255, g: 255, b: 255, a: 1 };
+    };
+    const ratio = (a, b) => {
+      const l1 = luminance(a);
+      const l2 = luminance(b);
+      const light = Math.max(l1, l2);
+      const dark = Math.min(l1, l2);
+      return Number((((light + 0.05) / (dark + 0.05))).toFixed(2));
+    };
+    const out = [];
+    for (const selector of ${JSON.stringify(selectors)}) {
+      const element = document.querySelector(selector);
+      if (!element) {
+        out.push({ selector, missing: true });
+        continue;
+      }
+      const style = getComputedStyle(element);
+      const fg = parse(style.color);
+      const bg = background(element);
+      out.push({
+        selector,
+        text: (element.innerText || '').replace(/\s+/g, ' ').slice(0, 24),
+        fontSize: style.fontSize,
+        contrast: fg ? ratio(fg, bg) : null,
+      });
+    }
+    return out;
+  })()`;
+}
+
+/** Reports clipped or overflowing text nodes inside a container selector. */
+function overflowExpr(selector) {
+  return `(() => {
+    const nodes = [...document.querySelectorAll(${JSON.stringify(selector)})];
+    return nodes
+      .filter((node) => {
+        const style = getComputedStyle(node);
+        // text-overflow: ellipsis is a deliberate truncation, not a defect
+        if (style.textOverflow === 'ellipsis' || style.whiteSpace === 'nowrap') return false;
+        return node.scrollWidth > node.clientWidth + 1 || node.scrollHeight > node.clientHeight + 1;
+      })
+      .slice(0, 6)
+      .map((node) => ({
+        cls: node.className,
+        text: (node.innerText || '').replace(/\s+/g, ' ').slice(0, 32),
+        scrollWidth: node.scrollWidth,
+        clientWidth: node.clientWidth,
+      }));
+  })()`;
+}
+
+/**
+ * Waits until a bubble that appears AFTER the bubble carrying `marker` matches
+ * the pattern. Anchoring on the marker keeps the assertion valid even when the
+ * client only renders the newest page of history.
+ */
+async function waitForBubbleAfter(cdp, marker, pattern, timeoutMs, label) {
+  const expression = `(() => {
+    const bubbles = [...document.querySelectorAll('[data-testid="message-bubble"]')];
+    const anchor = bubbles.findIndex((bubble) => (bubble.innerText || '').includes(${JSON.stringify('__MARKER__')}));
+    if (anchor < 0) return '';
+    const after = bubbles.slice(anchor + 1).map((bubble) => bubble.innerText || '').filter((text) => text.trim() !== '');
+    return after.length > 0 ? after[after.length - 1] : '';
+  })()`.replace('__MARKER__', marker);
+  const deadline = Date.now() + timeoutMs;
+  let lastText = '';
+  while (Date.now() < deadline) {
+    const found = await cdp.evaluate(expression);
+    if (typeof found === 'string' && found !== '') {
+      lastText = found;
+      if (pattern.test(found)) return found;
+    }
+    await sleep(500);
+  }
+  throw new Error(`timed out waiting for ${label} (last bubble after marker: ${normaliseText(lastText) || 'none'})`);
+}
+
+async function main() {
+  console.log(`ChatAgent UI end-to-end → ${serverUrl} (CDP :${debugPort})\n`);
+  mkdirSync(shotDir, { recursive: true });
+
+  const health = await waitForHealth();
+  record('server reachable', Boolean(health), health ? `authMode=${health.authMode}` : 'no /health');
+  if (!health) {
+    console.log('\nstart the server first: node scripts/restart-server.mjs');
+    process.exit(1);
+  }
+
+  const launched = launchClient();
+  if (!launched) {
+    record('desktop client binary found', false, 'build it with: pnpm --filter @chatagent/desktop run build');
+    process.exit(1);
+  }
+  const cdp = await connectToPage();
+  record('desktop client exposed a page target', Boolean(cdp), launched.kind);
+  if (!cdp) {
+    stopClient();
+    process.exit(1);
+  }
+
+  await cdp.send('Page.enable');
+  await cdp.send('Runtime.enable');
+  await cdp.send('Network.enable');
+  await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
+  await cdp.send('Page.navigate', { url: serverUrl });
+  await sleep(1500);
+
+  try {
+    const where = await cdp.evaluate('location.href');
+    record('client loaded the app URL', typeof where === 'string' && where.startsWith(serverUrl), String(where));
+    const scriptTags = await cdp.evaluate(`[...document.querySelectorAll('script[src]')].map((s) => s.getAttribute('src')).slice(0, 4)`);
+    record('app bundle referenced', Array.isArray(scriptTags) && scriptTags.length > 0, JSON.stringify(scriptTags));
+
+    const loginReady = await waitFor(cdp, `Boolean(${fieldExpr('login-member')})`, 30000, 'login form');
+    record('login view rendered', Boolean(loginReady));
+    const loginText = await cdp.evaluate('document.body.innerText.replace(/\\s+/g, " ").slice(0, 160)');
+    record('login view copy', typeof loginText === 'string' && loginText.includes('ChatAgent'), loginText);
+    await cdp.screenshot('01-login');
+
+    await cdp.evaluate(setFieldExpr('login-member', memberId));
+    const filledMember = await cdp.evaluate(`(() => { const f = ${fieldExpr('login-member')}; return f ? f.value : null; })()`);
+    await cdp.evaluate(setFieldExpr('login-token', memberToken));
+    record('credentials entered', filledMember === memberId, `member=${filledMember}`);
+
+    await cdp.evaluate(clickTestIdExpr('login-submit'));
+    // A brand-new deployment has no conversations yet, so the sidebar (with its
+    // contacts) is what proves the session works; conversations may appear later.
+    await waitFor(
+      cdp,
+      `Boolean(document.querySelector('[data-testid="conversation-item"]') || document.querySelector('.side-item'))`,
+      25000,
+      'sidebar content',
+    );
+    const sidebar = await cdp.evaluate(`({
+      conversations: document.querySelectorAll('[data-testid="conversation-item"]').length,
+      contacts: document.querySelectorAll('.side-item').length,
+    })`);
+    record(
+      'logged in and sidebar rendered',
+      Number(sidebar.contacts) > 0 || Number(sidebar.conversations) > 0,
+      JSON.stringify(sidebar),
+    );
+    await cdp.screenshot('02-chat');
+
+    // Open the 1:1 conversation with an AI account through its "AI" tag: titles
+    // and previews are ambiguous (a group preview can mention the assistant).
+    const opened = await cdp.evaluate(clickAiContactExpr());
+    record('opened the 1:1 AI conversation', Boolean(opened));
+    if (!opened) {
+      const names = await cdp.evaluate(`[...document.querySelectorAll('.side-item')].map((n) => n.innerText || '')`);
+      record(
+        'available side items',
+        false,
+        JSON.stringify(
+          (Array.isArray(names) ? names : []).map((text) => normaliseText(String(text)).slice(0, 40)),
+        ),
+      );
+    }
+    // Opening a conversation is asynchronous (open -> select -> load), so the
+    // composer becoming enabled is the signal that it is really active.
+    await waitFor(
+      cdp,
+      `(() => { const el = document.querySelector('[data-testid="composer"] textarea, textarea[data-testid="composer"]'); return Boolean(el) && !el.disabled; })()`,
+      15000,
+      'composer enabled',
+    );
+    const header = normaliseText(
+      await cdp.evaluate(`(document.querySelector('.chat-main .side-title') || document.body).innerText`),
+    );
+    record('AI conversation is active', header.includes('助手') || header.includes('助理'), header.slice(0, 40));
+
+    // Wait for the persisted history of this conversation to finish loading.
+    const loaded = await waitForStableCount(cdp, '[data-testid="message-bubble"]', 8000);
+    record(
+      'conversation thread rendered',
+      loaded >= 0,
+      `${loaded} bubbles in the newest page (0 = fresh conversation)`,
+    );
+
+    // Bubbles are addressed by unique markers instead of by count: the client
+    // keeps only the newest page, so a counter is not a stable baseline.
+    const stamp = Date.now().toString(36);
+    const greetingMarker = `E2E-HELLO-${stamp}`;
+    const greeting = await cdp.evaluate(setFieldExpr('composer', `你好 ${greetingMarker}`));
+    record('composer accepts input', Boolean(greeting));
+    await cdp.evaluate(clickTestIdExpr('send'));
+
+    const replyText = await waitForBubbleAfter(
+      cdp,
+      greetingMarker,
+      /我是 ChatAgent/,
+      40000,
+      'AI greeting reply',
+    );
+    record('AI replied to the greeting in the UI', replyText !== '', normaliseText(replyText).slice(0, 100));
+    await cdp.screenshot('03-ai-reply');
+
+    const docMarker = `E2E-DOC-${stamp}`;
+    await cdp.evaluate(setFieldExpr('composer', `帮我生成一份 Word 周报 ${docMarker}`));
+    await cdp.evaluate(clickTestIdExpr('send'));
+    const docReply = await waitForBubbleAfter(cdp, docMarker, /已生成文件|已完成|\.docx/, 60000, 'document task reply');
+    record('document task finished in the UI', docReply !== '', normaliseText(docReply).slice(0, 120));
+
+    const artifacts = await cdp.evaluate(
+      `[...document.querySelectorAll('[data-testid="message-bubble"] a')].map((node) => ({ text: node.innerText || '', href: node.getAttribute('href') || '' })).map((item) => item.text.trim() + '|' + item.href).slice(-3)`,
+    );
+    const downloadable = (Array.isArray(artifacts) ? artifacts : []).filter((item) =>
+      String(item).includes('|/api/files/'),
+    );
+    record('generated file is downloadable from the chat', downloadable.length > 0, JSON.stringify(downloadable));
+    await cdp.screenshot('04-document-task');
+
+    // Recall: a member withdraws their own message inside the window; the body
+    // must disappear from the bubble and from every later read.
+    const recallMarker = `撤回验证-${stamp}`;
+    await cdp.evaluate(setFieldExpr('composer', recallMarker));
+    await cdp.evaluate(clickTestIdExpr('send'));
+    await waitForBubbleAfter(cdp, recallMarker, new RegExp(recallMarker), 20000, 'own message');
+
+    // The recall assertion is anchored to the marker bubble's position counted
+    // from the END of the list, because the page trims the oldest bubbles.
+    const anchor = await cdp.evaluate(`(() => {
+      const bubbles = [...document.querySelectorAll('[data-testid="message-bubble"]')];
+      const index = bubbles.findIndex((bubble) => (bubble.innerText || '').includes(${JSON.stringify(recallMarker)}));
+      if (index < 0) return { clicked: false };
+      const button = bubbles[index].querySelector('[data-testid="recall"]');
+      if (!button) return { clicked: false, reason: 'no recall button' };
+      const offsetFromEnd = bubbles.length - 1 - index;
+      button.click();
+      return { clicked: true, offsetFromEnd };
+    })()`);
+
+    let recalledText = '';
+    if (anchor && anchor.clicked) {
+      const expression = `(() => {
+        const bubbles = [...document.querySelectorAll('[data-testid="message-bubble"]')];
+        const target = bubbles[bubbles.length - 1 - ${Number(anchor.offsetFromEnd)}];
+        return target ? target.innerText || '' : '';
+      })()`;
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        recalledText = String(await cdp.evaluate(expression));
+        if (recalledText.includes('撤回了一条消息')) break;
+        await sleep(500);
+      }
+    }
+    // The export control is asserted by presence only: activating it opens the
+    // generated file through the OS browser, which is a side effect a test run
+    // must not trigger.
+    const exportControl = await cdp.evaluate(
+      `Boolean(document.querySelector('[data-testid="export"]'))`,
+    );
+    record('conversation export control is available', exportControl === true);
+
+    // The AI reply may quote the recalled text (that turn is a different
+    // message); what must be gone is the sender's OWN bubble content.
+    const ownMarkerBubbles = await cdp.evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.bubble-row.mine')];
+      return rows.filter((row) => (row.innerText || '').includes(${JSON.stringify(recallMarker)})).length;
+    })()`);
+    const quoted = await cdp.evaluate(
+      `(document.body.innerText || '').includes(${JSON.stringify(recallMarker)})`,
+    );
+    record(
+      'own message can be recalled and the body disappears',
+      Boolean(anchor && anchor.clicked) &&
+        recalledText.includes('撤回了一条消息') &&
+        Number(ownMarkerBubbles) === 0,
+      `${normaliseText(recalledText).slice(0, 50)} · 已被 AI 引用=${String(quoted)}`,
+    );
+    await cdp.screenshot('08-recalled');
+
+    const uiErrors = await cdp.evaluate(
+      `[...document.querySelectorAll('.el-message--error, .el-alert--error')].map((n) => n.innerText.replace(/\\s+/g, ' ')).slice(0, 5)`,
+    );
+    record('no error toasts visible', Array.isArray(uiErrors) && uiErrors.length === 0, JSON.stringify(uiErrors));
+
+    const pageOverflow = await cdp.evaluate(
+      `({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth })`,
+    );
+    record(
+      'no horizontal page overflow',
+      Number(pageOverflow.scrollWidth) <= Number(pageOverflow.clientWidth) + 1,
+      JSON.stringify(pageOverflow),
+    );
+
+    const clipped = await cdp.evaluate(
+      overflowExpr('.bubble-text, .side-item-title, .side-item-sub, .chat-main .side-title'),
+    );
+    record('no clipped text in bubbles or sidebar', Array.isArray(clipped) && clipped.length === 0, JSON.stringify(clipped));
+
+    const lightContrast = await cdp.evaluate(
+      contrastExpr(['.bubble-text', '.side-item-title', '.side-item-sub', '.chat-main .side-title']),
+    );
+    const worstLight = Array.isArray(lightContrast)
+      ? Math.min(...lightContrast.filter((item) => typeof item.contrast === 'number').map((item) => item.contrast))
+      : 0;
+    record('light theme contrast >= 4.5', worstLight >= 4.5, `worst=${worstLight} ${JSON.stringify(lightContrast)}`);
+
+    // Dark mode is part of the product; toggling it also proves the theme
+    // switch is wired to the rendered UI rather than only to localStorage.
+    const toggled = await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')].find((node) => /深色模式|浅色模式/.test(node.innerText || ''));
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    await sleep(600);
+    const darkClass = await cdp.evaluate(`document.documentElement.classList.contains('dark')`);
+    record('theme switch toggles dark mode', Boolean(toggled) && darkClass === true, `dark=${String(darkClass)}`);
+    await cdp.screenshot('05-dark-mode');
+    const darkContrast = await cdp.evaluate(
+      contrastExpr(['.bubble-text', '.side-item-title', '.side-item-sub', '.chat-main .side-title']),
+    );
+    const worstDark = Array.isArray(darkContrast)
+      ? Math.min(...darkContrast.filter((item) => typeof item.contrast === 'number').map((item) => item.contrast))
+      : 0;
+    record('dark theme contrast >= 4.5', worstDark >= 4.5, `worst=${worstDark}`);
+    await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')].find((node) => /深色模式|浅色模式/.test(node.innerText || ''));
+      if (button) button.click();
+      return true;
+    })()`);
+    await sleep(300);
+
+    // Responsive behaviour: the client must stay usable in a smaller window.
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 1024,
+      height: 720,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await sleep(700);
+    const narrow = await cdp.evaluate(
+      `({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth, composer: Boolean(document.querySelector('[data-testid="composer"]')), bubbles: document.querySelectorAll('[data-testid="message-bubble"]').length })`,
+    );
+    record(
+      'layout holds at 1024x720',
+      Number(narrow.scrollWidth) <= Number(narrow.clientWidth) + 1 && narrow.composer === true,
+      JSON.stringify(narrow),
+    );
+    await cdp.screenshot('06-narrow-window');
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+
+    const domSummary = await cdp.evaluate(`({
+      buttons: document.querySelectorAll('button').length,
+      inputs: document.querySelectorAll('input, textarea').length,
+      cards: document.querySelectorAll('.el-card').length,
+      bubbles: document.querySelectorAll('[data-testid="message-bubble"]').length,
+      theme: document.documentElement.className,
+      title: document.title,
+    })`);
+    record('UI structure present', Boolean(domSummary) && domSummary.cards > 0, JSON.stringify(domSummary));
+
+    // Every navigation entry must render a real page. A malformed SFC template
+    // still builds and still serves 200, so only driving the views catches it.
+    for (const label of ['工作台', '任务', '审批', '文件', '账号', '成员', '设置']) {
+      const clicked = await cdp.evaluate(`(() => {
+        const items = [...document.querySelectorAll('.el-menu-item')];
+        const hit = items.find((item) => (item.innerText || '').includes(${JSON.stringify(label)}));
+        if (!hit) return false;
+        hit.click();
+        return true;
+      })()`);
+      await sleep(900);
+      const state = await cdp.evaluate(`({
+        heading: (document.querySelector('.page-header h2') || document.body).innerText.slice(0, 24),
+        cards: document.querySelectorAll('.el-card').length,
+        toasts: document.querySelectorAll('.el-message--error').length,
+      })`);
+      record(
+        `view "${label}" renders`,
+        Boolean(clicked) && Number(state.cards) > 0 && Number(state.toasts) === 0,
+        JSON.stringify({ ...state, heading: String(state.heading).replace(/\s+/g, ' ') }),
+      );
+      if (label === '设置') {
+        const settingsText = await cdp.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ')`);
+        record(
+          'settings view exposes self-service token rotation and session management',
+          typeof settingsText === 'string' &&
+            settingsText.includes('重置我的访问令牌') &&
+            settingsText.includes('我的登录会话'),
+          String(settingsText).slice(0, 140),
+        );
+        await cdp.screenshot('07-settings');
+      }
+    }
+  } catch (error) {
+    record('ui flow completed', false, error instanceof Error ? error.message : String(error));
+    if (cdp) {
+      const diagnostic = await cdp
+        .evaluate('({ href: location.href, title: document.title, text: document.body.innerText.slice(0, 200), html: document.body.innerHTML.slice(0, 200) })')
+        .catch((probeError) => ({ probeError: String(probeError) }));
+      record('failure diagnostic', false, JSON.stringify(diagnostic));
+      await cdp.screenshot('99-failure').catch(() => undefined);
+    }
+  }
+
+  const failed = results.filter((item) => !item.ok);
+  console.log(`\n${results.length - failed.length}/${results.length} UI checks passed`);
+  if (screenshots.length > 0) console.log(`screenshots: ${screenshots.join(', ')}`);
+  const reportPath = join(root, 'Temp', 'ui-e2e-report.json');
+  writeFileSync(
+    reportPath,
+    JSON.stringify({ serverUrl, memberId, ranAt: new Date().toISOString(), results, screenshots }, null, 2),
+    'utf8',
+  );
+  console.log(`report: ${reportPath}`);
+
+  if (!keepOpen) stopClient();
+  process.exit(failed.length === 0 ? 0 : 1);
+}
+
+try {
+  await main();
+} catch (error) {
+  console.error(`ui-e2e crashed: ${error instanceof Error ? error.message : String(error)}`);
+  stopClient();
+  process.exit(1);
+}

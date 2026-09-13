@@ -1,0 +1,19 @@
+{
+  "name": "@chatagent/task-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Async task queue with state machine, retry, cancel and persistence.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@chatagent/contracts": "workspace:*"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@chatagent/document",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Word/Excel parsing and generation with Agent tool wrappers.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@chatagent/contracts": "workspace:*",
+    "@chatagent/hermes": "workspace:*",
+    "docx": "^9.1.1",
+    "mammoth": "^1.8.0",
+    "xlsx": "^0.18.5"
+  }
+}

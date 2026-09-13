@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+data/
+runtime/
+uploads/
+logs/
+*.log
+
+# Desktop build output
+apps/desktop/release/
+apps/desktop/dist/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temp / generated
+Temp/
+tmp/
+.turbo/
+coverage/

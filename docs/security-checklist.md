@@ -1,0 +1,76 @@
+# ChatAgent 部署安全清单 / Deployment Security Checklist
+
+适用于内网单组织部署。逐项确认后再对外提供服务。
+
+## 1. 认证与身份
+
+- [ ] `CHATAGENT_AUTH_MODE=production`（默认在 `NODE_ENV=production` 时已是 production；`start-server.cmd` 会打印开发档位警告）。
+- [ ] `CHATAGENT_ALLOW_DEV_AUTH=false`（**绝不要**在共享网络启用；开启后任意主机都能拿到 owner 身份）。
+- [ ] 为每个使用者签发独立成员令牌：`node scripts/add-member.mjs <id> <名称> <强令牌> [组织] [角色]`，或登录后由管理员在「成员」页创建（令牌只显示一次）。
+- [ ] 只给必要的人 `owner`/`admin`：owner 可管理 owner 与账号，admin 可管理普通成员与审批。
+- [ ] 反向代理必须透传真实来源地址（例如 Nginx `proxy_set_header X-Forwarded-For`）并在应用前设置 `trustProxy`；否则同机代理会让所有远程调用看起来像回环，触发开发档位回落。**当前版本未启用 trustProxy**，因此同机反向代理部署等同把 owner 暴露给匿名用户 —— 必须使用 production 档位。
+- [ ] 成员离职/设备丢失：在「成员」页重置令牌（会同时吊销该成员全部会话）。
+
+## 2. 传输与浏览器侧
+
+- [ ] 前置 HTTPS（TLS 终止在 Nginx/网关）；HTTPS 下会话 Cookie 自动带 `Secure`。
+- [ ] 已内置：`Content-Security-Policy`（`default-src 'self'`、`frame-ancestors 'none'`）、`X-Content-Type-Options`、`X-Frame-Options: DENY`、`Referrer-Policy`、`Permissions-Policy`、COOP。
+- [ ] Cookie 为 `HttpOnly + SameSite=Strict`，且**只读**：非 GET/HEAD 请求必须带 Bearer 令牌（无 CSRF 面）。
+- [ ] 不要在浏览器里用同一账号共享令牌；每个使用者一个成员身份，审计才有意义。
+
+## 3. 数据与备份
+
+- [ ] `CHATAGENT_DATA_DIR` 指向受控目录（默认 `./data`），仅服务账号可读写。
+- [ ] 备份内容：`data/*.json`（成员、会话、消息、任务、审批、outbox、上传/产物索引）、`data/artifacts/`、`data/uploads/`、`data/audit.jsonl`。
+- [ ] 审计日志 `data/audit.jsonl` 只写不删；字段已截断且不含令牌与消息正文。当前覆盖：登录/登出、按对象拒绝（`auth.denied`/`access.not_found`）、限流、成员 CRUD 与令牌重置（`member.created`/`auth.token_rotated`）、建群（含**被拒**的 `conversation.group_created`）、加人/退群（`conversation.member_added`/`conversation.left`）、发送（`message.sent`，工作台与原生路径）、上传拒绝（`upload.rejected`）。**AI 回复不逐条审计**（见已知缺口）。
+- [ ] JSON 存储为单进程写入（消息/会话为防抖合并写）。**不要**让两个服务实例指向同一数据目录。
+
+## 3.1 会话与群成员
+
+- [ ] 会话只对**参与者**开放：`GET/POST /api/conversations/:id/messages` 对非参与者一律 404；`POST /api/messages` 若解析出的会话不含调用者则 403（防止用他人 `chatId` 劫持会话）。
+- [ ] 建群语义：**只增不减**（同名同成员的键会复用同一会话，重复提交不会踢人）；键已存在且调用者不是参与者时返回 `409`，必须由现有成员邀请才能加入。
+- [ ] 退群即失去该会话的消息、任务读取/取消/恢复与产物下载权限；重新加入只能通过成员邀请。
+- [ ] 群管理与审计：改名（`PATCH /api/conversations/:id`）与移出成员（`DELETE /api/conversations/:id/members/:memberId`）都要求调用者是参与者，且分别写 `conversation.renamed` / `conversation.member_removed`；自助退出走 `/leave`。
+- [ ] 组织管理员按设计可读本组织全部会话（`canReadConversation`）；如需更严格模型，请改造该分支为显式授权。
+
+## 4. 外发与审批
+
+- [ ] `CHATAGENT_ENABLE_EXTERNAL_CHANNELS=false`（默认）。若启用第三方通道，必须为每个通道配置 `CHATAGENT_<CHANNEL>_SIGNING_SECRET` 或 `..._TOKEN`，未配置时生产档位一律 401。
+- [ ] `CHATAGENT_APPROVAL_TTL_SECONDS` 按合规要求设置（默认 1800s）；审批单次使用、绑定发起任务与载荷摘要。
+- [ ] 复核 `data/outbox.json` 中 `unknown` 记录（超时/5xx）：这类记录**不会自动重发**，需要人工对账。
+- [ ] `simulated` 表示没有真实投递通道（不计为送达）；接入真实网关后才会出现 `accepted/delivered`。
+
+## 5. 运行与依赖
+
+- [ ] Node ≥ 20.19；使用 `pnpm install --frozen-lockfile` 部署。
+- [ ] 依赖漏洞扫描：本机 registry（npmmirror）无 audit 端点，`pnpm audit` 不可用 → 需要在有漏洞库的环境执行，或使用离线扫描（**未完成项**）。
+- [ ] 上传限制：单文件 20 MiB、扩展名白名单（docx/xlsx/csv/txt/md/pdf/图片/zip）、上传与写入限流。超限必须由 `file.file.truncated` 判定并返回 413（G6-4：仅依赖框架异常时会出现「静默截断 + 200」）。
+- [ ] 限流桶：登录按身份 10/min + 按地址 60/min；写操作 240/min；上传 30/min；webhook 300/min。
+- [ ] 单主体 SSE 并发上限 8 条（原生流另有 5 条上限），超出返回 503。
+- [ ] 流式响应同样带安全头（`STREAM_SECURITY_HEADERS`，G6-6）：核对 `curl -i /api/events/stream` 有 `nosniff`/`DENY`/CSP。
+- [ ] `POST /api/auth/token/rotate` 必须拒绝「未出示凭据」的调用者，包括 `development` 档位的回环 dev 身份（G6-8）。
+- [ ] 确认工作目录内没有长期凭据：smoke 审批人令牌缓存于 `os.tmpdir()`（按服务端地址分文件、使用前先登录校验，G6-5），可用 `SMOKE_APPROVER_TOKEN` 注入；该缓存仍是 owner 凭据，用完请删除。
+- [ ] 成员 id 只允许 `[A-Za-z0-9._-]`（防止逗号等分隔符构造群键碰撞，G6-N6）。
+- [ ] 优雅停机：`SIGINT/SIGTERM` 会停止任务引擎、断开网关并 flush 合并写入与审计。
+
+## 6. 上线前自检
+
+```bash
+pnpm typecheck && pnpm test && pnpm build
+node scripts/smoke.mjs                       # 开发档位（本机回环）
+SMOKE_MEMBER=<id> SMOKE_TOKEN=<token> node scripts/smoke.mjs   # 生产档位
+curl -s localhost:8787/health                # authMode 必须是 production
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 401
+```
+
+## 7. 已知未完成风险
+
+- 依赖 CVE 未扫描（见 5）。
+- 解析资源上限已具备：上传 20 MiB + 扩展名白名单；**实测** zip 条目真实解压大小与压缩比（条目 2000 / 单条目 64 MiB / 总量 200 MiB / 压缩比 200:1，见 `packages/document/src/zip-guard.ts`；中央目录声明值不作为依据，超限 413）；解析输出限长（文本 20 万字符、段落 2000、表 50、单表 2 万行，见 `packages/document/src/limits.ts`）。
+- 仍未覆盖：嵌套压缩包（zip 内 zip）与 PDF 等非 zip 格式的解析资源上限；任务执行没有 CPU 时间片/内存配额。
+- 任务恢复只有「running → pending 重取」，没有租约与多实例互斥。
+- 真实浏览器 E2E 已由 `scripts/ui-e2e.mjs`（Electron/CDP，33/33）覆盖；但 CSP 的**拦截效果**仍是静态断言，未构造真实 XSS 载荷验证。
+- 组织管理员可读本组织全部会话（设计如此）；不接受该模型时需改为显式授权。
+- AI 回复逐条写审计（`ai.message_sent`：`assistant_reply` / `artifact_message`，**不含正文**）。
+- 撤回的边界：撤回解除消息引用与所有读取面（历史/搜索/预览/模型上下文/任务快照），但**不删除**底层上传文件（本人与管理员仍可下载）与 AI 已发出的引用回复；如需彻底删除，应另做保留策略/文件擦除。
+- 没有管理员「踢人」接口：成员移除目前只有自助退出；如需踢人，应实现显式、写审计的移除操作。
