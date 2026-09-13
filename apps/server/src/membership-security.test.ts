@@ -152,7 +152,7 @@ describe('conversation hijacking', () => {
       },
     });
     expect(hijack.statusCode, hijack.body).toBe(403);
-    expect(hijack.json()).toEqual({ error: 'forbidden' });
+    expect(hijack.json()).toEqual({ error: 'forbidden', detail: 'not_a_participant' });
 
     const read = await app.inject({
       method: 'GET',

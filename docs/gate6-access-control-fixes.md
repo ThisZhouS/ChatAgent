@@ -391,6 +391,16 @@ PASS  client E2E (packaged exe)          34/34 UI checks passed
 
 现场验证（真实服务端）：群召唤 `@ChatAgent 助理 <密文> 请整理` → 撤回后任务 goal 为 `[已撤回]`、`result` 中不含 `请整理`、**事件与任务列表中均无密文**；审批列表中无密文。
 
+## 8.22 错误响应带上机器可读原因（2026-09-13 22:45）
+
+复核轮 8 的 P4：错误体只有 `{"error":"forbidden"}`，机器可读的 `reason`（如 `not_a_participant`、`reply_target`、`recall_window_expired`）只落在审计里。现在 `ServiceError` 的响应会在有 reason 时附带 `detail`：
+
+```json
+{ "error": "forbidden", "detail": "not_a_participant" }
+```
+
+客户端可以据此分支（无需解析文案），审计记录不变。回归测试同步更新。
+
 ## 9. 生产档位实测（2026-09-13 04:35）
 
 `CHATAGENT_AUTH_MODE=production` + 独立数据目录，无凭据请求一律 401：

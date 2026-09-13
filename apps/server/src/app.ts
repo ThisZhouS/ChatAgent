@@ -372,7 +372,14 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
           ip: request.ip,
         });
       }
-      return reply.code(error.status).send({ error: error.message });
+      // `detail` carries the machine-readable reason (e.g. not_a_participant) so
+      // clients can branch on it instead of parsing the message; it is the same
+      // value that already lands in the audit log.
+      return reply.code(error.status).send(
+        error.reason === undefined
+          ? { error: error.message }
+          : { error: error.message, detail: error.reason },
+      );
     }
     const errorCode = (error as { code?: unknown }).code;
     const statusCode = (error as { statusCode?: unknown }).statusCode;
