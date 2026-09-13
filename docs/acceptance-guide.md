@@ -27,7 +27,7 @@ node scripts/acceptance.mjs                   # 一条命令：类型检查 → 
 pnpm typecheck && pnpm test && pnpm build     # 完整性/安全性基线：0 错误 + 21 文件/181 用例 + 构建通过
 node scripts/restart-server.mjs               # 服务端可启动（等待 /health）
 node scripts/smoke.mjs                        # 27 项接口验收：任务/审批/投递/撤回/回执/导出/会话/在线
-node scripts/ui-e2e.mjs                       # 33 项真实客户端验收（自动截图到 Temp/ui-shots）
+node scripts/ui-e2e.mjs                       # 34 项真实客户端验收（自动截图到 Temp/ui-shots）
 ```
 
 UI 手工看三眼：① 联系人里同事头像的**绿点**（在线）与 AI 会话里生成文件的**📎 下载**；
@@ -127,7 +127,7 @@ pnpm test           # 服务端/包 18 文件 168 用例 + 前端 3 文件 25 �
 pnpm build          # tsup + vite
 node scripts/restart-server.mjs # 按端口重启服务端并等待 /health
 node scripts/smoke.mjs          # 27 项端到端自检（本机开发档位）
-node scripts/ui-e2e.mjs         # 真实客户端 E2E：33 项检查 + 截图（Temp/ui-shots）
+node scripts/ui-e2e.mjs         # 真实客户端 E2E：34 项检查 + 截图（Temp/ui-shots）
 pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 ```
 
@@ -136,5 +136,5 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 - 真实第三方 IM 凭据未接入（产品不依赖它们，外部通道默认关闭）。
 - 依赖 CVE 未扫描（本机 registry 无 audit 端点）。
 - 任务恢复没有租约/多实例互斥；JSON 存储为单进程写入。
-- UI 证据：`pnpm build` + 组件测试（20 例）+ **真实客户端 E2E 33/33**（`scripts/ui-e2e.mjs` 经 CDP 驱动打包 exe，含截图与 WCAG 对比度实测）；CSP 的实际拦截效果未构造 XSS 载荷验证。
+- UI 证据：`pnpm build` + 组件测试（20 例）+ **真实客户端 E2E 34/34**（`scripts/ui-e2e.mjs` 经 CDP 驱动打包 exe，含截图与 WCAG 对比度实测）；CSP 的实际拦截效果未构造 XSS 载荷验证。
 - 详细清单见 `docs/security-checklist.md` 第 7 节与 `docs/tasks.md` 的未完成项。

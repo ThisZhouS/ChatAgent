@@ -71,7 +71,7 @@ POST /api/messages {chatId:"native:agent:<ai>:u_bob"}   as u_bob  -> 200 {"autho
 ## 7. 本轮同时交付的其他改进
 
 - **生成的产物直接出现在会话里**：任务产出文件后，服务端追加一条 `kind:'file'` 消息（`已生成文件：<name>` + 附件 `url=/api/files/<id>`），客户端渲染为可点击下载的 `📎` 附件（`service.ts` `appendArtifactMessage`）。
-- **真实浏览器级 E2E**：`scripts/ui-e2e.mjs` 通过 Electron 的 CDP 端口驱动**打包后的 exe**：填表登录 → 打开 AI 会话 → 发消息 → 等 AI 回复 → 生成 Word → 校验文件可下载 → 深色模式 → 1024×720 响应式 → **逐个打开 7 个导航页**，并截图存证。**33/33 通过**（含撤回流程）。
+- **真实浏览器级 E2E**：`scripts/ui-e2e.mjs` 通过 Electron 的 CDP 端口驱动**打包后的 exe**：填表登录 → 打开 AI 会话 → 发消息 → 等 AI 回复 → 生成 Word → 校验文件可下载 → 深色模式 → 1024×720 响应式 → **逐个打开 7 个导航页**，并截图存证。**34/34 通过**（含撤回流程）。
 - **视图渲染测试**：`apps/web/src/views/views.render.test.ts` 逐个渲染全部页面。起因是本轮一次真实事故：`SettingsView.vue` 的 `<style>` 块被误插到 `<template>` 中间，`vite build` **不报错**、页面照常返回 200，只有 vitest 编译该 SFC 时才暴露（`pnpm build` 因此不足以保证页面可用，必须渲染测试 + 导航遍历）。
 - **可访问性实测并修复**：E2E 用 WCAG 公式计算对比度，发现浅色主题次级文字（会话预览、时间戳，12px）仅 **2.8:1**、深色 4.3:1，均低于 AA 4.5:1。调整 `--ca-muted`（浅 `#68707c` / 深 `#98a2b8`）后实测 **4.54 / 5.10**。
 - **可靠的本地重启**：`scripts/restart-server.mjs` 按端口定位真实监听进程（Windows 上 `kill` 不可靠）、等待 `/health`、写入 `Temp/server.pid`；避免了「旧进程仍占端口导致新构建未生效」这类事故（本轮真实发生过一次）。
@@ -245,7 +245,7 @@ PASS  unit / integration tests       21 文件 / 193 用例 · 20.0s
 PASS  build (server + web)           built in 8.24s · 21.6s
 PASS  restart server                 health: {"ok":true,"storage":{"pending":false}} · 3.1s
 PASS  API smoke (27 checks)          27/27 checks passed · 1.3s
-PASS  client E2E (packaged exe)      33/33 UI checks passed · 17.3s
+PASS  client E2E (packaged exe)      34/34 UI checks passed · 17.3s
 6/6 steps passed
 ```
 
@@ -263,7 +263,7 @@ PASS  client E2E (packaged exe)      33/33 UI checks passed · 17.3s
 2. 头部文案在会话异步打开（open → select → load）之前就断言，改为等输入框可用后再断言；
 3. 联系人里的 AI 条目此前按文本匹配（群预览里出现「助理」也会命中），改用 `AI` 标签定位。
 
-修复后结果：**空数据目录 + 仅签发一个成员**的生产档位实例上，`node scripts/ui-e2e.mjs --server http://localhost:8799 --member owner_local --token ...` → **33/33 通过**（登录 → 从联系人打开与 AI 的会话 → 问候 → 生成 Word → 会话内下载 → 撤回 → 深色模式 → 1024×720 → 七个导航页），开发实例同样 33/33。
+修复后结果：**空数据目录 + 仅签发一个成员**的生产档位实例上，`node scripts/ui-e2e.mjs --server http://localhost:8799 --member owner_local --token ...` → **34/34 通过**（登录 → 从联系人打开与 AI 的会话 → 问候 → 生成 Word → 会话内下载 → 撤回 → 深色模式 → 1024×720 → 七个导航页），开发实例同样 34/34。
 
 ## 8.14 复核轮 5：zip 守卫真测量 + 撤回脱敏补全（2026-09-13 05:35）
 
@@ -319,7 +319,7 @@ own bubbles leak?  false
 | 副作用 | 广播 `message` 事件 → 目标会话实时可见；审计 `message.forwarded` |
 | 前端 | 每条消息气泡「转发」→ 选择同事/群聊 → 顶部「已转发」提示 |
 
-现场实测：转发到群 200、群成员看到副本并能下载附件（200）、转发给 AI 400、越权转发 404、撤回后转发 400。
+现场实测：转发到群 200、群成员看到副本并能下载附件（200）、转发给 AI 400、越权转发 404、撤回后转发 400。客户端 E2E 也加了一步真实点击（点「转发」→ 选目标 → 确认 → 顶部出现「已转发」），客户端检查从 33 项增至 **34 项**。
 
 ## 9. 生产档位实测（2026-09-13 04:35）
 
@@ -328,7 +328,7 @@ own bubbles leak?  false
 | 场景 | 命令 | 结果 |
 | --- | --- | --- |
 | 服务端接口 | `SMOKE_MEMBER=owner_local SMOKE_TOKEN=owner-prod-token CHATAGENT_URL=http://localhost:8797 node scripts/smoke.mjs` | **27/27**（含审批、外发 `delivered`、产物下载、搜索、建群） |
-| 打包客户端 | `node scripts/ui-e2e.mjs --server http://localhost:8796` | **33/33**（成员令牌登录 → AI 回复 → 生成 Word → 下载 → 深色 → 响应式 → 7 个导航页） |
+| 打包客户端 | `node scripts/ui-e2e.mjs --server http://localhost:8796` | **34/34**（成员令牌登录 → AI 回复 → 生成 Word → 下载 → 深色 → 响应式 → 7 个导航页） |
 | 无凭据访问 | `curl -o /dev/null -w '%{http_code}' localhost:8796/api/accounts` | 401 |
 
 另做**全新实例**验证（空数据目录 + `production` 档位 + 仅签发一个成员）：
@@ -351,7 +351,7 @@ pnpm test                          # 21 文件 / 193 用例全绿（服务端与
 pnpm build                         # 服务端 tsup + Web vite + Electron 资源
 node scripts/restart-server.mjs    # 重启并等待 /health
 node scripts/smoke.mjs             # 27/27
-node scripts/ui-e2e.mjs            # 33/33（真实 exe，截图存 Temp/ui-shots）
+node scripts/ui-e2e.mjs            # 34/34（真实 exe，截图存 Temp/ui-shots）
 ```
 
 packaged exe：`apps/desktop/release/ChatAgent Setup 0.1.0.exe`（约 78 MB，NSIS，`--server=` / `CHATAGENT_SERVER_URL` / `config.default.json` 三种方式指定服务端地址）。

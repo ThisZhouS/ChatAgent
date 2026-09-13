@@ -69,7 +69,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 解析资源上限已具备：上传 20 MiB + 扩展名白名单；**实测** zip 条目真实解压大小与压缩比（条目 2000 / 单条目 64 MiB / 总量 200 MiB / 压缩比 200:1，见 `packages/document/src/zip-guard.ts`；中央目录声明值不作为依据，超限 413）；解析输出限长（文本 20 万字符、段落 2000、表 50、单表 2 万行，见 `packages/document/src/limits.ts`）。
 - 仍未覆盖：嵌套压缩包（zip 内 zip）与 PDF 等非 zip 格式的解析资源上限；任务执行没有 CPU 时间片/内存配额。
 - 任务恢复只有「running → pending 重取」，没有租约与多实例互斥。
-- 真实浏览器 E2E 已由 `scripts/ui-e2e.mjs`（Electron/CDP，33/33）覆盖；但 CSP 的**拦截效果**仍是静态断言，未构造真实 XSS 载荷验证。
+- 真实浏览器 E2E 已由 `scripts/ui-e2e.mjs`（Electron/CDP，34/34）覆盖；但 CSP 的**拦截效果**仍是静态断言，未构造真实 XSS 载荷验证。
 - 组织管理员可读本组织全部会话（设计如此）；不接受该模型时需改为显式授权。
 - AI 回复逐条写审计（`ai.message_sent`：`assistant_reply` / `artifact_message`，**不含正文**）。
 - 撤回的边界：撤回解除消息引用与所有读取面（历史/搜索/预览/模型上下文/任务快照），但**不删除**底层上传文件（本人与管理员仍可下载）与 AI 已发出的引用回复；如需彻底删除，应另做保留策略/文件擦除。

@@ -38,7 +38,7 @@ pnpm dev          # 开发模式：Vite(5173) + API(8787)
 ## 验证（2026-09-13 终态）
 
 ```bash
-node scripts/acceptance.mjs    # 一条命令 6/6 步：typecheck → 186 用例 → build → 重启 → 冒烟 27/27 → 客户端 E2E 33/33
+node scripts/acceptance.mjs    # 一条命令 6/6 步：typecheck → 186 用例 → build → 重启 → 冒烟 27/27 → 客户端 E2E 34/34
 node scripts/restart-server.mjs  # 只重启服务端并等待 /health
 ```
 

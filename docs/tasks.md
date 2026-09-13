@@ -32,7 +32,7 @@
 - [x] P4-1 `@chatagent/server`：Fastify 装配、REST、SSE、文件上传、静态托管。
 - [x] P4-2 `@chatagent/web`：Vue 3 + Element Plus 工作台（会话/任务/文件/账号/设置）。
 - [x] P4-3 前后端联调：注入消息 → 任务执行 → SSE → 文件产物（curl 验证）。
-- [x] P4-4 浏览器/Electron 端到端验证：`scripts/ui-e2e.mjs` 经 CDP 驱动打包 exe（33/33，见 G6-12）。
+- [x] P4-4 浏览器/Electron 端到端验证：`scripts/ui-e2e.mjs` 经 CDP 驱动打包 exe（34/34，见 G6-12）。
 
 ## Phase 5 — 收尾
 
@@ -134,7 +134,7 @@
 - [x] G6-9 群内生成的产物对**会话参与者**可下载（不再死链）。
 - [x] G6-10 AI 产物以文件消息进入会话，前端可直接下载。
 - [x] G6-11 可访问性：次级文字对比度 2.8 → 4.54（浅）/ 5.10（深），达到 WCAG AA。
-- [x] G6-12 真实客户端 E2E：`scripts/ui-e2e.mjs`（登录→AI 回复→生成 Word→下载→深色→1024×720→7 个导航页、消息撤回与已读回执）33/33。
+- [x] G6-12 真实客户端 E2E：`scripts/ui-e2e.mjs`（登录→AI 回复→生成 Word→下载→深色→1024×720→7 个导航页、消息撤回与已读回执）34/34。
 - [x] G6-13 运维：`scripts/restart-server.mjs`（按端口杀进程 + 等 `/health` + 记录真实 pid）。
 - [x] G6-14 回归测试：`apps/server/src/membership-security.test.ts`（20 例）+ Web 组件测试（18 例），总计 21 文件 / 193 用例。
 - [x] G6-16 消息撤回（仅发送者、窗口内、幂等；正文从历史/搜索/预览/模型上下文消失，广播 `message_recalled`，前端气泡占位 + 前端/服务端测试）。

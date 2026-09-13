@@ -131,10 +131,10 @@
 - smoke 审批人令牌移出仓库（`os.tmpdir()`，支持 `SMOKE_APPROVER_TOKEN`）。
 - SSE 补安全头与 CSP；成员增删/建群/发消息写审计；自助令牌重置拒绝 dev 回退身份；群内生成的产物对参与者可下载。
 - **AI 产物进入会话**：生成文件后追加 `kind:'file'` 消息，前端渲染为可下载的 `📎` 附件。
-- **真实客户端 E2E**：`scripts/ui-e2e.mjs` 经 CDP 驱动**打包后的 exe**（登录 → AI 回复 → 生成 Word → 聊天内下载 → 深色模式 → 1024×720 → 7 个导航页），**33/33 通过**，截图存 `Temp/ui-shots/`。
+- **真实客户端 E2E**：`scripts/ui-e2e.mjs` 经 CDP 驱动**打包后的 exe**（登录 → AI 回复 → 生成 Word → 聊天内下载 → 深色模式 → 1024×720 → 7 个导航页），**34/34 通过**，截图存 `Temp/ui-shots/`。
 - **可访问性修复**：E2E 计算 WCAG 对比度，发现浅色次级文字仅 2.8:1、深色 4.3:1 → 调整 `--ca-muted` 后为 **4.54 / 5.10**。
 - 运维：`scripts/restart-server.mjs`（按端口杀进程 + 等 `/health`），修掉本轮真实遇到的「旧进程占端口导致新构建未生效」。
-- 验证：`pnpm typecheck` 通过；`pnpm test` **21 文件 / 193 用例**通过（含新增 `membership-security.test.ts` 38 例、Web 测试 25 例与 document 包 13 例）；`pnpm build` 通过；`node scripts/smoke.mjs` 27/27；`node scripts/ui-e2e.mjs` 33/33。
+- 验证：`pnpm typecheck` 通过；`pnpm test` **21 文件 / 193 用例**通过（含新增 `membership-security.test.ts` 38 例、Web 测试 25 例与 document 包 13 例）；`pnpm build` 通过；`node scripts/smoke.mjs` 27/27；`node scripts/ui-e2e.mjs` 34/34。
 
 ## 06:00 验收结论（2026-09-13 05:26 终态）
 
@@ -144,7 +144,7 @@
 | --- | --- | --- |
 | 完整性 | 聊天/群聊/任务/审批/文件/账号/成员/设置 8 个页面全部可用；消息→任务→工具→产物→回复闭环；审批与投递回执闭环；消息撤回、已读回执、群成员面板、群改名/移出、AI 回复审计、会话管理、在线状态、会话导出 Word 均已落地；冒烟 27/27 | `apps/web/src/views/*`、`scripts/smoke.mjs`、`docs/gate6-access-control-fixes.md` |
 | 实用性 | Word/Excel 生成与解析（zip 炸弹防护 + 输出限长）、文件转发、群内 @AI、全文搜索、消息分页、产物直接在会话中下载、撤回/回执/会话导出/丢失设备撤销 | 冒烟 27/27；UI E2E 的「生成 Word → 会话内下载 → 撤回」 |
-| 交互性 | 登录/会话切换/发送/群邀请退出/令牌自助重置/主题切换/响应式；真实客户端 E2E **33/33** | `scripts/ui-e2e.mjs`、`Temp/ui-shots/*.png` |
+| 交互性 | 登录/会话切换/发送/群邀请退出/令牌自助重置/主题切换/响应式；真实客户端 E2E **34/34** | `scripts/ui-e2e.mjs`、`Temp/ui-shots/*.png` |
 | 美观性 | 浅/深两套主题实测对比度 **4.54 / 5.10**（WCAG AA），无横向溢出、无文字裁切、1024×720 布局稳定 | UI E2E 的对比度与布局检查 |
 | 安全性 | **五轮**独立对抗性复核逐条复现并修复：会话劫持（P0）、越权任务、上传截断、令牌铸造、SSE 头、审计盲区、任务快照与任务事件撤回脱敏、zip 炸弹（改为**实测**解压，挡住撒谎的中央目录）、解析失败 400、先解析后落盘；`production` 档位无凭据 401 | `docs/gate6-access-control-fixes.md`、`apps/server/src/membership-security.test.ts` |
 
@@ -157,10 +157,10 @@ pnpm build                          # tsup + vite 通过
 node scripts/restart-server.mjs     # server 8787 healthy（storage.pending=false）
 pnpm build:desktop                  # 重新打包 exe（2026-09-13 04:38）
 node scripts/smoke.mjs              # 27/27
-node scripts/ui-e2e.mjs             # 33/33（真实打包 exe，含截图）
-node scripts/acceptance.mjs         # 一条命令 6/6 步（类型检查→186 用例→构建→重启→冒烟 27/27→客户端 33/33）
+node scripts/ui-e2e.mjs             # 34/34（真实打包 exe，含截图）
+node scripts/acceptance.mjs         # 一条命令 6/6 步（类型检查→186 用例→构建→重启→冒烟 27/27→客户端 34/34）
 SMOKE_MEMBER=owner_local SMOKE_TOKEN=... CHATAGENT_URL=http://localhost:8797 node scripts/smoke.mjs   # production 档位 27/27
-node scripts/ui-e2e.mjs --server http://localhost:8796                                              # production 档位 33/33
+node scripts/ui-e2e.mjs --server http://localhost:8796                                              # production 档位 34/34
 ```
 
 **全新实例开箱验证**：空数据目录 + `production` 档位，仅签发一个成员 → 冒烟 **27/27**（默认 AI 账号自动创建，会话/任务/Word 产物/审批/原生投递/搜索/建群全部通过）。

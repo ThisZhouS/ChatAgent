@@ -141,6 +141,15 @@ function normaliseText(value) {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
+/** Gives the page a couple of animation frames to apply a Vue update. */
+async function flushPromisesInPage(cdp) {
+  await cdp
+    .evaluate(
+      `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`,
+    )
+    .catch(() => undefined);
+}
+
 async function waitFor(cdp, expression, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   let last;
@@ -614,6 +623,44 @@ async function main() {
         await sleep(500);
       }
     }
+    // Forwarding: the dialog opens for any message, and the copy lands in the
+    // chosen conversation. On a workspace without a second conversation the
+    // dialog legitimately shows an empty state, which is reported as such.
+    const forwardOpened = await cdp.evaluate(`(() => {
+      const buttons = [...document.querySelectorAll('[data-testid="forward"]')];
+      const last = buttons[buttons.length - 1];
+      if (!last) return false;
+      last.click();
+      return true;
+    })()`);
+    const forwardTargets = forwardOpened
+      ? await cdp.evaluate(`[...document.querySelectorAll('.el-select-dropdown__item')].length`)
+      : 0;
+    if (forwardOpened && Number(forwardTargets) > 0) {
+      await cdp.evaluate(`(() => {
+        const option = document.querySelector('.el-select-dropdown__item');
+        if (option) option.click();
+        return true;
+      })()`);
+      await flushPromisesInPage(cdp);
+      const forwarded = await cdp.evaluate(`(() => {
+        const buttons = [...document.querySelectorAll('.el-dialog__footer button')];
+        const confirm = buttons.find((node) => (node.innerText || '').trim() === '转发');
+        if (!confirm) return false;
+        confirm.click();
+        return true;
+      })()`);
+      const noticeText = await waitFor(
+        cdp,
+        `(() => { const node = document.querySelector('[data-testid="notice"]'); return node ? node.innerText : ''; })()`,
+        10000,
+        'forward confirmation',
+      ).catch(() => '');
+      record('message forwarding from the client works', Boolean(forwarded) && normaliseText(String(noticeText)).includes('已转发'), normaliseText(String(noticeText)).slice(0, 40));
+    } else {
+      record('message forwarding dialog opens', Boolean(forwardOpened), `${forwardTargets} target(s) available`);
+    }
+
     // The export control is asserted by presence only: activating it opens the
     // generated file through the OS browser, which is a side effect a test run
     // must not trigger.
