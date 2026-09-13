@@ -157,6 +157,7 @@
 - [x] G6-32 复核轮 7 修复：SSE 回放脱敏、群召唤 goal 双向匹配、审批载荷脱敏、旧接口 replyTo 校验、列表不写 break-glass、产物 break-glass 审计、授权后校验引用、引用条随撤回清空；依赖扫描从 BLOCKED 变为可执行。
 - [x] G6-33 复核轮 8：撤回脱敏改为片段替换（含 AI 回声/包装、群召唤 goal 派生），覆盖任务记录/事件/审批载荷/实时 SSE；产物 break-glass 误报修复。
 - [x] G6-34 错误响应带 `detail`（机器可读 reason），客户端可分支判断。
+- [x] G6-35 桌面外壳加固：`will-navigate` 拦截外链、`sandbox/webviewTag/allowRunningInsecureContent` 显式设置、权限请求默认拒绝；重新打包 exe 并跑通客户端 E2E 34/34。
 - [x] G6-15 二次复核（N1–N6）：建群**只增不减**、退群不可自我复活（409）、拒绝重建写审计、工作台发送写审计、上传拒绝写审计、成员 id 字符集约束。
 
 ## 后续方向

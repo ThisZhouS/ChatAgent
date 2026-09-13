@@ -275,6 +275,7 @@ AI 生成的文件会自动以文件消息出现在会话里（`📎 文件名`�
 - 持久化使用 JSON 文件（账号/会话/消息/任务/文件元数据），生产可平滑替换为数据库；**服务运行期间不要手工编辑 `data/*.json`**（会被整体重写），请停机修改。
 - 任务恢复只有「running → pending 重取」，没有租约与多实例互斥。
 - ~~`production` 模式下前端未接入登录态~~ → **已接入并验证**：客户端登录页用成员令牌换取会话令牌（HttpOnly Cookie + Bearer），`production` 档位下 `scripts/smoke.mjs` 27/27、`scripts/ui-e2e.mjs` 34/34（实测 `CHATAGENT_AUTH_MODE=production`，无凭据 `GET /api/accounts` 返回 401）。
+- 桌面客户端已按 Electron 安全清单加固（导航拦截、渲染进程沙箱、权限默认拒绝）。
 - 依赖漏洞扫描：`node scripts/audit-deps.mjs`（走公共 npm registry，默认 high/critical 非零退出）；桌面端 dev 工具链（electron 33 / electron-builder 25）的告警为已接受风险（镜像不稳定，无法在线升级）。文档解析具备 zip 炸弹防护（**实测**每个条目的真实解压字节数与压缩比，超限 413；不信任中央目录声明）与输出限长；嵌套压缩包与 PDF 解析上限未做。
 - 组织管理员可读本组织全部会话（设计如此，见 `docs/gate6-access-control-fixes.md` §9）。
 

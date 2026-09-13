@@ -129,6 +129,10 @@ node scripts/ui-e2e.mjs            # 30/30（真实 exe + 截图）
 - 撤回脱敏从「整串相等」改为「片段出现即替换」，片段含正文、去提及变体与派生 goal；覆盖任务记录/事件/审批载荷/实时 SSE（流内 ≤3 秒刷新片段集）；事件片段集改从原始任务派生；产物 break-glass 误报修复。
 - 验收链增至 7 步（依赖审计 critical 门禁）。
 
+### 桌面外壳加固（22:35）
+
+- `will-navigate` 拦截非配置来源导航（外链交系统浏览器）、`sandbox: true`/`webviewTag: false`/`allowRunningInsecureContent: false`、权限请求默认拒绝；重新打包 exe（22:31）并跑通客户端 E2E 34/34。
+
 ## 未完成 / BLOCKED
 
 - 依赖 CVE 扫描：BLOCKED（npmmirror 无 audit 端点）。

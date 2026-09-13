@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, session, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -22,6 +22,17 @@ function resolveServerUrl() {
   return DEFAULT_SERVER_URL;
 }
 
+/** True when `target` is the configured app origin (or a file inside the app). */
+function isAppOrigin(target, serverUrl) {
+  try {
+    const app_ = new URL(serverUrl);
+    const other = new URL(target);
+    return other.origin === app_.origin;
+  } catch {
+    return false;
+  }
+}
+
 function createWindow(serverUrl) {
   const win = new BrowserWindow({
     width: 1280,
@@ -34,6 +45,10 @@ function createWindow(serverUrl) {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      // Renderer stays sandboxed; the preload only exposes read-only metadata.
+      sandbox: true,
+      webviewTag: false,
+      allowRunningInsecureContent: false,
     },
   });
 
@@ -42,6 +57,17 @@ function createWindow(serverUrl) {
       void shell.openExternal(url);
     }
     return { action: 'deny' };
+  });
+
+  // Navigation away from the configured server is opened in the real browser
+  // instead of inside the trusted shell window (a link in a message must not be
+  // able to repaint the client UI).
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isAppOrigin(url, serverUrl)) return;
+    event.preventDefault();
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      void shell.openExternal(url);
+    }
   });
 
   win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
@@ -56,6 +82,14 @@ function createWindow(serverUrl) {
 
 app.whenReady().then(() => {
   const serverUrl = resolveServerUrl();
+
+  // The client needs no device permission: deny every request by default so a
+  // compromised page cannot reach the camera, microphone or location APIs.
+  const allowedPermissions = new Set(['clipboard-sanitized-write']);
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
+    callback(allowedPermissions.has(permission));
+  });
+
   createWindow(serverUrl);
 
   app.on('activate', () => {

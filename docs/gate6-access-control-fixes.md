@@ -401,6 +401,18 @@ PASS  client E2E (packaged exe)          34/34 UI checks passed
 
 客户端可以据此分支（无需解析文案），审计记录不变。回归测试同步更新。
 
+## 8.23 桌面外壳安全加固（2026-09-13 22:35）
+
+对照 Electron 官方安全清单复核 `apps/desktop/main.cjs`，补齐三项：
+
+| 项 | 之前 | 现在 |
+| --- | --- | --- |
+| 外部导航 | 只拦截 `window.open`；页面内链接可把**受信任的客户端窗口**导航到任意站点 | 新增 `will-navigate`：非配置来源一律 `preventDefault()` 并用系统浏览器打开，客户端 UI 不会被消息里的链接改写 |
+| 渲染进程沙箱 | 仅 `contextIsolation` + 关闭 Node 集成 | 显式 `sandbox: true`、`webviewTag: false`、`allowRunningInsecureContent: false` |
+| 设备权限 | 未处理（默认由 Electron 询问） | `setPermissionRequestHandler` **默认拒绝**摄像头/麦克风/定位等，仅允许 `clipboard-sanitized-write` |
+
+同时确认桌面工具链可用：**重新打包 exe 成功**（2026-09-13 22:31，electron 33.2.0 + electron-builder 25.1.8），并用新 exe 跑完整客户端 E2E → **34/34 通过**。
+
 ## 9. 生产档位实测（2026-09-13 04:35）
 
 `CHATAGENT_AUTH_MODE=production` + 独立数据目录，无凭据请求一律 401：
