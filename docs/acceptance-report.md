@@ -169,12 +169,12 @@ node scripts/ui-e2e.mjs --server http://localhost:8796                          
 
 ## 23:00 验收补充（2026-09-13 晚间迭代，终态 22:35）
 
-**终态一句话**：`node scripts/acceptance.mjs` → **7/7 步**（typecheck 0 错误 · 21 文件 / 199 用例 · build · `/health` · 冒烟 27/27 · 依赖审计 critical 0 · 客户端 E2E 34/34）；全部提交推送到 `git@github.com:ThisZhouS/ChatAgent.git`（`main`，HEAD `0c4df5f`），仓库 160 个受控文件、不含 `data/`·`Temp/`·`node_modules/`·`dist/`·`release/`。
+**终态一句话**：`node scripts/acceptance.mjs` → **7/7 步**（typecheck 0 错误 · 21 文件 / 199 用例 · build · `/health` · 冒烟 27/27 · 依赖审计 critical 0 · 客户端 E2E 34/34）；全部提交推送到 `git@github.com:ThisZhouS/ChatAgent.git`（`main`，HEAD `84f5165`），仓库 160 个受控文件、不含 `data/`·`Temp/`·`node_modules/`·`dist/`·`release/`。
 
 晚间新增/修复汇总：会话附件共享（+越权引用防护）、消息转发、引用回复、依赖漏洞扫描（解除 BLOCKED，critical 2→0）、错误响应带机器可读 `detail`、桌面外壳加固（导航拦截/沙箱/权限默认拒绝，并重新打包 exe）、以及复核轮 6/7/8 提出的全部问题（转发件可读、任务与事件与审批与实时流的撤回脱敏「片段替换」、break-glass 审计作用域、旧接口 replyTo 校验等）。
 
 
-在 06:00 验收态基础上，晚间继续迭代了四件事（均已提交推送，见 `git log`）：
+在 06:00 验收态基础上，晚间继续迭代（均已提交推送，见 `git log`）：
 
 | 变更 | 类型 | 关键点 |
 | --- | --- | --- |
