@@ -213,6 +213,7 @@ async function exportConversation() {
 }
 
 const memberPanel = ref(false);
+const quoted = ref<ChatMessage | null>(null);
 const forwardDialog = ref(false);
 const forwardTarget = ref('');
 const forwardSource = ref<ChatMessage | null>(null);
@@ -226,6 +227,26 @@ const forwardTargets = computed(() =>
       (conversation.targetKind === 'member' || conversation.targetKind === 'group'),
   ),
 );
+
+function startQuote(message: ChatMessage) {
+  quoted.value = message;
+  notice.value = '';
+}
+
+/** Short preview of a quoted message; recalled bodies stay hidden. */
+function quotePreviewOf(message: ChatMessage): string {
+  if (message.recalledAt) return '已撤回的消息';
+  const text = message.text.trim();
+  if (text !== '') return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+  if (message.attachments.length > 0) return `附件：${message.attachments.map((file) => file.name).join('、')}`;
+  return '（无正文）';
+}
+
+/** Resolve the message a bubble quotes, if it is inside the loaded page. */
+function quotedMessageOf(message: ChatMessage): ChatMessage | undefined {
+  if (!message.replyTo) return undefined;
+  return messages.value.find((item) => item.id === message.replyTo);
+}
 
 function openForwardDialog(message: ChatMessage) {
   forwardSource.value = message;
@@ -545,7 +566,9 @@ async function send() {
       text: text.value,
       attachments: attachments.value,
       mentions: mentions.value,
+      replyTo: quoted.value?.id,
     });
+    quoted.value = null;
     text.value = '';
     attachments.value = [];
     mentions.value = [];
@@ -1041,6 +1064,19 @@ onUnmounted(() => {
                       {{ message.sender.name }} ·
                       {{ new Date(message.createdAt).toLocaleTimeString() }}
                     </div>
+                    <div
+                      v-if="message.replyTo"
+                      class="bubble-quote"
+                      data-testid="bubble-quote"
+                    >
+                      <template v-if="quotedMessageOf(message)">
+                        <span class="quote-label">{{ quotedMessageOf(message)?.sender.name }}</span>
+                        <span class="quote-text">{{ quotePreviewOf(quotedMessageOf(message) as ChatMessage) }}</span>
+                      </template>
+                      <template v-else>
+                        <span class="quote-text">引用了一条更早的消息</span>
+                      </template>
+                    </div>
                     <div v-if="message.recalledAt" class="bubble-recalled">
                       {{ isMine(message) ? '你撤回了一条消息' : '对方撤回了一条消息' }}
                     </div>
@@ -1055,6 +1091,15 @@ onUnmounted(() => {
                         rel="noopener"
                       >📎 {{ file.name }}</a>
                     </div>
+                    <button
+                      v-if="!message.recalledAt"
+                      class="bubble-recall"
+                      data-testid="quote"
+                      type="button"
+                      @click="startQuote(message)"
+                    >
+                      引用
+                    </button>
                     <button
                       v-if="!message.recalledAt && message.conversationId"
                       class="bubble-recall"
@@ -1142,6 +1187,11 @@ onUnmounted(() => {
                 size="small"
                 @close="attachments.splice(index, 1)"
               >📎 {{ file.name }}</el-tag>
+            </div>
+            <div v-if="quoted" class="quote-strip" data-testid="quote-strip">
+              <span class="quote-label">引用 {{ quoted.sender.name }}</span>
+              <span class="quote-text">{{ quotePreviewOf(quoted) }}</span>
+              <el-button size="small" text @click="quoted = null">取消</el-button>
             </div>
             <div class="composer-row">
               <el-upload :auto-upload="false" :show-file-list="false" :on-change="onFileChange">
@@ -1272,6 +1322,41 @@ onUnmounted(() => {
 }
 
 .member-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border-left: 3px solid #409eff;
+  background: var(--ca-panel-2);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.bubble-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  border-left: 3px solid var(--ca-border);
+  background: var(--ca-panel-2);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--ca-muted);
+}
+
+.quote-label {
+  font-weight: 600;
+}
+
+.quote-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -4,7 +4,7 @@
 
 核心能力：以 Hermes 风格的 agent 运行时为基础，**自带完整聊天客户端**（成员登录、联系人、会话/群聊、消息、撤回、已读回执、在线状态、附件、审批卡、会话导出），处理 Word、Excel、文件转发等企业工作。
 
-**当前状态（2026-09-13 06:00 验收态）**：8 个页面全部可用，`node scripts/acceptance.mjs` 一条命令 6/6 步通过（类型检查 0 错误 · 21 文件 / 193 用例 · 构建 · 服务端 `/health` · 接口冒烟 27/27 · 真实客户端 E2E 34/34）；安全面经**五轮独立对抗性复核**逐条复现并修复（含 1 个 P0 会话劫持）。详见 [`docs/acceptance-report.md`](docs/acceptance-report.md)。
+**当前状态（2026-09-13 06:00 验收态）**：8 个页面全部可用，`node scripts/acceptance.mjs` 一条命令 6/6 步通过（类型检查 0 错误 · 21 文件 / 198 用例 · 构建 · 服务端 `/health` · 接口冒烟 27/27 · 真实客户端 E2E 34/34）；安全面经**五轮独立对抗性复核**逐条复现并修复（含 1 个 P0 会话劫持）。详见 [`docs/acceptance-report.md`](docs/acceptance-report.md)。
 
 > **独立产品**：ChatAgent 不依赖 QQ / 企业微信 / 钉钉 / 飞书等第三方社交或办公软件即可完整运行；这些平台只作为默认关闭的可选适配器（见 [`docs/adr-0001-standalone-native-chat.md`](docs/adr-0001-standalone-native-chat.md)）。
 
@@ -100,7 +100,7 @@ node scripts/acceptance.mjs        # 6/6 步骤，任一步失败即非零退出
 
 ```bash
 pnpm typecheck                     # 全仓库类型检查（tsc + vue-tsc）
-pnpm test                          # 单元/集成测试：21 文件 / 193 用例
+pnpm test                          # 单元/集成测试：21 文件 / 198 用例
 pnpm build                         # 服务端打包 + 前端构建
 node scripts/restart-server.mjs    # 按端口重启并等待 /health（Windows 上可靠）
 node scripts/smoke.mjs             # 27 步端到端冒烟（真实 HTTP）
@@ -263,7 +263,7 @@ curl -s -X POST localhost:8787/api/auth/token/rotate -H "authorization: Bearer $
 
 AI 生成的文件会自动以文件消息出现在会话里（`📎 文件名`），同会话成员均可下载。
 
-会话头部「导出记录」可把会话导出为 Word 记录（撤回内容只留 `[已撤回]` 占位）；任意消息可「转发」到同事或群聊（附件随消息共享给目标会话成员）。
+会话头部「导出记录」可把会话导出为 Word 记录（撤回内容只留 `[已撤回]` 占位）；任意消息可「转发」到同事或群聊（附件随消息共享给目标会话成员），也可「引用」回复（只记消息 id，撤回后引用条显示「已撤回」，不会留下正文）。
 
 发送者可在 120 秒内撤回自己的消息：`POST /api/messages/:id/recall`，撤回后正文与附件从会话历史、搜索、会话预览与模型上下文中同时消失（审计仍留痕且不含正文）。
 

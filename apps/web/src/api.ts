@@ -211,7 +211,12 @@ export const api = {
     },
     send: (
       id: string,
-      payload: { text: string; attachments?: ChatMessage['attachments']; mentions?: string[] },
+      payload: {
+        text: string;
+        attachments?: ChatMessage['attachments'];
+        mentions?: string[];
+        replyTo?: string;
+      },
     ) =>
       request<{ message: ChatMessage; taskId?: string; taskIds?: string[] }>(
         `/conversations/${id}/messages`,

@@ -564,6 +564,41 @@ describe('conversation attachments are readable by the conversation', () => {
     ).toBe(false);
   });
 
+  it('records an admin break-glass read of a file that was never shared with them', async () => {
+    const { app, dataDir, adminToken } = await bootWithAdmin();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+
+    // Alice uploads a file and never posts it anywhere.
+    const file = await uploadText(app, aliceToken, 'never-shared.txt', 'private');
+    const denied = await app.inject({
+      method: 'GET',
+      url: `/api/files/${file.id}`,
+      headers: auth(await login(app, 'u_mallory', 'mallory-token')),
+    });
+    expect(denied.statusCode).toBe(404);
+
+    // The organization admin keeps break-glass access, but it is auditable.
+    const admin = await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(adminToken) });
+    expect(admin.statusCode, admin.body).toBe(200);
+
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const deadline = Date.now() + 3000;
+    let entries: Array<{ action?: string; actorId?: string; target?: string }> = [];
+    while (Date.now() < deadline) {
+      const raw = await readFile(join(dataDir, 'audit.jsonl'), 'utf8').catch(() => '');
+      entries = raw
+        .split(String.fromCharCode(10))
+        .filter((line) => line.trim() !== '')
+        .map((line) => JSON.parse(line) as { action?: string; actorId?: string; target?: string });
+      if (entries.some((entry) => entry.action === 'file.admin_access')) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const record = entries.find((entry) => entry.action === 'file.admin_access');
+    expect(record, 'the admin read is recorded').toBeTruthy();
+    expect(record?.target).toBe(file.id);
+  });
+
   it('refuses to let a member attach somebody else file', async () => {
     const { app } = await boot();
     const aliceToken = await login(app, 'u_alice', 'alice-token');
@@ -673,14 +708,12 @@ describe('conversation attachments are readable by the conversation', () => {
   });
 });
 
-describe('message forwarding', () => {
-  it('copies a message with its attachment into another conversation', async () => {
-    const { app, adminToken } = await bootWithAdmin();
+describe('quoted replies', () => {
+  it('stores a quote that points at a message of the same conversation', async () => {
+    const { app } = await boot();
     const aliceToken = await login(app, 'u_alice', 'alice-token');
     const bobToken = await login(app, 'u_bob', 'bob-token');
-    const accountId = await createAgent(app, auth(adminToken));
 
-    const file = await uploadText(app, aliceToken, 'forwarded.txt', 'forward me');
     const dm = await app.inject({
       method: 'POST',
       url: '/api/conversations',
@@ -688,9 +721,100 @@ describe('message forwarding', () => {
       payload: { targetId: 'u_bob', targetKind: 'member' },
     });
     const dmId = (dm.json() as { id: string }).id;
-    const sent = await app.inject({
+    const first = await app.inject({
       method: 'POST',
       url: `/api/conversations/${dmId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '被引用的消息' },
+    });
+    const quotedId = (first.json() as { message: { id: string } }).message.id;
+
+    const reply = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${dmId}/messages`,
+      headers: auth(bobToken),
+      payload: { text: '这是回复', replyTo: quotedId },
+    });
+    expect(reply.statusCode, reply.body).toBe(200);
+    expect((reply.json() as { message: { replyTo?: string } }).message.replyTo).toBe(quotedId);
+
+    const history = await app.inject({
+      method: 'GET',
+      url: `/api/conversations/${dmId}/messages`,
+      headers: auth(aliceToken),
+    });
+    const stored = (history.json() as Array<{ id: string; replyTo?: string }>).find(
+      (item) => item.id === (reply.json() as { message: { id: string } }).message.id,
+    );
+    expect(stored?.replyTo).toBe(quotedId);
+  });
+
+  it('refuses to quote a message from another conversation', async () => {
+    const { app } = await boot();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+
+    const withBob = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(aliceToken),
+      payload: { targetId: 'u_bob', targetKind: 'member' },
+    });
+    const bobConversation = (withBob.json() as { id: string }).id;
+    const elsewhere = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${bobConversation}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '另一个会话的消息' },
+    });
+    const foreignId = (elsewhere.json() as { message: { id: string } }).message.id;
+
+    const withMallory = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(aliceToken),
+      payload: { targetId: 'u_mallory', targetKind: 'member' },
+    });
+    const malloryConversation = (withMallory.json() as { id: string }).id;
+
+    const crossQuote = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${malloryConversation}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '越权引用', replyTo: foreignId },
+    });
+    expect(crossQuote.statusCode, crossQuote.body).toBe(400);
+
+    const unknownQuote = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${malloryConversation}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '不存在的引用', replyTo: 'no-such-message' },
+    });
+    expect(unknownQuote.statusCode).toBe(400);
+  });
+});
+
+describe('message forwarding', () => {
+  it('copies a message with its attachment into another conversation', async () => {
+    const { app, adminToken } = await bootWithAdmin();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const bobToken = await login(app, 'u_bob', 'bob-token');
+    const malloryToken = await login(app, 'u_mallory', 'mallory-token');
+    const accountId = await createAgent(app, auth(adminToken));
+
+    const file = await uploadText(app, aliceToken, 'forwarded.txt', 'forward me');
+    // Source: Alice <-> Mallory. Bob is deliberately NOT part of it, so his later
+    // access can only come from the forward itself.
+    const source = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(aliceToken),
+      payload: { targetId: 'u_mallory', targetKind: 'member' },
+    });
+    const sourceId = (source.json() as { id: string }).id;
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${sourceId}/messages`,
       headers: auth(aliceToken),
       payload: { text: '原始消息', attachments: [{ id: file.id, name: file.name }] },
     });
@@ -700,7 +824,7 @@ describe('message forwarding', () => {
       method: 'POST',
       url: '/api/groups',
       headers: auth(aliceToken),
-      payload: { title: '转发目标组', memberIds: ['u_bob', accountId] },
+      payload: { title: '转发目标组', memberIds: ['u_bob', 'u_mallory', accountId] },
     });
     const groupId = (group.json() as { id: string }).id;
 
@@ -715,25 +839,85 @@ describe('message forwarding', () => {
     expect(copy.text).toBe('原始消息');
     expect(copy.attachments[0]?.id).toBe(file.id);
 
-    // Bob (a member of the target group) sees the copy and can open the file.
+    // Bob sees the copy in the group and can open the forwarded file.
     const groupMessages = await app.inject({
       method: 'GET',
       url: `/api/conversations/${groupId}/messages`,
       headers: auth(bobToken),
     });
-    const texts = (groupMessages.json() as Array<{ text: string }>).map((item) => item.text);
-    expect(texts).toContain('原始消息');
+    expect((groupMessages.json() as Array<{ text: string }>).map((item) => item.text)).toContain('原始消息');
     expect(
       (await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(bobToken) })).statusCode,
     ).toBe(200);
 
-    // The original conversation is untouched.
-    const dmMessages = await app.inject({
+    // The original conversation still holds exactly one copy of the message.
+    const sourceMessages = await app.inject({
       method: 'GET',
-      url: `/api/conversations/${dmId}/messages`,
+      url: `/api/conversations/${sourceId}/messages`,
       headers: auth(aliceToken),
     });
-    expect((dmMessages.json() as Array<{ text: string }>).filter((m) => m.text === '原始消息')).toHaveLength(1);
+    expect(
+      (sourceMessages.json() as Array<{ text: string }>).filter((m) => m.text === '原始消息'),
+    ).toHaveLength(1);
+    expect(malloryToken.length).toBeGreaterThan(0);
+  });
+
+  it('does not share a file with somebody outside the conversation it was forwarded to', async () => {
+    const { app } = await boot();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const bobToken = await login(app, 'u_bob', 'bob-token');
+    const malloryToken = await login(app, 'u_mallory', 'mallory-token');
+
+    const file = await uploadText(app, aliceToken, 'forward-scope.txt', 'scope');
+    const dm = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(aliceToken),
+      payload: { targetId: 'u_bob', targetKind: 'member' },
+    });
+    const dmId = (dm.json() as { id: string }).id;
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${dmId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '只给 bob', attachments: [{ id: file.id, name: file.name }] },
+    });
+    const messageId = (sent.json() as { message: { id: string } }).message.id;
+
+    // Bob forwards Alice's file message into HIS OWN conversation with Mallory.
+    const bobWithMallory = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(bobToken),
+      payload: { targetId: 'u_mallory', targetKind: 'member' },
+    });
+    expect(bobWithMallory.statusCode, bobWithMallory.body).toBe(200);
+    const malloryConversation = (bobWithMallory.json() as { id: string }).id;
+    await app.inject({
+      method: 'POST',
+      url: `/api/messages/${messageId}/forward`,
+      headers: auth(bobToken),
+      payload: { conversationId: malloryConversation },
+    });
+
+    // Mallory is now a legitimate participant of a conversation containing the
+    // forward, so she may read it — that is the intended share.
+    expect(
+      (await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(malloryToken) })).statusCode,
+    ).toBe(200);
+
+    // Somebody with no relation to either conversation still cannot.
+    const dave = await app.inject({
+      method: 'POST',
+      url: '/api/members',
+      headers: auth(await login(app, 'u_admin', 'admin-token')),
+      payload: { id: 'u_dave', displayName: 'Dave' },
+    });
+    expect(dave.statusCode, dave.body).toBe(201);
+    const daveToken = await login(app, 'u_dave', dave.json().token as string);
+    expect(
+      (await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(daveToken) })).statusCode,
+    ).toBe(404);
   });
 
   it('refuses to forward into a conversation the caller is not in, or to the AI', async () => {

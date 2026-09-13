@@ -93,7 +93,7 @@ N7（`chatId` 存在性探测：403 vs 200）不修：`chatId` 本就是调用�
 
 ### 复核轮 3（终检）：同一子 agent 对 N1–N6 的再验证 + 新增收尾项
 
-复核结论：**N1、N2、N3、N4、N5、N6 全部 CONFIRMED**（含现场证据：邀请者不被踢、退群者 `409`、拒绝重建与上传拒绝写审计、工作台发送写审计、成员 id 校验 400、`pnpm test` 21 文件 / 193 用例、冒烟 27/27）。同时提出 3 项收尾问题，均已修复：
+复核结论：**N1、N2、N3、N4、N5、N6 全部 CONFIRMED**（含现场证据：邀请者不被踢、退群者 `409`、拒绝重建与上传拒绝写审计、工作台发送写审计、成员 id 校验 400、`pnpm test` 21 文件 / 198 用例、冒烟 27/27）。同时提出 3 项收尾问题，均已修复：
 
 | ID | 复核发现 | 修复 |
 | --- | --- | --- |
@@ -241,7 +241,7 @@ N7（`chatId` 存在性探测：403 vs 200）不修：`chatId` 本就是调用�
 
 ```
 PASS  typecheck (tsc + vue-tsc)       · 8.5s
-PASS  unit / integration tests       21 文件 / 193 用例 · 20.0s
+PASS  unit / integration tests       21 文件 / 198 用例 · 20.0s
 PASS  build (server + web)           built in 8.24s · 21.6s
 PASS  restart server                 health: {"ok":true,"storage":{"pending":false}} · 3.1s
 PASS  API smoke (27 checks)          27/27 checks passed · 1.3s
@@ -321,6 +321,28 @@ own bubbles leak?  false
 
 现场实测：转发到群 200、群成员看到副本并能下载附件（200）、转发给 AI 400、越权转发 404、撤回后转发 400。客户端 E2E 也加了一步真实点击（点「转发」→ 选目标 → 确认 → 顶部出现「已转发」），客户端检查从 33 项增至 **34 项**。
 
+## 8.17 引用回复（2026-09-13 21:35）
+
+- 契约与接口：`nativeMessageSchema.replyTo`（消息 id）；服务端在发送时校验**被引用的消息必须属于同一会话**，否则 `400 the quoted message is not in this conversation`（防止用引用探测/引用其他会话的消息）。
+- 前端：任意消息气泡新增「引用」→ 输入框上方出现引用条（可取消）；发送时带上 `replyTo`；气泡渲染被引用消息的发送者与摘要，若被引用消息不在当前加载页则显示「引用了一条更早的消息」。
+- 撤回语义：引用的是消息 id 而非正文快照，因此被引用消息一旦撤回，引用条显示「已撤回的消息」，不会把撤回内容留在引用里。
+- 测试：服务端 2 例（同会话引用生效/跨会话与不存在的引用 400）、前端 1 例（引用条 + 发送参数 + 渲染）。
+- 现场实测：引用回复 200 且 `replyTo` 正确落库；引用不存在的 id → 400。
+
+## 8.18 复核轮 6：附件共享与转发的修复（2026-09-13 21:30）
+
+第六轮独立复核（提交 `ecaa3bf`）确认：**转发功能 CONFIRMED**、附件的 ACL 方向正确、回归全绿（typecheck 0 错误、21 文件/193 用例、冒烟 27/27、含越权/撤回/zip 炸弹抽检）。同时给出 6 项新问题，本轮修掉 5 项、1 项明确为产品边界：
+
+| ID | 复核发现 | 处理 |
+| --- | --- | --- |
+| **N1（P2）** | 转发件对收件人是死链：副本的发送者是转发者，而读取授权要求「引用消息由文件所有者发出」 | `canReadUploadShared` 增加**转发溯源**（沿 `metadata.forwardedFrom.messageId` 回溯，深度 ≤5、防环），转发即视为参与者的显式分享。实测：从未在源会话出现过的收件人现在可下载（200）。原回归测试改为「收件人不在源会话」的判别性用例 |
+| **N6（P2）** | 撤回的正文仍能从任务记录的 `result` / `outcome.message` 读到（此前只脱敏 goal/input.history） | 任务读取时对 `goal`、`result`、`outcome.message` 一并脱敏；实测撤回后三者均不含密文 |
+| **N3（P3）** | `POST /api/messages`（工作台/入站路径）未校验附件归属 | 该路径同样调用 `assertAttachmentsOwned`（只能携带自己上传的文件） |
+| **N5（P3）** | 被拒绝的转发不写审计 | 转发路由补 `denied` 审计分支 |
+| **N7（P3）** | zip 守卫的 413 未审计；且 `app.ts` 里第二个 `truncated` 分支不可达 | 错误处理对 **ServiceError(413)** 统一写 `upload.rejected`；删除不可达分支 |
+| **N2（P2）** | 组织管理员绕过新 ACL（既有设计：管理员可读本组织全部会话与文件） | 保留设计，但**管理员读取「未被分享给自己」的文件会写 `file.admin_access` 审计**（actor/target/owner），把隐形绕过变成可追溯的 break-glass；新增回归测试 |
+| N4 / N8 | 撤回后由所有者重新分享同一文件会恢复访问；`/api/files` 的扫描是 O(上传 × 会话 × 消息) | 作为边界记录：前者是「所有者始终可以分享自己的文件」的必然结果；后者在当前数据规模下 5ms 级，已在限制章节标注需要索引 |
+
 ## 9. 生产档位实测（2026-09-13 04:35）
 
 `CHATAGENT_AUTH_MODE=production` + 独立数据目录，无凭据请求一律 401：
@@ -347,7 +369,7 @@ SMOKE_MEMBER=u_fresh SMOKE_TOKEN=fresh-token CHATAGENT_URL=http://localhost:8798
 
 ```bash
 pnpm typecheck                     # tsc --noEmit + vue-tsc，退出码 0
-pnpm test                          # 21 文件 / 193 用例全绿（服务端与包 18 文件/168 例 + Web 3 文件/25 例）
+pnpm test                          # 21 文件 / 198 用例全绿（服务端与包 18 文件/172 例 + Web 3 文件/26 例）
 pnpm build                         # 服务端 tsup + Web vite + Electron 资源
 node scripts/restart-server.mjs    # 重启并等待 /health
 node scripts/smoke.mjs             # 27/27

@@ -349,6 +349,18 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ServiceError) {
+      if (error.status === 413) {
+        // Archive/limit rejections are security-relevant: record them even
+        // though they are "just" a client error.
+        audit.record({
+          action: 'upload.rejected',
+          outcome: 'denied',
+          actorId: request.principal?.id,
+          target: auditPath(request.url),
+          detail: error.reason ?? error.message,
+          ip: request.ip,
+        });
+      }
       if (error.status === 401 || error.status === 403 || error.status === 404) {
         audit.record({
           action: error.status === 404 ? 'access.not_found' : 'auth.denied',
@@ -820,6 +832,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       text: parsed.data.text,
       attachments: parsed.data.attachments as ChatMessage['attachments'],
       mentions: parsed.data.mentions,
+      replyTo: parsed.data.replyTo,
     });
     audit.record({
       action: 'message.sent',
@@ -839,16 +852,28 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     if (typeof body.conversationId !== 'string' || body.conversationId.trim() === '') {
       return reply.code(400).send({ error: 'conversationId is required' });
     }
-    const result = await service.forwardMessage(request.principal, id, body.conversationId.trim());
-    audit.record({
-      action: 'message.forwarded',
-      outcome: 'ok',
-      actorId: request.principal?.id,
-      target: result.message.conversationId,
-      detail: id,
-      ip: request.ip,
-    });
-    return result;
+    try {
+      const result = await service.forwardMessage(request.principal, id, body.conversationId.trim());
+      audit.record({
+        action: 'message.forwarded',
+        outcome: 'ok',
+        actorId: request.principal?.id,
+        target: result.message.conversationId,
+        detail: id,
+        ip: request.ip,
+      });
+      return result;
+    } catch (error) {
+      audit.record({
+        action: 'message.forwarded',
+        outcome: 'denied',
+        actorId: request.principal?.id,
+        target: body.conversationId.trim(),
+        detail: id,
+        ip: request.ip,
+      });
+      throw error;
+    }
   });
 
   /** Presence: members of the caller's organization with a live event stream. */
@@ -1072,9 +1097,6 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       return reply.code(413).send({ error: 'file too large' });
     }
     const buffer = await file.toBuffer();
-    if (file.file.truncated) {
-      return reply.code(413).send({ error: 'file too large' });
-    }
     return service.parseUploaded(request.principal, buffer, file.filename, file.mimetype);
   });
 

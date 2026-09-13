@@ -290,6 +290,44 @@ describe('ChatView', () => {
     expect(wrapper.text()).not.toContain('这条消息可以被撤回');
   });
 
+  it('sends a quoted reply and renders the quote', async () => {
+    mocks.listMessages.mockResolvedValue([
+      ...mocks.defaultMessages,
+      {
+        id: 'm_mine',
+        channel: 'web',
+        conversationId: 'conv_bob',
+        chatType: 'direct',
+        direction: 'inbound',
+        kind: 'text',
+        text: '我上一条',
+        sender: { id: 'u_alice', name: 'Alice' },
+        senderPrincipalId: 'u_alice',
+        mentions: [],
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    const wrapper = mountChat();
+    await flushPromises();
+
+    const quote = wrapper.findAll('[data-testid="quote"]');
+    expect(quote.length, 'messages expose a quote action').toBe(2);
+    // The second bubble is my own message (m_mine).
+    await quote[1]?.trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="quote-strip"]').exists(), 'composer shows the quote').toBe(true);
+
+    await wrapper.find('textarea').setValue('引用回复内容');
+    const sendButton = wrapper.findAll('button').find((button) => button.text().includes('发送'));
+    await sendButton?.trigger('click');
+    await flushPromises();
+
+    const call = mocks.send.mock.calls[0] as unknown as [string, { text: string; replyTo?: string }];
+    expect(call[1].text).toBe('引用回复内容');
+    expect(call[1].replyTo).toBe('m_mine');
+  });
+
   it('forwards a message into another conversation', async () => {
     mocks.listConversations.mockResolvedValue([
       mocks.conversation,

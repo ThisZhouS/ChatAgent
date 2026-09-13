@@ -755,10 +755,23 @@ export class ChatAgentService {
   async sendNativeMessage(
     principal: Principal,
     conversationId: string,
-    input: { text: string; attachments: ChatMessage['attachments']; mentions?: string[] },
+    input: {
+      text: string;
+      attachments: ChatMessage['attachments'];
+      mentions?: string[];
+      replyTo?: string;
+    },
   ): Promise<{ message: ChatMessage; taskId?: string; taskIds?: string[] }> {
     this.requireMember(principal);
     await this.assertAttachmentsOwned(principal, input.attachments);
+    // A quote must point at a message of this conversation; anything else would
+    // let a caller probe or reference other conversations.
+    if (input.replyTo !== undefined) {
+      const quoted = await this.messages.findById(input.replyTo);
+      if (!quoted || quoted.conversationId !== conversationId) {
+        throw new ServiceError(400, 'the quoted message is not in this conversation', 'reply_target');
+      }
+    }
     const conversation = await this.conversations.get(conversationId);
     if (!conversation || !canReadConversation(principal, conversation)) {
       throw new ServiceError(404, 'conversation not found');
@@ -826,6 +839,7 @@ export class ChatAgentService {
       sender: { id: principal.id, name: principal.displayName },
       senderPrincipalId: principal.id,
       mentions,
+      replyTo: input.replyTo,
       attachments: input.attachments,
       createdAt: new Date().toISOString(),
       metadata: { native: true },
@@ -1152,6 +1166,9 @@ export class ChatAgentService {
         reason: 'sender_not_allowed',
       };
     }
+    // Same invariant as the native send path: a caller may only attach files it
+    // uploaded, otherwise a foreign file id could be persisted into a message.
+    await this.assertAttachmentsOwned(principal, message.attachments);
 
     // The conversation key comes from the request body, so the caller must
     // already belong to the conversation it resolves to. Without this check a
@@ -1306,9 +1323,16 @@ export class ChatAgentService {
         : entry,
     );
     if (redacted.length === 0 && !recalled.some((text) => task.goal.includes(text))) return task;
-    // The task goal is the message text itself, so it has to be redacted too.
-    const goal = recalled.some((text) => task.goal.includes(text)) ? '[已撤回]' : task.goal;
-    return { ...task, goal, input: { ...(task.input ?? {}), history: redacted } };
+    // The goal is the message text itself, and the recorded result may quote it
+    // back (the assistant echoed it), so both are redacted as well.
+    const scrub = (value: string): string =>
+      recalled.some((text) => value.includes(text)) ? '[已撤回]' : value;
+    const goal = scrub(task.goal);
+    const result = typeof task.result === 'string' ? scrub(task.result) : task.result;
+    const outcome = task.outcome
+      ? { ...task.outcome, message: scrub(task.outcome.message) }
+      : task.outcome;
+    return { ...task, goal, result, outcome, input: { ...(task.input ?? {}), history: redacted } };
   }
 
   private async assertTaskVisible(principal: Principal, task: TaskRecord): Promise<void> {
@@ -1690,15 +1714,35 @@ export class ChatAgentService {
 
   /**
    * An upload is readable by its owner (and admins), and by the members of a
-   * conversation in which **the owner** posted it as an attachment. Requiring
-   * the referencing message to come from the owner prevents "reference someone
-   * else's file id" from becoming a read primitive.
+   * conversation where the file was posted **by its owner** — or by a forward of
+   * such a message (a forward is an explicit share by a participant). Requiring
+   * the chain to start at the owner is what keeps "reference somebody else's
+   * file id" from becoming a read primitive.
    */
   private async canReadUploadShared(
     principal: Principal,
     upload: { id: string; organizationId: string; ownerId: string },
   ): Promise<boolean> {
-    if (canReadUpload(principal, upload)) return true;
+    if (canReadUpload(principal, upload)) {
+      // Admin break-glass: an admin may read every file of the organization, but
+      // reading somebody else's file without a conversation reference is logged
+      // so the bypass is traceable.
+      if (
+        upload.ownerId !== principal.id &&
+        isOrgAdmin(principal) &&
+        !(await this.uploadWasSharedWith(principal, upload))
+      ) {
+        this.audit?.({
+          action: 'file.admin_access',
+          outcome: 'ok',
+          actorId: principal.id,
+          organizationId: upload.organizationId,
+          target: upload.id,
+          detail: `owner=${upload.ownerId}`,
+        });
+      }
+      return true;
+    }
     if (!sameOrganization(principal, upload.organizationId)) return false;
     const conversations = await this.listConversations(principal);
     for (const conversation of conversations) {
@@ -1706,13 +1750,44 @@ export class ChatAgentService {
       const messages = await this.messages.list(conversation.id);
       for (const message of messages) {
         if (message.recalledAt) continue;
-        const fromOwner =
-          message.senderPrincipalId === upload.ownerId || message.sender.id === upload.ownerId;
-        if (!fromOwner) continue;
-        if (message.attachments.some((attachment) => attachment.id === upload.id)) return true;
+        if (!message.attachments.some((attachment) => attachment.id === upload.id)) continue;
+        if (await this.tracesBackToOwner(message, upload.ownerId)) return true;
       }
     }
     return false;
+  }
+
+  /** True when the caller can see the file through a conversation reference. */
+  private async uploadWasSharedWith(
+    principal: Principal,
+    upload: { id: string; organizationId: string; ownerId: string },
+  ): Promise<boolean> {
+    const conversations = await this.listConversations(principal);
+    for (const conversation of conversations) {
+      if (!conversation.participantIds.includes(principal.id)) continue;
+      const messages = await this.messages.list(conversation.id);
+      for (const message of messages) {
+        if (message.recalledAt) continue;
+        if (!message.attachments.some((attachment) => attachment.id === upload.id)) continue;
+        if (await this.tracesBackToOwner(message, upload.ownerId)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * True when the message was authored by the file owner, or is a forward whose
+   * provenance chain ends in an owner-authored message (bounded, cycle-safe).
+   */
+  private async tracesBackToOwner(message: ChatMessage, ownerId: string, depth = 0): Promise<boolean> {
+    if (message.senderPrincipalId === ownerId || message.sender.id === ownerId) return true;
+    if (depth >= 5) return false;
+    const forwarded = message.metadata?.forwardedFrom as { messageId?: unknown } | undefined;
+    const parentId = typeof forwarded?.messageId === 'string' ? forwarded.messageId : undefined;
+    if (!parentId || parentId === message.id) return false;
+    const parent = await this.messages.findById(parentId);
+    if (!parent || parent.recalledAt) return false;
+    return this.tracesBackToOwner(parent, ownerId, depth + 1);
   }
 
   async getFile(principal: Principal, id: string): Promise<AuthorizedFile> {

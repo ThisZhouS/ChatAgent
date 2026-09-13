@@ -145,6 +145,8 @@ export const createGroupSchema = z.object({
 
 export const nativeMessageSchema = z.object({
   text: z.string().max(8000).default(''),
+  /** Id of the message being quoted; must belong to the same conversation. */
+  replyTo: z.string().min(1).max(128).optional(),
   /** Participant ids the sender addressed; AI accounts in a group are summoned. */
   mentions: z.array(z.string().min(1).max(64)).max(10).default([]),
   attachments: z
