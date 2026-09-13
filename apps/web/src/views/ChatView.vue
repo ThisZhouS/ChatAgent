@@ -213,6 +213,38 @@ async function exportConversation() {
 }
 
 const memberPanel = ref(false);
+const forwardDialog = ref(false);
+const forwardTarget = ref('');
+const forwardSource = ref<ChatMessage | null>(null);
+const notice = ref('');
+
+/** Conversations a message can be forwarded into (never the AI assistant). */
+const forwardTargets = computed(() =>
+  conversations.value.filter(
+    (conversation) =>
+      conversation.id !== activeId.value &&
+      (conversation.targetKind === 'member' || conversation.targetKind === 'group'),
+  ),
+);
+
+function openForwardDialog(message: ChatMessage) {
+  forwardSource.value = message;
+  forwardTarget.value = '';
+  notice.value = '';
+  forwardDialog.value = true;
+}
+
+async function forwardMessage() {
+  if (!forwardSource.value || forwardTarget.value === '') return;
+  try {
+    await api.chat.forward(forwardSource.value.id, forwardTarget.value);
+    forwardDialog.value = false;
+    notice.value = '已转发';
+    await loadConversations(true);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
 const renameDialog = ref(false);
 const renameTitle = ref('');
 
@@ -690,6 +722,29 @@ onUnmounted(() => {
 
 <template>
   <div class="chat">
+    <el-dialog v-model="forwardDialog" title="转发消息" width="380px">
+      <p class="muted">转发到同事或群聊（不转发给 AI 助手，避免意外触发任务）。</p>
+      <el-select v-model="forwardTarget" filterable style="width: 100%" placeholder="选择会话">
+        <el-option
+          v-for="target in forwardTargets"
+          :key="target.id"
+          :label="`${titleOf(target)}（${target.targetKind === 'group' ? '群聊' : '同事'}）`"
+          :value="target.id"
+        />
+      </el-select>
+      <el-empty
+        v-if="forwardTargets.length === 0"
+        description="还没有可转发的会话，先和同事聊一句"
+        :image-size="60"
+      />
+      <template #footer>
+        <el-button @click="forwardDialog = false">取消</el-button>
+        <el-button type="primary" :disabled="forwardTarget === ''" @click="forwardMessage">
+          转发
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="renameDialog" title="修改群名" width="360px">
       <el-input v-model="renameTitle" maxlength="64" placeholder="新的群名" />
       <template #footer>
@@ -895,6 +950,15 @@ onUnmounted(() => {
       </aside>
 
       <section class="chat-main">
+        <el-alert
+          v-if="notice"
+          :title="notice"
+          type="success"
+          show-icon
+          class="notice"
+          data-testid="notice"
+          @close="notice = ''"
+        />
         <el-card shadow="never" class="thread-card">
           <template #header>
             <div class="side-title">
@@ -991,6 +1055,15 @@ onUnmounted(() => {
                         rel="noopener"
                       >📎 {{ file.name }}</a>
                     </div>
+                    <button
+                      v-if="!message.recalledAt && message.conversationId"
+                      class="bubble-recall"
+                      data-testid="forward"
+                      type="button"
+                      @click="openForwardDialog(message)"
+                    >
+                      转发
+                    </button>
                     <button
                       v-if="canRecall(message)"
                       class="bubble-recall"
@@ -1174,6 +1247,10 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 6px;
   font-size: 14px;
+}
+
+.notice {
+  margin-bottom: 8px;
 }
 
 .presence-badge {

@@ -134,7 +134,7 @@
 - **真实客户端 E2E**：`scripts/ui-e2e.mjs` 经 CDP 驱动**打包后的 exe**（登录 → AI 回复 → 生成 Word → 聊天内下载 → 深色模式 → 1024×720 → 7 个导航页），**33/33 通过**，截图存 `Temp/ui-shots/`。
 - **可访问性修复**：E2E 计算 WCAG 对比度，发现浅色次级文字仅 2.8:1、深色 4.3:1 → 调整 `--ca-muted` 后为 **4.54 / 5.10**。
 - 运维：`scripts/restart-server.mjs`（按端口杀进程 + 等 `/health`），修掉本轮真实遇到的「旧进程占端口导致新构建未生效」。
-- 验证：`pnpm typecheck` 通过；`pnpm test` **21 文件 / 186 用例**通过（含新增 `membership-security.test.ts` 32 例、Web 测试 24 例与 document 包 13 例）；`pnpm build` 通过；`node scripts/smoke.mjs` 27/27；`node scripts/ui-e2e.mjs` 33/33。
+- 验证：`pnpm typecheck` 通过；`pnpm test` **21 文件 / 193 用例**通过（含新增 `membership-security.test.ts` 38 例、Web 测试 25 例与 document 包 13 例）；`pnpm build` 通过；`node scripts/smoke.mjs` 27/27；`node scripts/ui-e2e.mjs` 33/33。
 
 ## 06:00 验收结论（2026-09-13 05:26 终态）
 
@@ -152,7 +152,7 @@
 
 ```bash
 pnpm typecheck                      # 0 错误（tsc + vue-tsc）
-pnpm test                           # 21 文件 / 186 用例全绿
+pnpm test                           # 21 文件 / 193 用例全绿
 pnpm build                          # tsup + vite 通过
 node scripts/restart-server.mjs     # server 8787 healthy（storage.pending=false）
 pnpm build:desktop                  # 重新打包 exe（2026-09-13 04:38）

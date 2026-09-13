@@ -550,6 +550,77 @@ export class ChatAgentService {
   }
 
   /**
+   * Forwards a message into another conversation the caller belongs to. The
+   * body and its attachments are copied; a recalled source forwards nothing, so
+   * a withdrawn message cannot be resurrected by forwarding it.
+   */
+  async forwardMessage(
+    principal: Principal,
+    messageId: string,
+    targetConversationId: string,
+  ): Promise<{ ok: boolean; message: ChatMessage }> {
+    this.requireMember(principal);
+    const source = await this.messages.findById(messageId);
+    if (!source) throw new ServiceError(404, 'message not found');
+
+    const sourceConversation = await this.conversations.get(source.conversationId);
+    if (
+      !sourceConversation ||
+      !canReadConversation(principal, sourceConversation) ||
+      !sourceConversation.participantIds.includes(principal.id)
+    ) {
+      throw new ServiceError(404, 'message not found');
+    }
+
+    const target = await this.conversations.get(targetConversationId);
+    if (!target || !canReadConversation(principal, target)) {
+      throw new ServiceError(404, 'conversation not found');
+    }
+    if (!target.participantIds.includes(principal.id)) {
+      throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    if (target.targetKind === 'agent') {
+      // Forwarding to the assistant would silently start a task; the sender has
+      // to ask the assistant directly instead.
+      throw new ServiceError(400, 'forward to a colleague or a group, not to an AI assistant');
+    }
+    if (source.recalledAt || (source.text.trim() === '' && source.attachments.length === 0)) {
+      throw new ServiceError(400, 'this message has nothing to forward');
+    }
+
+    const message: ChatMessage = {
+      id: crypto.randomUUID(),
+      channel: 'web',
+      conversationId: target.id,
+      chatType: target.chatType,
+      direction: 'inbound',
+      kind: source.attachments.length > 0 ? 'mixed' : 'text',
+      text: source.text,
+      sender: { id: principal.id, name: principal.displayName },
+      senderPrincipalId: principal.id,
+      mentions: [],
+      attachments: source.attachments,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        forwardedFrom: {
+          messageId: source.id,
+          conversationId: source.conversationId,
+          senderName: source.sender.name,
+        },
+      },
+    };
+    await this.messages.append(message);
+    await this.conversations.appendMessage(target.id, message.id);
+    this.events.publish({
+      type: 'message',
+      conversationId: target.id,
+      message,
+      at: message.createdAt,
+    });
+    return { ok: true, message };
+  }
+
+  /**
    * Removes somebody else from a group. This is the explicit, audited removal
    * the add-only re-creation rule deliberately does not provide. A member can
    * always remove themselves through `leaveConversation`.
@@ -687,6 +758,7 @@ export class ChatAgentService {
     input: { text: string; attachments: ChatMessage['attachments']; mentions?: string[] },
   ): Promise<{ message: ChatMessage; taskId?: string; taskIds?: string[] }> {
     this.requireMember(principal);
+    await this.assertAttachmentsOwned(principal, input.attachments);
     const conversation = await this.conversations.get(conversationId);
     if (!conversation || !canReadConversation(principal, conversation)) {
       throw new ServiceError(404, 'conversation not found');
@@ -1590,11 +1662,57 @@ export class ChatAgentService {
       if (await this.canReadArtifactShared(principal, artifact)) allowedArtifacts.push(artifactView(artifact));
     }
 
-    const allowedUploads = uploadList
-      .filter((upload) => canReadUpload(principal, upload))
-      .map(fileView);
+    const allowedUploads: BaseFileView[] = [];
+    for (const upload of uploadList) {
+      if (await this.canReadUploadShared(principal, upload)) allowedUploads.push(fileView(upload));
+    }
 
     return { artifacts: allowedArtifacts, uploads: allowedUploads };
+  }
+
+  /**
+   * A message may only carry files its sender uploaded. Without this check a
+   * member could reference somebody else's upload id and hand out (or gain)
+   * access to a file they never received.
+   */
+  private async assertAttachmentsOwned(
+    principal: Principal,
+    attachments: ChatMessage['attachments'],
+  ): Promise<void> {
+    for (const attachment of attachments) {
+      if (attachment.id === '') throw new ServiceError(400, 'attachment id is required');
+      const meta = await this.uploads.getMeta(attachment.id);
+      if (!meta || meta.ownerId !== principal.id || meta.organizationId !== principal.organizationId) {
+        throw new ServiceError(400, 'an attachment must be a file you uploaded', 'attachment_not_owned');
+      }
+    }
+  }
+
+  /**
+   * An upload is readable by its owner (and admins), and by the members of a
+   * conversation in which **the owner** posted it as an attachment. Requiring
+   * the referencing message to come from the owner prevents "reference someone
+   * else's file id" from becoming a read primitive.
+   */
+  private async canReadUploadShared(
+    principal: Principal,
+    upload: { id: string; organizationId: string; ownerId: string },
+  ): Promise<boolean> {
+    if (canReadUpload(principal, upload)) return true;
+    if (!sameOrganization(principal, upload.organizationId)) return false;
+    const conversations = await this.listConversations(principal);
+    for (const conversation of conversations) {
+      if (!conversation.participantIds.includes(principal.id)) continue;
+      const messages = await this.messages.list(conversation.id);
+      for (const message of messages) {
+        if (message.recalledAt) continue;
+        const fromOwner =
+          message.senderPrincipalId === upload.ownerId || message.sender.id === upload.ownerId;
+        if (!fromOwner) continue;
+        if (message.attachments.some((attachment) => attachment.id === upload.id)) return true;
+      }
+    }
+    return false;
   }
 
   async getFile(principal: Principal, id: string): Promise<AuthorizedFile> {
@@ -1612,7 +1730,9 @@ export class ChatAgentService {
 
     const upload = await this.uploads.getMeta(id);
     if (upload) {
-      if (!canReadUpload(principal, upload)) throw new ServiceError(404, 'file not found');
+      if (!(await this.canReadUploadShared(principal, upload))) {
+        throw new ServiceError(404, 'file not found');
+      }
       const stored = await this.uploads.get(id);
       if (!stored) throw new ServiceError(404, 'file not found');
       return { name: stored.name, mimeType: stored.mimeType, buffer: stored.buffer };

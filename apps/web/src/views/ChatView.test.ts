@@ -59,6 +59,7 @@ const mocks = vi.hoisted(() => {
     leave: vi.fn(async () => ({ ok: true })),
     listConversations: vi.fn(async () => [conversation]),
     recall: vi.fn(async () => ({ ok: true })),
+    forward: vi.fn(async () => ({ ok: true, message: {} })),
     readReceipts: vi.fn(async () => ({ others: [] as Array<{ memberId: string; lastReadAt: string }> })),
     defaultMessages: [
       {
@@ -107,6 +108,7 @@ vi.mock('../api', () => ({
       conversation: vi.fn(async () => mocks.group),
       createGroup: mocks.createGroup,
       recall: mocks.recall,
+      forward: mocks.forward,
       readReceipts: mocks.readReceipts,
       exportConversation: vi.fn(async () => ({ id: 'f1', name: 'x.docx', url: '/api/files/f1' })),
       addMember: mocks.addMember,
@@ -143,6 +145,7 @@ beforeEach(() => {
   mocks.listMessages.mockClear();
   mocks.addMember.mockClear();
   mocks.recall.mockClear();
+  mocks.forward.mockClear();
   mocks.readReceipts.mockClear();
   mocks.readReceipts.mockResolvedValue({ others: [] });
   mocks.leave.mockClear();
@@ -285,6 +288,36 @@ describe('ChatView', () => {
     expect(mocks.recall).toHaveBeenCalledWith('m_own');
     expect(wrapper.text()).toContain('你撤回了一条消息');
     expect(wrapper.text()).not.toContain('这条消息可以被撤回');
+  });
+
+  it('forwards a message into another conversation', async () => {
+    mocks.listConversations.mockResolvedValue([
+      mocks.conversation,
+      { ...mocks.group, id: 'conv_other', title: '别的群' },
+    ]);
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+
+    const forward = wrapper.find('[data-testid="forward"]');
+    expect(forward.exists(), 'every visible message can be forwarded').toBe(true);
+    await forward.trigger('click');
+    await flushPromises();
+
+    const select = wrapper.findComponent({ name: 'ElSelect' });
+    expect(select.exists(), 'forward dialog offers a target picker').toBe(true);
+    select.vm.$emit('update:modelValue', 'conv_other');
+    await flushPromises();
+
+    const confirm = [...document.querySelectorAll('.el-dialog__footer button')].find((node) =>
+      (node.textContent ?? '').includes('转发'),
+    );
+    expect(confirm, 'confirm button exists').toBeTruthy();
+    (confirm as HTMLElement).click();
+    await flushPromises();
+
+    expect(mocks.forward).toHaveBeenCalledWith('m1', 'conv_other');
+    expect(wrapper.text()).toContain('已转发');
+    wrapper.unmount();
   });
 
   it('does not offer recall for messages sent by somebody else', async () => {

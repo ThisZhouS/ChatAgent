@@ -172,6 +172,11 @@ export const api = {
       request<{ me?: string; others: Array<{ memberId: string; lastReadAt: string }> }>(
         `/conversations/${conversationId}/read-receipts`,
       ),
+    forward: (messageId: string, conversationId: string) =>
+      request<{ ok: boolean; message: unknown }>(`/messages/${messageId}/forward`, {
+        method: 'POST',
+        body: JSON.stringify({ conversationId }),
+      }),
     recall: (messageId: string) =>
       request<{ ok: boolean }>(`/messages/${messageId}/recall`, { method: 'POST' }),
     rename: (conversationId: string, title: string) =>

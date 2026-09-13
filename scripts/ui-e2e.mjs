@@ -119,12 +119,21 @@ class Cdp {
     return result.result?.value;
   }
 
+  /**
+   * Screenshots are evidence, not assertions: a slow or blocked renderer must
+   * not fail the run, so capture problems are reported and skipped.
+   */
   async screenshot(name) {
-    const result = await this.send('Page.captureScreenshot', { format: 'png' });
-    const file = join(shotDir, `${name}.png`);
-    writeFileSync(file, Buffer.from(result.data, 'base64'));
-    screenshots.push(file);
-    return file;
+    try {
+      const result = await this.send('Page.captureScreenshot', { format: 'png' }, 12000);
+      const file = join(shotDir, `${name}.png`);
+      writeFileSync(file, Buffer.from(result.data, 'base64'));
+      screenshots.push(file);
+      return file;
+    } catch (error) {
+      console.log(`  (screenshot ${name} skipped: ${error instanceof Error ? error.message : String(error)})`);
+      return undefined;
+    }
   }
 }
 
@@ -509,18 +518,26 @@ async function main() {
         ),
       );
     }
-    // Opening a conversation is asynchronous (open -> select -> load), so the
-    // composer becoming enabled is the signal that it is really active.
+    // Opening a conversation is asynchronous. The composer may already be
+    // enabled because the client auto-selected another conversation on load, so
+    // the header is what has to be waited for, not the composer.
+    const headerReady = await waitFor(
+      cdp,
+      `(() => {
+        const header = (document.querySelector('.chat-main .side-title') || {}).innerText || '';
+        return /助手|助理/.test(header) ? header : '';
+      })()`,
+      15000,
+      'the AI conversation header',
+    ).catch(() => '');
+    const header = normaliseText(String(headerReady));
+    record('AI conversation is active', header.includes('助手') || header.includes('助理'), header.slice(0, 40));
     await waitFor(
       cdp,
       `(() => { const el = document.querySelector('[data-testid="composer"] textarea, textarea[data-testid="composer"]'); return Boolean(el) && !el.disabled; })()`,
       15000,
       'composer enabled',
     );
-    const header = normaliseText(
-      await cdp.evaluate(`(document.querySelector('.chat-main .side-title') || document.body).innerText`),
-    );
-    record('AI conversation is active', header.includes('助手') || header.includes('助理'), header.slice(0, 40));
 
     // Wait for the persisted history of this conversation to finish loading.
     const loaded = await waitForStableCount(cdp, '[data-testid="message-bubble"]', 8000);

@@ -93,7 +93,7 @@ N7（`chatId` 存在性探测：403 vs 200）不修：`chatId` 本就是调用�
 
 ### 复核轮 3（终检）：同一子 agent 对 N1–N6 的再验证 + 新增收尾项
 
-复核结论：**N1、N2、N3、N4、N5、N6 全部 CONFIRMED**（含现场证据：邀请者不被踢、退群者 `409`、拒绝重建与上传拒绝写审计、工作台发送写审计、成员 id 校验 400、`pnpm test` 21 文件 / 186 用例、冒烟 27/27）。同时提出 3 项收尾问题，均已修复：
+复核结论：**N1、N2、N3、N4、N5、N6 全部 CONFIRMED**（含现场证据：邀请者不被踢、退群者 `409`、拒绝重建与上传拒绝写审计、工作台发送写审计、成员 id 校验 400、`pnpm test` 21 文件 / 193 用例、冒烟 27/27）。同时提出 3 项收尾问题，均已修复：
 
 | ID | 复核发现 | 修复 |
 | --- | --- | --- |
@@ -241,7 +241,7 @@ N7（`chatId` 存在性探测：403 vs 200）不修：`chatId` 本就是调用�
 
 ```
 PASS  typecheck (tsc + vue-tsc)       · 8.5s
-PASS  unit / integration tests       21 文件 / 186 用例 · 20.0s
+PASS  unit / integration tests       21 文件 / 193 用例 · 20.0s
 PASS  build (server + web)           built in 8.24s · 21.6s
 PASS  restart server                 health: {"ok":true,"storage":{"pending":false}} · 3.1s
 PASS  API smoke (27 checks)          27/27 checks passed · 1.3s
@@ -300,6 +300,27 @@ own bubbles leak?  false
 - 清理审计测试里遗留的占位常量（`CHATAGENT_AUDIT_HINT`），并把「AI 文本回复 vs 文件消息分别写审计」改成真正断言两类 `detail` 的用例（轮询等待后台任务落审计）。
 - `docs/environment.md` 补上终态验证命令与 `.env.example` 覆盖说明。
 
+## 8.16 会话附件共享 + 消息转发（2026-09-13 22:00）
+
+**会话附件共享（修一个真实缺陷）**：此前上传文件只有**上传者本人**（与组织管理员）能下载 —— 会话里的 `📎 文件名` 对收件人是死链（实测：发件人 200、收件人 404，群成员同样 404）。现在规则为：
+
+- 上传者本人、以及**上传者把该文件作为附件发进某个会话**后的该会话参与者，都可以下载并在「文件」页看到它；
+- 非参与者 404、跨组织不可见、退出会话后立即失去访问、被撤回消息的附件失去该捷径（上传者本人仍拥有文件）；
+- **越权引用防护**：消息只能携带**自己上传**的文件（否则 `400 a file you uploaded`），并且读取授权要求「引用该文件的消息必须由文件所有者发出」。若没有这两条，任何成员只要在自己的会话里写一条带别人文件 id 的消息，就能把别人的私有文件变成可读 —— 已补专门的回归测试（`refuses to let a member attach somebody else file`）。
+
+**消息转发**：`POST /api/messages/:id/forward {conversationId}`
+
+| 规则 | 说明 |
+| --- | --- |
+| 权限 | 能读源消息 + 是目标会话参与者；否则 404/403 |
+| 目标限制 | 不能转发给 AI 会话（`400`，避免意外触发任务） |
+| 内容 | 复制正文与原附件 id，`metadata.forwardedFrom` 记录来源（消息/会话/原发送者） |
+| 撤回语义 | 被撤回的消息或空消息 `400 this message has nothing to forward`（转发不能复活已撤回内容） |
+| 副作用 | 广播 `message` 事件 → 目标会话实时可见；审计 `message.forwarded` |
+| 前端 | 每条消息气泡「转发」→ 选择同事/群聊 → 顶部「已转发」提示 |
+
+现场实测：转发到群 200、群成员看到副本并能下载附件（200）、转发给 AI 400、越权转发 404、撤回后转发 400。
+
 ## 9. 生产档位实测（2026-09-13 04:35）
 
 `CHATAGENT_AUTH_MODE=production` + 独立数据目录，无凭据请求一律 401：
@@ -326,7 +347,7 @@ SMOKE_MEMBER=u_fresh SMOKE_TOKEN=fresh-token CHATAGENT_URL=http://localhost:8798
 
 ```bash
 pnpm typecheck                     # tsc --noEmit + vue-tsc，退出码 0
-pnpm test                          # 21 文件 / 186 用例全绿（服务端与包 18 文件/162 例 + Web 3 文件/24 例）
+pnpm test                          # 21 文件 / 193 用例全绿（服务端与包 18 文件/168 例 + Web 3 文件/25 例）
 pnpm build                         # 服务端 tsup + Web vite + Electron 资源
 node scripts/restart-server.mjs    # 重启并等待 /health
 node scripts/smoke.mjs             # 27/27

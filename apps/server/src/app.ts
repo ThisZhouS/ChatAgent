@@ -832,6 +832,25 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     return delivered;
   });
 
+  /** Forwards a message into another conversation the caller belongs to. */
+  app.post('/api/messages/:id/forward', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = (request.body ?? {}) as { conversationId?: unknown };
+    if (typeof body.conversationId !== 'string' || body.conversationId.trim() === '') {
+      return reply.code(400).send({ error: 'conversationId is required' });
+    }
+    const result = await service.forwardMessage(request.principal, id, body.conversationId.trim());
+    audit.record({
+      action: 'message.forwarded',
+      outcome: 'ok',
+      actorId: request.principal?.id,
+      target: result.message.conversationId,
+      detail: id,
+      ip: request.ip,
+    });
+    return result;
+  });
+
   /** Presence: members of the caller's organization with a live event stream. */
   app.get('/api/presence', async (request) => service.presence(request.principal));
 

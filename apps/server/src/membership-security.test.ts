@@ -68,6 +68,28 @@ async function waitForMessages(
   return list;
 }
 
+async function uploadText(app: FastifyInstance, token: string, name: string, text: string) {
+  const boundary = '----attachment-probe';
+  // Multipart separators must be CRLF: build them from escapes, not from
+  // literal newlines in the source.
+  const head =
+    '--' +
+    boundary +
+    '\r\nContent-Disposition: form-data; name="file"; filename="' +
+    name +
+    '"\r\nContent-Type: text/plain\r\n\r\n';
+  const tail = '\r\n--' + boundary + '--\r\n';
+  const body = Buffer.concat([Buffer.from(head, 'utf8'), Buffer.from(text, 'utf8'), Buffer.from(tail, 'utf8')]);
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/documents/parse',
+    headers: { ...auth(token), 'content-type': `multipart/form-data; boundary=${boundary}` },
+    payload: body,
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  return (response.json() as { file: { id: string; name: string } }).file;
+}
+
 async function createAgent(app: FastifyInstance, headers: Record<string, string>): Promise<string> {
   // The server boots with a default native AI account; provisioning another one
   // is an organization-admin operation, so the existing account is reused.
@@ -492,6 +514,275 @@ describe('conversation transcript export', () => {
       headers: auth(malloryToken),
     });
     expect(outsider.statusCode).toBe(404);
+  });
+});
+
+describe('conversation attachments are readable by the conversation', () => {
+  it('lets the recipients of a message download its attachment', async () => {
+    const { app } = await boot();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const bobToken = await login(app, 'u_bob', 'bob-token');
+    const malloryToken = await login(app, 'u_mallory', 'mallory-token');
+
+    const file = await uploadText(app, aliceToken, 'notes.txt', 'shared attachment');
+    const opened = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(aliceToken),
+      payload: { targetId: 'u_bob', targetKind: 'member' },
+    });
+    const conversationId = (opened.json() as { id: string }).id;
+    await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${conversationId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '带附件的消息', attachments: [{ id: file.id, name: file.name }] },
+    });
+
+    const asRecipient = await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(bobToken) });
+    expect(asRecipient.statusCode, asRecipient.body).toBe(200);
+    expect(asRecipient.headers['content-disposition']).toContain('attachment');
+
+    // The uploader keeps access, an unrelated member does not.
+    const asSender = await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(aliceToken) });
+    expect(asSender.statusCode).toBe(200);
+    const asOutsider = await app.inject({
+      method: 'GET',
+      url: `/api/files/${file.id}`,
+      headers: auth(malloryToken),
+    });
+    expect(asOutsider.statusCode).toBe(404);
+
+    // The files page lists it for the recipient, and not for the outsider.
+    const recipientFiles = await app.inject({ method: 'GET', url: '/api/files', headers: auth(bobToken) });
+    expect(
+      (recipientFiles.json() as { uploads: Array<{ id: string }> }).uploads.some((item) => item.id === file.id),
+    ).toBe(true);
+    const outsiderFiles = await app.inject({ method: 'GET', url: '/api/files', headers: auth(malloryToken) });
+    expect(
+      (outsiderFiles.json() as { uploads: Array<{ id: string }> }).uploads.some((item) => item.id === file.id),
+    ).toBe(false);
+  });
+
+  it('refuses to let a member attach somebody else file', async () => {
+    const { app } = await boot();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const malloryToken = await login(app, 'u_mallory', 'mallory-token');
+
+    // Alice's private upload, never shared in a conversation.
+    const privateFile = await uploadText(app, aliceToken, 'private.txt', 'alice only');
+
+    // Mallory opens a DM with Alice and tries to reference the private file id:
+    // that would turn "attach an id" into a read primitive for the whole thread.
+    const dm = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(malloryToken),
+      payload: { targetId: 'u_alice', targetKind: 'member' },
+    });
+    const dmId = (dm.json() as { id: string }).id;
+    const attempt = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${dmId}/messages`,
+      headers: auth(malloryToken),
+      payload: { text: '偷看', attachments: [{ id: privateFile.id, name: 'private.txt' }] },
+    });
+    expect(attempt.statusCode, attempt.body).toBe(400);
+    expect(attempt.json().error).toContain('a file you uploaded');
+
+    // And the file stays unreadable for her.
+    expect(
+      (await app.inject({ method: 'GET', url: `/api/files/${privateFile.id}`, headers: auth(malloryToken) }))
+        .statusCode,
+    ).toBe(404);
+
+    // Alice can still share it herself.
+    const own = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${dmId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '共享给你', attachments: [{ id: privateFile.id, name: 'private.txt' }] },
+    });
+    expect(own.statusCode, own.body).toBe(200);
+    expect(
+      (await app.inject({ method: 'GET', url: `/api/files/${privateFile.id}`, headers: auth(malloryToken) }))
+        .statusCode,
+    ).toBe(200);
+  });
+
+  it('revokes attachment access when the member leaves the conversation', async () => {
+    const { app, adminToken } = await bootWithAdmin();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const bobToken = await login(app, 'u_bob', 'bob-token');
+    const accountId = await createAgent(app, auth(adminToken));
+
+    const file = await uploadText(app, aliceToken, 'group-notes.txt', 'group attachment');
+    const group = await app.inject({
+      method: 'POST',
+      url: '/api/groups',
+      headers: auth(aliceToken),
+      payload: { title: '附件权限验证组', memberIds: ['u_bob', accountId] },
+    });
+    const conversationId = (group.json() as { id: string }).id;
+    await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${conversationId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '群里的附件', attachments: [{ id: file.id, name: file.name }] },
+    });
+
+    const before = await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(bobToken) });
+    expect(before.statusCode).toBe(200);
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${conversationId}/leave`,
+      headers: auth(bobToken),
+    });
+
+    const after = await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(bobToken) });
+    expect(after.statusCode).toBe(404);
+  });
+
+  it('does not serve a recalled message attachment any more', async () => {
+    const { app } = await boot();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const bobToken = await login(app, 'u_bob', 'bob-token');
+
+    const file = await uploadText(app, aliceToken, 'recall-me.txt', 'recalled attachment');
+    const opened = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(aliceToken),
+      payload: { targetId: 'u_bob', targetKind: 'member' },
+    });
+    const conversationId = (opened.json() as { id: string }).id;
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${conversationId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '撤回的附件', attachments: [{ id: file.id, name: file.name }] },
+    });
+    const messageId = (sent.json() as { message: { id: string } }).message.id;
+
+    expect((await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(bobToken) })).statusCode).toBe(200);
+    await app.inject({ method: 'POST', url: `/api/messages/${messageId}/recall`, headers: auth(aliceToken) });
+    // The reference is gone, so the recipient loses the shortcut (the uploader
+    // keeps owning the file, which is documented behaviour).
+    expect((await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(bobToken) })).statusCode).toBe(404);
+  });
+});
+
+describe('message forwarding', () => {
+  it('copies a message with its attachment into another conversation', async () => {
+    const { app, adminToken } = await bootWithAdmin();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const bobToken = await login(app, 'u_bob', 'bob-token');
+    const accountId = await createAgent(app, auth(adminToken));
+
+    const file = await uploadText(app, aliceToken, 'forwarded.txt', 'forward me');
+    const dm = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(aliceToken),
+      payload: { targetId: 'u_bob', targetKind: 'member' },
+    });
+    const dmId = (dm.json() as { id: string }).id;
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${dmId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '原始消息', attachments: [{ id: file.id, name: file.name }] },
+    });
+    const messageId = (sent.json() as { message: { id: string } }).message.id;
+
+    const group = await app.inject({
+      method: 'POST',
+      url: '/api/groups',
+      headers: auth(aliceToken),
+      payload: { title: '转发目标组', memberIds: ['u_bob', accountId] },
+    });
+    const groupId = (group.json() as { id: string }).id;
+
+    const forwarded = await app.inject({
+      method: 'POST',
+      url: `/api/messages/${messageId}/forward`,
+      headers: auth(aliceToken),
+      payload: { conversationId: groupId },
+    });
+    expect(forwarded.statusCode, forwarded.body).toBe(200);
+    const copy = (forwarded.json() as { message: { text: string; attachments: Array<{ id: string }> } }).message;
+    expect(copy.text).toBe('原始消息');
+    expect(copy.attachments[0]?.id).toBe(file.id);
+
+    // Bob (a member of the target group) sees the copy and can open the file.
+    const groupMessages = await app.inject({
+      method: 'GET',
+      url: `/api/conversations/${groupId}/messages`,
+      headers: auth(bobToken),
+    });
+    const texts = (groupMessages.json() as Array<{ text: string }>).map((item) => item.text);
+    expect(texts).toContain('原始消息');
+    expect(
+      (await app.inject({ method: 'GET', url: `/api/files/${file.id}`, headers: auth(bobToken) })).statusCode,
+    ).toBe(200);
+
+    // The original conversation is untouched.
+    const dmMessages = await app.inject({
+      method: 'GET',
+      url: `/api/conversations/${dmId}/messages`,
+      headers: auth(aliceToken),
+    });
+    expect((dmMessages.json() as Array<{ text: string }>).filter((m) => m.text === '原始消息')).toHaveLength(1);
+  });
+
+  it('refuses to forward into a conversation the caller is not in, or to the AI', async () => {
+    const { app, adminToken } = await bootWithAdmin();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const malloryToken = await login(app, 'u_mallory', 'mallory-token');
+    const accountId = await createAgent(app, auth(adminToken));
+
+    const dm = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: auth(aliceToken),
+      payload: { targetId: 'u_bob', targetKind: 'member' },
+    });
+    const dmId = (dm.json() as { id: string }).id;
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${dmId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '不可越权转发' },
+    });
+    const messageId = (sent.json() as { message: { id: string } }).message.id;
+
+    const foreign = await app.inject({
+      method: 'POST',
+      url: `/api/messages/${messageId}/forward`,
+      headers: auth(malloryToken),
+      payload: { conversationId: dmId },
+    });
+    expect(foreign.statusCode).toBe(404);
+
+    const aiConversation = await openAgentConversation(app, auth(aliceToken), accountId);
+    const toAi = await app.inject({
+      method: 'POST',
+      url: `/api/messages/${messageId}/forward`,
+      headers: auth(aliceToken),
+      payload: { conversationId: aiConversation },
+    });
+    expect(toAi.statusCode, toAi.body).toBe(400);
+
+    // A recalled message cannot be resurrected by forwarding it.
+    await app.inject({ method: 'POST', url: `/api/messages/${messageId}/recall`, headers: auth(aliceToken) });
+    const afterRecall = await app.inject({
+      method: 'POST',
+      url: `/api/messages/${messageId}/forward`,
+      headers: auth(aliceToken),
+      payload: { conversationId: dmId },
+    });
+    expect(afterRecall.statusCode, afterRecall.body).toBe(400);
   });
 });
 
