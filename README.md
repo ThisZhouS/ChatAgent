@@ -4,7 +4,7 @@
 
 核心能力：以 Hermes 风格的 agent 运行时为基础，**自带完整聊天客户端**（成员登录、联系人、会话/群聊、消息、撤回、已读回执、在线状态、附件、审批卡、会话导出），处理 Word、Excel、文件转发等企业工作。
 
-**当前状态（2026-09-13 06:00 验收态）**：8 个页面全部可用，`node scripts/acceptance.mjs` 一条命令 6/6 步通过（类型检查 0 错误 · 21 文件 / 198 用例 · 构建 · 服务端 `/health` · 接口冒烟 27/27 · 真实客户端 E2E 34/34）；安全面经**五轮独立对抗性复核**逐条复现并修复（含 1 个 P0 会话劫持）。详见 [`docs/acceptance-report.md`](docs/acceptance-report.md)。
+**当前状态（2026-09-13 06:00 验收态）**：8 个页面全部可用，`node scripts/acceptance.mjs` 一条命令 6/6 步通过（类型检查 0 错误 · 21 文件 / 199 用例 · 构建 · 服务端 `/health` · 接口冒烟 27/27 · 真实客户端 E2E 34/34）；安全面经**五轮独立对抗性复核**逐条复现并修复（含 1 个 P0 会话劫持）。详见 [`docs/acceptance-report.md`](docs/acceptance-report.md)。
 
 > **独立产品**：ChatAgent 不依赖 QQ / 企业微信 / 钉钉 / 飞书等第三方社交或办公软件即可完整运行；这些平台只作为默认关闭的可选适配器（见 [`docs/adr-0001-standalone-native-chat.md`](docs/adr-0001-standalone-native-chat.md)）。
 
@@ -100,7 +100,7 @@ node scripts/acceptance.mjs        # 6/6 步骤，任一步失败即非零退出
 
 ```bash
 pnpm typecheck                     # 全仓库类型检查（tsc + vue-tsc）
-pnpm test                          # 单元/集成测试：21 文件 / 198 用例
+pnpm test                          # 单元/集成测试：21 文件 / 199 用例
 pnpm build                         # 服务端打包 + 前端构建
 node scripts/restart-server.mjs    # 按端口重启并等待 /health（Windows 上可靠）
 node scripts/smoke.mjs             # 27 步端到端冒烟（真实 HTTP）
@@ -275,7 +275,7 @@ AI 生成的文件会自动以文件消息出现在会话里（`📎 文件名`�
 - 持久化使用 JSON 文件（账号/会话/消息/任务/文件元数据），生产可平滑替换为数据库；**服务运行期间不要手工编辑 `data/*.json`**（会被整体重写），请停机修改。
 - 任务恢复只有「running → pending 重取」，没有租约与多实例互斥。
 - ~~`production` 模式下前端未接入登录态~~ → **已接入并验证**：客户端登录页用成员令牌换取会话令牌（HttpOnly Cookie + Bearer），`production` 档位下 `scripts/smoke.mjs` 27/27、`scripts/ui-e2e.mjs` 34/34（实测 `CHATAGENT_AUTH_MODE=production`，无凭据 `GET /api/accounts` 返回 401）。
-- 依赖 CVE 扫描未执行（本机 registry 无 audit 端点）；文档解析具备 zip 炸弹防护（**实测**每个条目的真实解压字节数与压缩比，超限 413；不信任中央目录声明）与输出限长；嵌套压缩包与 PDF 解析上限未做。
+- 依赖漏洞扫描：`node scripts/audit-deps.mjs`（走公共 npm registry，默认 high/critical 非零退出）；桌面端 dev 工具链（electron 33 / electron-builder 25）的告警为已接受风险（镜像不稳定，无法在线升级）。文档解析具备 zip 炸弹防护（**实测**每个条目的真实解压字节数与压缩比，超限 413；不信任中央目录声明）与输出限长；嵌套压缩包与 PDF 解析上限未做。
 - 组织管理员可读本组织全部会话（设计如此，见 `docs/gate6-access-control-fixes.md` §9）。
 
 详见 [`docs/tasks.md`](docs/tasks.md) 的后续方向。

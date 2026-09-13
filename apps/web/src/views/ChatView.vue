@@ -668,6 +668,9 @@ function connectStream() {
           ? { ...item, text: '', attachments: [], recalledAt: event.recalledAt }
           : item,
       );
+      // A quoted message that was just recalled must not stay in the composer
+      // strip: the captured object still holds the body.
+      if (quoted.value?.id === event.messageId) quoted.value = null;
     }
     void loadConversations(true);
   });

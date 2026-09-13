@@ -986,7 +986,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       reply,
       service,
       id,
-      request.principal.id,
+      request.principal,
       credentialHash,
       { sessions, directory },
       streamLimiter,
@@ -1136,15 +1136,16 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
   return app;
 }
 
-function streamTaskEvents(
+async function streamTaskEvents(
   reply: FastifyReply,
   service: ChatAgentService,
   taskId: string,
-  principalId: string,
+  principal: Principal,
   credentialHash: string | undefined,
   auth: StreamAuthDeps,
   limiter: StreamLimiter,
 ) {
+  const principalId = principal.id;
   if (!limiter.acquire(principalId)) {
     reply.code(503).send({ error: 'too many concurrent event streams' });
     return reply;
@@ -1159,7 +1160,9 @@ function streamTaskEvents(
   });
   reply.raw.write(': connected\n\n');
 
-  const past = service.taskEngine.getEvents(taskId);
+  // Replay goes through the service so recalled bodies are redacted (the raw
+  // engine events still contain the original goal).
+  const past = await service.getTaskEvents(principal, taskId);
   for (const event of past) writeSSE(reply.raw, event);
 
   const unsubscribe = service.taskEngine.onEvent((event) => {

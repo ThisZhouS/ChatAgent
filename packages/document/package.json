@@ -18,6 +18,6 @@
     "@chatagent/hermes": "workspace:*",
     "docx": "^9.1.1",
     "mammoth": "^1.8.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }

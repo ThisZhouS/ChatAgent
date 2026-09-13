@@ -103,7 +103,8 @@
 - [x] G5b-16 体验细节：中文语言包、Ctrl/Cmd+K 搜索聚焦、aria-live、深色模式 token。
 - [x] G5b-17a 群内 `@AI` 触发任务（提及去重、最多 3 个任务、剥离提及前缀）。
 - [ ] G5b-17b 在线状态与已读回执（未做）。
-- [ ] G5b-18 依赖 CVE 扫描（BLOCKED：registry 无 audit 端点）。
+- [x] G5b-18 依赖 CVE 扫描：`scripts/audit-deps.mjs` 对公共 registry 执行；overrides + xlsx 0.20.3 + @fastify/static 10.1.3 已消掉全部 critical。
+- [ ] V-8 依赖扫描的持续集成化（需在有网络的 CI 中定期运行）。
 
 ## Gate 5 复核轮（2026-09-13 03:40）
 
@@ -136,7 +137,7 @@
 - [x] G6-11 可访问性：次级文字对比度 2.8 → 4.54（浅）/ 5.10（深），达到 WCAG AA。
 - [x] G6-12 真实客户端 E2E：`scripts/ui-e2e.mjs`（登录→AI 回复→生成 Word→下载→深色→1024×720→7 个导航页、消息撤回与已读回执）34/34。
 - [x] G6-13 运维：`scripts/restart-server.mjs`（按端口杀进程 + 等 `/health` + 记录真实 pid）。
-- [x] G6-14 回归测试：`apps/server/src/membership-security.test.ts`（20 例）+ Web 组件测试（18 例），总计 21 文件 / 198 用例。
+- [x] G6-14 回归测试：`apps/server/src/membership-security.test.ts`（20 例）+ Web 组件测试（18 例），总计 21 文件 / 199 用例。
 - [x] G6-16 消息撤回（仅发送者、窗口内、幂等；正文从历史/搜索/预览/模型上下文消失，广播 `message_recalled`，前端气泡占位 + 前端/服务端测试）。
 - [x] G6-17 修复长会话渲染缺陷：`hasEarlier` 曾作为消息列表同级分支，>50 条会话只显示加载按钮（UI E2E 抓到），已移入线程内并补回归测试。
 - [x] G6-18 已读回执（1:1）：`GET /api/conversations/:id/read-receipts` + 前端「已读/未读」标注，仅参与者可读。
@@ -153,6 +154,7 @@
 - [x] G6-29 会话附件共享（参与者可下载，越权引用防护 + 退出即失效）与消息转发（`/messages/:id/forward`，不转 AI、撤回不可复活、审计）。
 - [x] G6-30 引用回复：`replyTo` 契约与同会话校验，前端引用条与气泡引用渲染（撤回后不泄露正文）。
 - [x] G6-31 复核轮 6 修复：转发件可读（溯源）、任务 result/outcome 脱敏、入站附件归属校验、转发拒绝审计、413 审计、管理员 break-glass 写 `file.admin_access`。
+- [x] G6-32 复核轮 7 修复：SSE 回放脱敏、群召唤 goal 双向匹配、审批载荷脱敏、旧接口 replyTo 校验、列表不写 break-glass、产物 break-glass 审计、授权后校验引用、引用条随撤回清空；依赖扫描从 BLOCKED 变为可执行。
 - [x] G6-15 二次复核（N1–N6）：建群**只增不减**、退群不可自我复活（409）、拒绝重建写审计、工作台发送写审计、上传拒绝写审计、成员 id 字符集约束。
 
 ## 后续方向

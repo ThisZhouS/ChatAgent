@@ -134,7 +134,7 @@
 - **真实客户端 E2E**：`scripts/ui-e2e.mjs` 经 CDP 驱动**打包后的 exe**（登录 → AI 回复 → 生成 Word → 聊天内下载 → 深色模式 → 1024×720 → 7 个导航页），**34/34 通过**，截图存 `Temp/ui-shots/`。
 - **可访问性修复**：E2E 计算 WCAG 对比度，发现浅色次级文字仅 2.8:1、深色 4.3:1 → 调整 `--ca-muted` 后为 **4.54 / 5.10**。
 - 运维：`scripts/restart-server.mjs`（按端口杀进程 + 等 `/health`），修掉本轮真实遇到的「旧进程占端口导致新构建未生效」。
-- 验证：`pnpm typecheck` 通过；`pnpm test` **21 文件 / 198 用例**通过（含新增 `membership-security.test.ts` 42 例、Web 测试 26 例与 document 包 13 例）；`pnpm build` 通过；`node scripts/smoke.mjs` 27/27；`node scripts/ui-e2e.mjs` 34/34。
+- 验证：`pnpm typecheck` 通过；`pnpm test` **21 文件 / 199 用例**通过（含新增 `membership-security.test.ts` 43 例、Web 测试 26 例与 document 包 13 例）；`pnpm build` 通过；`node scripts/smoke.mjs` 27/27；`node scripts/ui-e2e.mjs` 34/34。
 
 ## 06:00 验收结论（2026-09-13 05:26 终态）
 
@@ -152,7 +152,7 @@
 
 ```bash
 pnpm typecheck                      # 0 错误（tsc + vue-tsc）
-pnpm test                           # 21 文件 / 198 用例全绿
+pnpm test                           # 21 文件 / 199 用例全绿
 pnpm build                          # tsup + vite 通过
 node scripts/restart-server.mjs     # server 8787 healthy（storage.pending=false）
 pnpm build:desktop                  # 重新打包 exe（2026-09-13 04:38）
@@ -178,7 +178,7 @@ node scripts/ui-e2e.mjs --server http://localhost:8796                          
 | **消息转发** | 实用性/交互性 | `POST /api/messages/:id/forward`：复制正文与附件、`metadata.forwardedFrom` 溯源、不转发 AI（400）、撤回不可复活（400）、广播事件 + 审计；前端气泡「转发」+「已转发」提示 |
 | **验收脚本加固** | 可验证性 | 客户端 E2E 增加真实转发点击（**34 项检查**）；会话等待改为等标题（客户端会先自动选中别的会话）；截图失败不再让整轮失败 |
 
-终态（2026-09-13 22:25）：`node scripts/acceptance.mjs` → **6/6 步**（typecheck 0 错误 · 21 文件 / 198 用例 · build · `/health` · 冒烟 27/27 · 客户端 E2E 34/34）；`git push` 已到 `origin/main`（`9b0f60f`）。
+终态（2026-09-13 22:25）：`node scripts/acceptance.mjs` → **6/6 步**（typecheck 0 错误 · 21 文件 / 199 用例 · build · `/health` · 冒烟 27/27 · 客户端 E2E 34/34）；`git push` 已到 `origin/main`（`9b0f60f`）。
 
 ## 未验证/受限
 

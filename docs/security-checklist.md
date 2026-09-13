@@ -43,7 +43,7 @@
 ## 5. 运行与依赖
 
 - [ ] Node ≥ 20.19；使用 `pnpm install --frozen-lockfile` 部署。
-- [ ] 依赖漏洞扫描：本机 registry（npmmirror）无 audit 端点，`pnpm audit` 不可用 → 需要在有漏洞库的环境执行，或使用离线扫描（**未完成项**）。
+- [ ] 依赖漏洞扫描：`node scripts/audit-deps.mjs`（走 `https://registry.npmjs.org`，默认 high/critical 非零退出）。当前状态：critical 0；桌面端 dev 工具链（electron 33 / electron-builder 25）仍有 high/moderate 告警，属**已接受风险**（本地镜像不稳定，无法在线升级），需要定期复扫。
 - [ ] 上传限制：单文件 20 MiB、扩展名白名单（docx/xlsx/csv/txt/md/pdf/图片/zip）、上传与写入限流。超限必须由 `file.file.truncated` 判定并返回 413（G6-4：仅依赖框架异常时会出现「静默截断 + 200」）。
 - [ ] 限流桶：登录按身份 10/min + 按地址 60/min；写操作 240/min；上传 30/min；webhook 300/min。
 - [ ] 单主体 SSE 并发上限 8 条（原生流另有 5 条上限），超出返回 503。

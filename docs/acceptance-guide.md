@@ -123,7 +123,7 @@ curl -s -o /dev/null -w '%{http_code}
 
 ```bash
 pnpm typecheck      # tsc + vue-tsc
-pnpm test           # 服务端/包 18 文件 172 用例 + 前端 3 文件 26 用例（共 21 文件 / 163）
+pnpm test           # 服务端/包 18 文件 173 用例 + 前端 3 文件 26 用例（共 21 文件 / 163）
 pnpm build          # tsup + vite
 node scripts/restart-server.mjs # 按端口重启服务端并等待 /health
 node scripts/smoke.mjs          # 27 项端到端自检（本机开发档位）

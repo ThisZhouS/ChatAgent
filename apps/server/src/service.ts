@@ -764,20 +764,21 @@ export class ChatAgentService {
   ): Promise<{ message: ChatMessage; taskId?: string; taskIds?: string[] }> {
     this.requireMember(principal);
     await this.assertAttachmentsOwned(principal, input.attachments);
-    // A quote must point at a message of this conversation; anything else would
-    // let a caller probe or reference other conversations.
-    if (input.replyTo !== undefined) {
-      const quoted = await this.messages.findById(input.replyTo);
-      if (!quoted || quoted.conversationId !== conversationId) {
-        throw new ServiceError(400, 'the quoted message is not in this conversation', 'reply_target');
-      }
-    }
     const conversation = await this.conversations.get(conversationId);
     if (!conversation || !canReadConversation(principal, conversation)) {
       throw new ServiceError(404, 'conversation not found');
     }
     if (!conversation.participantIds.includes(principal.id)) {
       throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    // A quote must point at a message of this conversation. It is validated only
+    // after the caller is known to be a participant, so the error cannot be used
+    // to probe which message ids exist in other conversations.
+    if (input.replyTo !== undefined) {
+      const quoted = await this.messages.findById(input.replyTo);
+      if (!quoted || quoted.conversationId !== conversationId) {
+        throw new ServiceError(400, 'the quoted message is not in this conversation', 'reply_target');
+      }
     }
 
     const kind = input.attachments.length > 0 ? 'mixed' : 'text';
@@ -1187,6 +1188,14 @@ export class ChatAgentService {
     if (!conversation.participantIds.includes(principal.id)) {
       throw new ServiceError(403, 'forbidden', 'not_a_participant');
     }
+    // Validated after authorization so the error cannot be used to probe which
+    // message ids live in other conversations.
+    if (message.replyTo !== undefined) {
+      const quoted = await this.messages.findById(message.replyTo);
+      if (!quoted || quoted.conversationId !== conversation.id) {
+        throw new ServiceError(400, 'the quoted message is not in this conversation', 'reply_target');
+      }
+    }
 
     return this.deliver({
       account,
@@ -1325,8 +1334,13 @@ export class ChatAgentService {
     if (redacted.length === 0 && !recalled.some((text) => task.goal.includes(text))) return task;
     // The goal is the message text itself, and the recorded result may quote it
     // back (the assistant echoed it), so both are redacted as well.
+    // A group summon strips the "@name" prefix, so the stored goal is a
+    // substring of the recalled text rather than equal to it: both directions
+    // count as "derived from a recalled message".
     const scrub = (value: string): string =>
-      recalled.some((text) => value.includes(text)) ? '[已撤回]' : value;
+      recalled.some((text) => value.includes(text) || (value.trim() !== '' && text.includes(value.trim())))
+        ? '[已撤回]'
+        : value;
     const goal = scrub(task.goal);
     const result = typeof task.result === 'string' ? scrub(task.result) : task.result;
     const outcome = task.outcome
@@ -1442,7 +1456,22 @@ export class ChatAgentService {
         : undefined;
       if (canDecideApprovalRecord(principal, approval, account)) visible.push(approval);
     }
-    return visible;
+    // An approval carries the outbound payload, so a recalled message must not
+    // stay readable through the approval either.
+    return Promise.all(visible.map((approval) => this.redactApproval(approval)));
+  }
+
+  /** Scrubs any recalled body from the approval payload. */
+  private async redactApproval(approval: ApprovalRecord): Promise<ApprovalRecord> {
+    if (!approval.taskId) return approval;
+    const task = await this.taskEngine.get(approval.taskId);
+    if (!task) return approval;
+    const recalled = await this.recalledTextsOf(task);
+    if (recalled.length === 0) return approval;
+    const matches = (value: string): boolean =>
+      recalled.some((text) => value.includes(text) || (value.trim() !== '' && text.includes(value.trim())));
+    if (typeof approval.action.text !== 'string' || !matches(approval.action.text)) return approval;
+    return { ...approval, action: { ...approval.action, text: '[已撤回]' } };
   }
 
   /** Records an approve/reject decision; the requester can never self-approve. */
@@ -1664,9 +1693,24 @@ export class ChatAgentService {
   private async canReadArtifactShared(
     principal: Principal,
     artifact: StoredArtifactMeta,
+    auditBreakGlass = true,
   ): Promise<boolean> {
     const task = artifact.taskId ? await this.taskEngine.get(artifact.taskId) : undefined;
-    if (canReadArtifact(principal, artifact, task)) return true;
+    if (canReadArtifact(principal, artifact, task)) {
+      // Same break-glass rule as uploads: an admin reading an artifact outside
+      // their conversations leaves a trace.
+      if (auditBreakGlass && artifact.ownerId !== principal.id && isOrgAdmin(principal)) {
+        this.audit?.({
+          action: 'file.admin_access',
+          outcome: 'ok',
+          actorId: principal.id,
+          organizationId: artifact.organizationId,
+          target: artifact.id,
+          detail: `artifact owner=${artifact.ownerId}`,
+        });
+      }
+      return true;
+    }
     if (!task?.conversationId) return false;
     const conversation = await this.conversations.get(task.conversationId);
     if (!conversation) return false;
@@ -1683,12 +1727,13 @@ export class ChatAgentService {
 
     const allowedArtifacts: BaseFileView[] = [];
     for (const artifact of artifactList) {
-      if (await this.canReadArtifactShared(principal, artifact)) allowedArtifacts.push(artifactView(artifact));
+      if (await this.canReadArtifactShared(principal, artifact, false)) allowedArtifacts.push(artifactView(artifact));
     }
 
     const allowedUploads: BaseFileView[] = [];
     for (const upload of uploadList) {
-      if (await this.canReadUploadShared(principal, upload)) allowedUploads.push(fileView(upload));
+      // breakGlass auditing is for single-file reads; a listing is not a read.
+      if (await this.canReadUploadShared(principal, upload, false)) allowedUploads.push(fileView(upload));
     }
 
     return { artifacts: allowedArtifacts, uploads: allowedUploads };
@@ -1722,12 +1767,15 @@ export class ChatAgentService {
   private async canReadUploadShared(
     principal: Principal,
     upload: { id: string; organizationId: string; ownerId: string },
+    /** Listing must not pretend to be a break-glass read of every file. */
+    auditBreakGlass = true,
   ): Promise<boolean> {
     if (canReadUpload(principal, upload)) {
       // Admin break-glass: an admin may read every file of the organization, but
       // reading somebody else's file without a conversation reference is logged
-      // so the bypass is traceable.
+      // so the bypass is traceable (single-file reads only).
       if (
+        auditBreakGlass &&
         upload.ownerId !== principal.id &&
         isOrgAdmin(principal) &&
         !(await this.uploadWasSharedWith(principal, upload))

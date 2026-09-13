@@ -1158,6 +1158,52 @@ describe('message recall', () => {
     }
   });
 
+  it('redacts a group summon goal that only contains the recalled text', async () => {
+    const { app, adminToken } = await bootWithAdmin();
+    const aliceToken = await login(app, 'u_alice', 'alice-token');
+    const bobToken = await login(app, 'u_bob', 'bob-token');
+    const accountId = await createAgent(app, auth(adminToken));
+
+    const group = await app.inject({
+      method: 'POST',
+      url: '/api/groups',
+      headers: auth(aliceToken),
+      payload: { title: '群召唤脱敏组', memberIds: ['u_bob', accountId] },
+    });
+    const groupId = (group.json() as { id: string }).id;
+
+    // The group summon strips "@ChatAgent 助理", so the task goal is a substring
+    // of the recalled message rather than the whole text.
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${groupId}/messages`,
+      headers: auth(aliceToken),
+      payload: { text: '@ChatAgent 助理 GROUP-SECRET-X9 请整理', mentions: [accountId] },
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    const taskId = (sent.json() as { taskIds?: string[] }).taskIds?.[0];
+    expect(taskId).toBeTruthy();
+    const messageId = (sent.json() as { message: { id: string } }).message.id;
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/messages/${messageId}/recall`,
+      headers: auth(aliceToken),
+    });
+
+    const task = await app.inject({ method: 'GET', url: `/api/tasks/${taskId}`, headers: auth(aliceToken) });
+    expect(JSON.stringify(task.json())).not.toContain('GROUP-SECRET-X9');
+    const events = await app.inject({
+      method: 'GET',
+      url: `/api/tasks/${taskId}/events`,
+      headers: auth(aliceToken),
+    });
+    expect(JSON.stringify(events.json())).not.toContain('GROUP-SECRET-X9');
+    const adminView = await app.inject({ method: 'GET', url: '/api/tasks', headers: auth(adminToken) });
+    expect(JSON.stringify(adminView.json())).not.toContain('GROUP-SECRET-X9');
+    expect(bobToken.length).toBeGreaterThan(0);
+  });
+
   it('keeps the recalled body out of task events and the resumed goal', async () => {
     const { app, adminToken } = await bootWithAdmin();
     const aliceToken = await login(app, 'u_alice', 'alice-token');

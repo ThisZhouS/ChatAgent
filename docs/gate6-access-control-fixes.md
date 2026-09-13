@@ -93,7 +93,7 @@ N7（`chatId` 存在性探测：403 vs 200）不修：`chatId` 本就是调用�
 
 ### 复核轮 3（终检）：同一子 agent 对 N1–N6 的再验证 + 新增收尾项
 
-复核结论：**N1、N2、N3、N4、N5、N6 全部 CONFIRMED**（含现场证据：邀请者不被踢、退群者 `409`、拒绝重建与上传拒绝写审计、工作台发送写审计、成员 id 校验 400、`pnpm test` 21 文件 / 198 用例、冒烟 27/27）。同时提出 3 项收尾问题，均已修复：
+复核结论：**N1、N2、N3、N4、N5、N6 全部 CONFIRMED**（含现场证据：邀请者不被踢、退群者 `409`、拒绝重建与上传拒绝写审计、工作台发送写审计、成员 id 校验 400、`pnpm test` 21 文件 / 199 用例、冒烟 27/27）。同时提出 3 项收尾问题，均已修复：
 
 | ID | 复核发现 | 修复 |
 | --- | --- | --- |
@@ -241,7 +241,7 @@ N7（`chatId` 存在性探测：403 vs 200）不修：`chatId` 本就是调用�
 
 ```
 PASS  typecheck (tsc + vue-tsc)       · 8.5s
-PASS  unit / integration tests       21 文件 / 198 用例 · 20.0s
+PASS  unit / integration tests       21 文件 / 199 用例 · 20.0s
 PASS  build (server + web)           built in 8.24s · 21.6s
 PASS  restart server                 health: {"ok":true,"storage":{"pending":false}} · 3.1s
 PASS  API smoke (27 checks)          27/27 checks passed · 1.3s
@@ -343,6 +343,29 @@ own bubbles leak?  false
 | **N2（P2）** | 组织管理员绕过新 ACL（既有设计：管理员可读本组织全部会话与文件） | 保留设计，但**管理员读取「未被分享给自己」的文件会写 `file.admin_access` 审计**（actor/target/owner），把隐形绕过变成可追溯的 break-glass；新增回归测试 |
 | N4 / N8 | 撤回后由所有者重新分享同一文件会恢复访问；`/api/files` 的扫描是 O(上传 × 会话 × 消息) | 作为边界记录：前者是「所有者始终可以分享自己的文件」的必然结果；后者在当前数据规模下 5ms 级，已在限制章节标注需要索引 |
 
+## 8.19 复核轮 7（引用/转发/脱敏/审计）的修复 + 依赖漏洞扫描（2026-09-13 22:35）
+
+第七轮独立复核（提交 `35a2558`）结论：**引用回复 CONFIRMED**（2 处缺口）、**转发溯源 CONFIRMED**（含伪造 metadata、环路、6 跳全部拒绝）、**break-glass 审计 CONFIRMED**、回归全绿；同时给出 2 个 P2 与若干 P3。已修：
+
+| ID | 复核发现 | 修复 |
+| --- | --- | --- |
+| **P2-1** | 任务 SSE 回放直接读引擎事件，**绕过脱敏**（`app.ts` 原 `taskEngine.getEvents`），参与者在流里能看到撤回正文 | SSE 回放改走 `service.getTaskEvents(principal, id)`（与 REST 同一套脱敏）；`streamTaskEvents` 改为 async 并接收 principal |
+| **P2-2** | 群内 `@AI` 的任务 goal 是**去掉提及前缀**的文本，脱敏用 `includes(整条正文)` 匹配不到 | 脱敏改为**双向匹配**（goal 含正文或正文含 goal 都视为派生自被撤回消息）；新增群召唤回归测试 |
+| **P3-1** | 审批记录的 `action.text` 仍保留撤回正文 | `listApprovals` 对每条审批按任务会话的撤回集脱敏 |
+| **P3-2** | 旧接口 `POST /api/messages` 不校验 `replyTo`，可存下**别的会话**的消息 id | 与原生路径一致：同会话校验 |
+| **P3-3** | 管理员 `GET /api/files` 列表会为每个外来文件写一条 break-glass 审计（14 条噪音） | 只有**单文件读取**才算 break-glass，列表不再写 |
+| **P3-4** | 生成的**产物**没有 break-glass 审计 | `canReadArtifactShared` 加同一审计钩子（同样只对单文件读取） |
+| **P4-1** | `replyTo` 校验在授权之前 → 跨组织可用 404/400 差异探测「消息是否属于某会话」 | 校验移到参与者检查**之后** |
+| **P4-2** | 客户端引用条在被引用消息撤回后仍显示正文 | `message_recalled` 事件到达时清空引用条 |
+| P4-3 / P4-4 | 可引用一条已撤回消息（不泄露正文）；`tracesBackToOwner` 会全局走 metadata（今天 metadata 由服务端写入） | 记录为边界与加固备注 |
+
+**依赖漏洞扫描不再 BLOCKED**：实测本机可访问 `registry.npmjs.org`，因此新增 `scripts/audit-deps.mjs`（对公共 registry 跑 `pnpm audit`，按严重度分组，默认 high/critical 时非零退出；离线时明确报告 UNVERIFIED）。首轮结果 **70 条（2 critical / 28 high）**，本轮处理：
+
+- `pnpm-workspace.yaml` 增加 overrides（lodash / tar / minimatch / semver / ansi-regex / ejs / got / glob）→ **critical 清零**（70 → 47 条）；
+- `xlsx` 从 npm 的 0.18.5 升级为 SheetJS 官方 CDN 的 **0.20.3**（解析上传文件的热路径，消掉 2 条 high）；
+- `@fastify/static` 8.0.4 → **10.1.3**（路径穿越，修掉 1 条 high；已用 `/assets/../package.json` 探测返回 404）。
+- 桌面端：electron/electron-builder 的升级尝试因镜像不稳定失败（postinstall 下载超时），已回退到可用的 33.2.0 / 25.1.8 并从本地缓存恢复二进制；其 dev-only 工具链漏洞在限制章节标注为**已接受风险**，`audit-deps.mjs` 会持续列出。
+
 ## 9. 生产档位实测（2026-09-13 04:35）
 
 `CHATAGENT_AUTH_MODE=production` + 独立数据目录，无凭据请求一律 401：
@@ -369,7 +392,7 @@ SMOKE_MEMBER=u_fresh SMOKE_TOKEN=fresh-token CHATAGENT_URL=http://localhost:8798
 
 ```bash
 pnpm typecheck                     # tsc --noEmit + vue-tsc，退出码 0
-pnpm test                          # 21 文件 / 198 用例全绿（服务端与包 18 文件/172 例 + Web 3 文件/26 例）
+pnpm test                          # 21 文件 / 199 用例全绿（服务端与包 18 文件/173 例 + Web 3 文件/26 例）
 pnpm build                         # 服务端 tsup + Web vite + Electron 资源
 node scripts/restart-server.mjs    # 重启并等待 /health
 node scripts/smoke.mjs             # 27/27

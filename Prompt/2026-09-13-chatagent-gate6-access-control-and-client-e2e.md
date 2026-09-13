@@ -84,7 +84,7 @@ node scripts/ui-e2e.mjs            # 30/30（真实 exe + 截图）
 
 ### 验证
 
-- `pnpm typecheck` / `pnpm build` 通过；`pnpm test` **21 文件 / 198 用例**（服务端与包 172 + Web 26）全绿；冒烟 27/27；客户端 E2E **34/34**。
+- `pnpm typecheck` / `pnpm build` 通过；`pnpm test` **21 文件 / 199 用例**（服务端与包 173 + Web 26）全绿；冒烟 27/27；客户端 E2E **34/34**。
 
 ### 复核轮 4（撤回/回执/审计/面板）与修复
 
@@ -118,6 +118,11 @@ node scripts/ui-e2e.mjs            # 30/30（真实 exe + 截图）
 ### 复核轮 6 修复（21:30）
 
 - 转发件死链（N1）：附件读取授权增加转发溯源；任务 result/outcome 撤回脱敏（N6）；入站附件归属校验（N3）；转发拒绝审计（N5）；413 审计 + 删除不可达分支（N7）；管理员读取未分享文件写 `file.admin_access`（N2 决策）。
+
+### 复核轮 7 修复 + 依赖扫描（22:35）
+
+- 修复：SSE 回放脱敏（P2）、群召唤 goal 双向匹配脱敏（P2）、审批载荷脱敏、旧接口 replyTo 校验、文件列表不写 break-glass、产物 break-glass 审计、引用校验移到授权之后、引用条随撤回清空。
+- 依赖漏洞扫描解除 BLOCKED：新增 `scripts/audit-deps.mjs`（公共 registry），overrides + xlsx 0.20.3 + @fastify/static 10.1.3 把 critical 从 2 降到 0。
 
 ## 未完成 / BLOCKED
 
