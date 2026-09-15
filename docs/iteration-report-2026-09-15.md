@@ -6,9 +6,9 @@
 
 | 命令 | 结果 |
 |---|---|
-| `node scripts/acceptance.mjs` | **7/7 步通过**：typecheck 0 错 · 242 用例 · build 通过 · 健康检查 · API smoke 27/27 · 依赖审计门（critical 0）· client E2E **37/37**（新打包 exe，electron 39.8.10） |
+| `node scripts/acceptance.mjs` | **7/7 步通过**：typecheck 0 错 · 247 用例 · build 通过 · 健康检查 · API smoke 27/27 · 依赖审计门（critical 0）· client E2E **37/37**（新打包 exe，electron 39.8.10） |
 | `tsc --noEmit` / `vue-tsc --noEmit` | 0 错 |
-| vitest 根 / web | 208/208（22 文件）· 34/34（5 文件） |
+| vitest 根 / web | 208/208（22 文件）· 39/39（6 文件） |
 | `pnpm audit --registry=https://registry.npmjs.org` | **41 → 2**（仅剩 extract-zip×2，官方无已发布补丁版，仅 dev 打包链使用） |
 | 桌面 exe | 重新打包成功（NSIS 102MB，electron 39.8.10 + builder 26.16.1），E2E 全过 |
 | 桌面关窗续跑 smoke（真实 Electron 运行时） | 6/6 |
@@ -35,6 +35,8 @@
 5. 同步为 best-effort：服务端不可达不影响本地功能（降级策略已实现）。
 
 ## 三、交互性（Interactivity / UX）
+
+0. **审批界面组件测试（第五波新增）**：审批的服务端链路此前已有 smoke 覆盖，但前端没有测试。新增 5 项：批准 → 决策 + **续跑被挂起任务**；驳回 → 决策且**不**续跑；非 owner/admin 按钮禁用并给出原因；决策失败（403）如实展示；动作摘要与发起人渲染。这补上了"授权闭环"在 UI 侧的语义验证。
 
 1. **审计确认**（定向检查）：Enter 发送/Shift+Enter 换行、滚动锚定、未读徽标（总会话+单会话）、SSE 断线横幅、在线状态点、空/加载/错误态、Ctrl+K 聚焦搜索——均已具备，无需重复造。
 2. **搜索命中跳转 + 高亮（第二波新增）**：点击聊天记录搜索结果不再只打开会话，而是定位到具体消息——平滑滚动居中并闪烁高亮 1.8s（组件测试覆盖，jsdom scrollIntoView 已 stub 验证）。

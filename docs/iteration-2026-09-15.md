@@ -107,3 +107,15 @@
 顺带清理：解析路由里重复的 `truncated` 检查（保留带审计的那一处）。
 
 证据：根 vitest **208/208**（22 文件）；web **34/34**；tsc 0 错。
+
+## 第五波（审批 UI 的组件测试）
+
+审批的**服务端链路**已由 API smoke 覆盖（`send_message requires approval` → `waiting_approval` → 他人审批），但**前端审批界面没有任何测试**——而"批准并继续"是否真的续跑被挂起的任务、驳回是否不续跑，正是授权闭环的关键语义。新增 `apps/web/src/views/ApprovalsView.test.ts`（5 项，全绿）：
+
+- 待审批动作摘要渲染（`send_message → chat:c-1：季度汇报`）与发起人；
+- **批准**：`decide(id,'approved')` 且**续跑** `tasks.resume(taskId)`；
+- **驳回**：`decide(id,'rejected')` 且**不**续跑；
+- 非 owner/admin：决策按钮禁用 + 提示"只有组织所有者/管理员可以审批"；
+- 决策失败（403 发起人不能自审）：错误如实展示，不伪装成功。
+
+证据：web vitest **39/39**（6 文件）；vue-tsc 0 错。
