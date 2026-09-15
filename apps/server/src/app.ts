@@ -16,6 +16,7 @@ import {
   generateWordSchema,
   inboundMessageSchema,
   createMemberSchema,
+  localTaskSyncSchema,
   loginSchema,
   nativeMessageSchema,
   openConversationSchema,
@@ -36,6 +37,7 @@ import { ApprovalStore, OutboxStore } from './approvals';
 import { AuditLog } from './audit';
 import {
   ANONYMOUS_PRINCIPAL,
+  isAuthenticated,
   MemberDirectory,
   readBearerToken,
   readCookieToken,
@@ -54,6 +56,7 @@ import {
   AccountStore,
   ArtifactStore,
   ConversationStore,
+  LocalTaskReceiptStore,
   MessageStore,
   ReadStateStore,
   SessionStore,
@@ -134,6 +137,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     join(config.dataDir, 'sessions.json'),
     config.native.sessionTtlSeconds,
   );
+  const localTasks = new LocalTaskReceiptStore();
   const events = new NativeEventHub();
   const audit = new AuditLog(config.auditFilePath);
   const limiter = new RateLimiter(DEFAULT_RATE_LIMITS);
@@ -964,6 +968,37 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
 
   // Tasks -------------------------------------------------------------------
   app.get('/api/tasks', async (request) => service.listTasks(request.principal));
+
+  // Local task receipts (on-device agent host mirror). Receipts are scoped to
+  // the authenticated member: they are copies of that member's own device work,
+  // and no server→device command path exists here on purpose.
+  app.post('/api/local-tasks', async (request, reply) => {
+    if (!isAuthenticated(request.principal)) {
+      return reply.code(401).send({ error: 'authentication required' });
+    }
+    const parsed = localTaskSyncSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    const memberId = request.principal.id;
+    const accepted = await localTasks.upsert(parsed.data.receipts, memberId);
+    audit.record({
+      action: 'local_tasks.sync',
+      outcome: 'ok',
+      actorId: memberId,
+      target: `member:${memberId}`,
+      detail: `${accepted} receipts`,
+      ip: request.ip,
+    });
+    return { accepted };
+  });
+
+  app.get('/api/local-tasks', async (request, reply) => {
+    if (!isAuthenticated(request.principal)) {
+      return reply.code(401).send({ error: 'authentication required' });
+    }
+    return localTasks.list(request.principal.id);
+  });
 
   app.post('/api/tasks', async (request, reply) => {
     const parsed = createTaskSchema.safeParse(request.body);

@@ -9,6 +9,7 @@ export default defineConfig({
       '@chatagent/im-gateway': fileURLToPath(new URL('packages/im-gateway/src/index.ts', import.meta.url)),
       '@chatagent/document': fileURLToPath(new URL('packages/document/src/index.ts', import.meta.url)),
       '@chatagent/task-engine': fileURLToPath(new URL('packages/task-engine/src/index.ts', import.meta.url)),
+      '@chatagent/agent-host': fileURLToPath(new URL('packages/agent-host/src/index.ts', import.meta.url)),
     },
   },
   test: {

@@ -22,6 +22,136 @@ const sessions = ref<
   Array<{ id: string; createdAt: string; expiresAt: string; lastSeenAt: string; current: boolean }>
 >([]);
 
+// --- Local agent host (desktop only; hidden in a plain browser) ---------------
+type HostStatus = {
+  deviceId?: string;
+  agentId?: string;
+  running?: boolean;
+  runningTasks?: number;
+  paused?: boolean;
+  executor?: string;
+  executorReason?: string;
+  error?: string;
+};
+type HostTask = {
+  taskId?: string;
+  state?: string;
+  kind?: string;
+  goal?: string;
+  artifacts?: Array<{ name?: string; sha256?: string }>;
+  error?: string;
+  summary?: string;
+  createdAt?: string;
+  exitCode?: number | null;
+};
+
+const hasHost = computed(() => Boolean(window.chatagent?.host));
+const hostStatus = ref<HostStatus | null>(null);
+const hostTasks = ref<HostTask[]>([]);
+const hostError = ref('');
+const hostBusy = ref(false);
+const hostGoal = ref('');
+const hostKind = ref<'document' | 'side_effect'>('document');
+
+async function loadHost() {
+  const bridge = window.chatagent?.host;
+  if (!bridge) return;
+  try {
+    const statusRes = await bridge.command({ type: 'status' });
+    if (statusRes.ok) hostStatus.value = (statusRes.result ?? {}) as HostStatus;
+    else hostError.value = `status: ${statusRes.error ?? 'unknown'}`;
+
+    const listRes = await bridge.command({ type: 'list' });
+    if (listRes.ok) {
+      hostTasks.value = ((listRes.result ?? {}) as { tasks?: HostTask[] }).tasks ?? [];
+      void syncHostReceipts(hostTasks.value);
+    } else {
+      hostError.value = `list: ${listRes.error ?? 'unknown'}`;
+    }
+  } catch (err) {
+    hostError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/**
+ * Mirrors on-device task records to the server so the workbench (任务页) can
+ * show local agent work. The device is authoritative; the server only keeps an
+ * auth-scoped copy. Silent best-effort: an offline server must not break the
+ * local settings card.
+ */
+async function syncHostReceipts(tasks: HostTask[]): Promise<void> {
+  const receipts = tasks
+    .filter((t) => t.taskId && t.state && t.goal)
+    .map((t) => ({
+      deviceId: hostStatus.value?.deviceId ?? 'unknown-device',
+      agentId: hostStatus.value?.agentId ?? 'hermes',
+      taskId: t.taskId as string,
+      goal: (t.goal ?? '').slice(0, 2000),
+      kind: t.kind ?? 'document',
+      state: t.state as 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted',
+      executor: hostStatus.value?.executor === 'hermes' ? ('hermes' as const) : ('fake' as const),
+      error: t.error?.slice(0, 500),
+      summary: t.summary?.slice(0, 500),
+      artifacts: (t.artifacts ?? []).map((a) => ({ name: a.name ?? 'artifact', sha256: a.sha256 ?? '' })),
+      createdAt: t.createdAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }));
+  if (receipts.length === 0) return;
+  try {
+    await api.localTasks.sync(receipts);
+  } catch {
+    // best-effort only
+  }
+}
+
+async function runHostCommand(command: unknown) {
+  const bridge = window.chatagent?.host;
+  if (!bridge) return;
+  hostBusy.value = true;
+  hostError.value = '';
+  try {
+    const res = await bridge.command(command);
+    if (!res.ok) hostError.value = `${res.error ?? 'command failed'}${res.detail ? ` — ${res.detail}` : ''}`;
+    await loadHost();
+  } catch (err) {
+    hostError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    hostBusy.value = false;
+  }
+}
+
+function submitHostTask() {
+  const goal = hostGoal.value.trim();
+  if (!goal) {
+    hostError.value = '请填写任务目标';
+    return;
+  }
+  void runHostCommand({
+    type: 'submit',
+    taskId: `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    goal,
+    kind: hostKind.value,
+    toolsets: ['document'],
+  });
+  hostGoal.value = '';
+}
+
+function hostStateTag(state?: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (state === 'succeeded') return 'success';
+  if (state === 'running' || state === 'queued') return 'warning';
+  if (state === 'failed' || state === 'cancelled' || state === 'interrupted') return 'danger';
+  return 'info';
+}
+
+function artifactNames(artifacts?: Array<{ name?: string; sha256?: string }>): string {
+  return (artifacts ?? []).map((a) => a.name ?? '').filter(Boolean).join(', ') || '—';
+}
+
+function quitApp() {
+  void window.chatagent?.host?.quitApp();
+}
+
+
 async function loadSessions() {
   try {
     sessions.value = await api.auth.sessions();
@@ -80,6 +210,7 @@ onMounted(async () => {
   }
   if (isAdmin.value) await loadAudit();
   await loadSessions();
+  await loadHost();
 });
 </script>
 
@@ -197,6 +328,94 @@ CHATAGENT_MODEL_NAME=your-model</pre>
         </el-card>
       </el-col>
     </el-row>
+
+    <el-card v-if="hasHost" shadow="never" class="host-card">
+      <template #header>
+        <div class="row-title">
+          <span>
+            本机 Agent 主机
+            <el-tag size="small" :type="hostStatus?.running ? 'success' : 'danger'" class="ml-1">
+              {{ hostStatus?.running ? '运行中' : '已停止' }}
+            </el-tag>
+            <el-tag v-if="hostStatus?.paused" size="small" type="warning" class="ml-1">已暂停</el-tag>
+            <el-tag size="small" type="info" class="ml-1">{{ hostStatus?.executor ?? '—' }}</el-tag>
+          </span>
+          <span>
+            <el-button size="small" :loading="hostBusy" @click="loadHost">刷新</el-button>
+            <el-button size="small" :loading="hostBusy" @click="runHostCommand({ type: hostStatus?.paused ? 'resume' : 'pause' })">
+              {{ hostStatus?.paused ? '继续' : '暂停后台' }}
+            </el-button>
+            <el-button size="small" type="warning" plain :loading="hostBusy" @click="runHostCommand({ type: 'stop' })">
+              停止主机
+            </el-button>
+            <el-button size="small" type="danger" plain :loading="hostBusy" @click="quitApp">
+              停止 Agent 并退出
+            </el-button>
+          </span>
+        </div>
+      </template>
+
+      <p v-if="hostStatus?.executorReason" class="muted">
+        <el-tag size="small" type="warning">注意</el-tag>
+        {{ hostStatus.executorReason }}
+      </p>
+      <el-alert v-if="hostError" :title="hostError" type="error" show-icon class="card" :closable="false" />
+
+      <el-descriptions :column="3" border size="small">
+        <el-descriptions-item label="设备">{{ hostStatus?.deviceId ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item label="Agent">{{ hostStatus?.agentId ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item label="运行中任务数">{{ hostStatus?.runningTasks ?? 0 }}</el-descriptions-item>
+      </el-descriptions>
+
+      <div class="host-submit">
+        <el-input
+          v-model="hostGoal"
+          placeholder="输入任务目标（提交给本机 Agent）"
+          :disabled="!hostStatus?.running"
+          @keyup.enter="submitHostTask"
+        />
+        <el-select v-model="hostKind" style="width: 150px" :disabled="!hostStatus?.running">
+          <el-option label="文档任务" value="document" />
+          <el-option label="副作用任务" value="side_effect" />
+        </el-select>
+        <el-button type="primary" :disabled="!hostStatus?.running" :loading="hostBusy" @click="submitHostTask">
+          提交任务
+        </el-button>
+      </div>
+
+      <el-table v-if="hostTasks.length > 0" :data="hostTasks" size="small" style="width: 100%; margin-top: 12px">
+        <el-table-column prop="taskId" label="任务" width="150" />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" :type="hostStateTag(row.state)">{{ row.state }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="kind" label="类型" width="100" />
+        <el-table-column prop="goal" label="目标" min-width="200" show-overflow-tooltip />
+        <el-table-column label="产物" width="160">
+          <template #default="{ row }">
+            <span v-if="row.artifacts?.length">
+              {{ artifactNames(row.artifacts) }}
+            </span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="90">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.state === 'queued' || row.state === 'running'"
+              size="small"
+              text
+              type="danger"
+              @click="runHostCommand({ type: 'cancel', taskId: row.taskId })"
+            >
+              取消
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="暂无本机任务" :image-size="50" />
+    </el-card>
   </div>
 </template>
 
@@ -205,6 +424,20 @@ CHATAGENT_MODEL_NAME=your-model</pre>
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.host-card {
+  margin-top: 16px;
+}
+
+.host-submit {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ml-1 {
+  margin-left: 6px;
 }
 
 .muted {

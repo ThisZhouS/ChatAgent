@@ -8,7 +8,8 @@
       "@chatagent/hermes": ["packages/hermes/src/index.ts"],
       "@chatagent/im-gateway": ["packages/im-gateway/src/index.ts"],
       "@chatagent/document": ["packages/document/src/index.ts"],
-      "@chatagent/task-engine": ["packages/task-engine/src/index.ts"]
+      "@chatagent/task-engine": ["packages/task-engine/src/index.ts"],
+      "@chatagent/agent-host": ["packages/agent-host/src/index.ts"]
     }
   },
   "include": [

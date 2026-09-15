@@ -6,6 +6,7 @@ import type {
   ConversationSummary,
   ConversationTargetKind,
   DocumentSummary,
+  LocalTaskReceipt,
   MemberView,
   OutboxRecord,
   TaskEvent,
@@ -298,6 +299,16 @@ export const api = {
     cancel: (id: string) =>
       request<{ cancelled: boolean }>(`/tasks/${id}/cancel`, { method: 'POST' }),
     events: (id: string) => request<TaskEvent[]>(`/tasks/${id}/events`),
+  },
+
+  localTasks: {
+    /** Mirror on-device agent-host task receipts into the workbench (auth-scoped). */
+    sync: (receipts: LocalTaskReceipt[]) =>
+      request<{ accepted: number }>('/local-tasks', {
+        method: 'POST',
+        body: JSON.stringify({ receipts }),
+      }),
+    list: () => request<LocalTaskReceipt[]>('/local-tasks'),
   },
 
   documents: {

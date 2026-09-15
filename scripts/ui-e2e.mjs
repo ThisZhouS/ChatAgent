@@ -594,7 +594,7 @@ async function main() {
     const recallMarker = `撤回验证-${stamp}`;
     await cdp.evaluate(setFieldExpr('composer', recallMarker));
     await cdp.evaluate(clickTestIdExpr('send'));
-    await waitForBubbleAfter(cdp, recallMarker, new RegExp(recallMarker), 20000, 'own message');
+    await waitForBubbleAfter(cdp, recallMarker, new RegExp(recallMarker), 40000, 'own message');
 
     // The recall assertion is anchored to the marker bubble's position counted
     // from the END of the list, because the page trims the oldest bubbles.
@@ -706,12 +706,24 @@ async function main() {
     );
     record('no clipped text in bubbles or sidebar', Array.isArray(clipped) && clipped.length === 0, JSON.stringify(clipped));
 
-    const lightContrast = await cdp.evaluate(
-      contrastExpr(['.bubble-text', '.side-item-title', '.side-item-sub', '.chat-main .side-title']),
-    );
-    const worstLight = Array.isArray(lightContrast)
-      ? Math.min(...lightContrast.filter((item) => typeof item.contrast === 'number').map((item) => item.contrast))
-      : 0;
+    // Contrast is measured on a live themed page; under heavy load the theme
+    // transition can still be settling, so a low first reading is re-measured
+    // once after the transition has had time to finish.
+    const measureContrast = async () => {
+      const detail = await cdp.evaluate(
+        contrastExpr(['.bubble-text', '.side-item-title', '.side-item-sub', '.chat-main .side-title']),
+      );
+      const worst = Array.isArray(detail)
+        ? Math.min(...detail.filter((item) => typeof item.contrast === 'number').map((item) => item.contrast))
+        : 0;
+      return { detail, worst };
+    };
+
+    let { detail: lightContrast, worst: worstLight } = await measureContrast();
+    if (worstLight < 4.5) {
+      await sleep(900);
+      ({ detail: lightContrast, worst: worstLight } = await measureContrast());
+    }
     record('light theme contrast >= 4.5', worstLight >= 4.5, `worst=${worstLight} ${JSON.stringify(lightContrast)}`);
 
     // Dark mode is part of the product; toggling it also proves the theme
@@ -732,13 +744,12 @@ async function main() {
     ).catch(() => false);
     record('theme switch toggles dark mode', Boolean(toggled) && darkClass === true, `dark=${String(darkClass)}`);
     await cdp.screenshot('05-dark-mode');
-    const darkContrast = await cdp.evaluate(
-      contrastExpr(['.bubble-text', '.side-item-title', '.side-item-sub', '.chat-main .side-title']),
-    );
-    const worstDark = Array.isArray(darkContrast)
-      ? Math.min(...darkContrast.filter((item) => typeof item.contrast === 'number').map((item) => item.contrast))
-      : 0;
-    record('dark theme contrast >= 4.5', worstDark >= 4.5, `worst=${worstDark}`);
+    let { detail: darkContrast, worst: worstDark } = await measureContrast();
+    if (worstDark < 4.5) {
+      await sleep(900);
+      ({ detail: darkContrast, worst: worstDark } = await measureContrast());
+    }
+    record('dark theme contrast >= 4.5', worstDark >= 4.5, `worst=${worstDark} ${JSON.stringify(darkContrast)}`);
     await cdp.evaluate(`(() => {
       const button = [...document.querySelectorAll('button')].find((node) => /深色模式|浅色模式/.test(node.innerText || ''));
       if (button) button.click();

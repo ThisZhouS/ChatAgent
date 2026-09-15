@@ -34,3 +34,6 @@ Temp/
 tmp/
 .turbo/
 coverage/
+
+# Generated host bundle (built by apps/desktop/build-agent-host.mjs)
+apps/desktop/agent-host.bundle.cjs

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue';
-import type { AgentAccount, TaskEvent, TaskRecord } from '@chatagent/contracts';
+import type { AgentAccount, LocalTaskReceipt, TaskEvent, TaskRecord } from '@chatagent/contracts';
 import { api } from '../api';
 
 const tasks = ref<TaskRecord[]>([]);
@@ -11,7 +11,34 @@ const events = ref<TaskEvent[]>([]);
 const accountId = ref('');
 const goal = ref('请生成一份 Word 工作说明文档');
 const error = ref('');
+const localReceipts = ref<LocalTaskReceipt[]>([]);
 let stream: EventSource | undefined;
+
+/** 本机任务回执：来自桌面端 Agent 主机的镜像（设备为权威来源）。 */
+async function loadLocalReceipts() {
+  try {
+    localReceipts.value = await api.localTasks.list();
+  } catch {
+    // 桌面端未同步过或服务端不可达时静默降级
+    localReceipts.value = [];
+  }
+}
+
+const localStateTag = (state: string) => {
+  const map: Record<string, string> = {
+    queued: 'warning',
+    running: 'primary',
+    succeeded: 'success',
+    failed: 'danger',
+    cancelled: 'danger',
+    interrupted: 'danger',
+  };
+  return map[state] ?? 'info';
+};
+
+function localArtifactNames(receipt: LocalTaskReceipt): string {
+  return (receipt.artifacts ?? []).map((a) => a.name).join(', ') || '—';
+}
 
 async function load() {
   try {
@@ -115,7 +142,10 @@ watch(selectedId, (id) => {
   if (!id) closeStream();
 });
 
-onMounted(() => void load());
+onMounted(() => {
+  void load();
+  void loadLocalReceipts();
+});
 onUnmounted(closeStream);
 </script>
 
@@ -220,6 +250,37 @@ onUnmounted(closeStream);
         </el-card>
       </el-col>
     </el-row>
+
+    <el-card shadow="never" style="margin-top: 16px">
+      <template #header>
+        <div class="row" style="display: flex; justify-content: space-between; align-items: center">
+          <span>本机任务回执（桌面 Agent 主机镜像）</span>
+          <el-button size="small" @click="loadLocalReceipts">刷新</el-button>
+        </div>
+      </template>
+      <p class="stat-label">
+        由桌面客户端的本机 Agent 主机同步而来；设备为本机权威来源，这里只读展示。
+      </p>
+      <el-empty v-if="localReceipts.length === 0" description="暂无本机任务回执（需在桌面端设置页打开本机 Agent 卡片后自动同步）" :image-size="60" />
+      <el-table v-else :data="localReceipts" size="small" style="width: 100%">
+        <el-table-column prop="taskId" label="任务" min-width="150" show-overflow-tooltip />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" :type="localStateTag(row.state)">{{ row.state }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="executor" label="执行器" width="90" />
+        <el-table-column prop="goal" label="目标" min-width="200" show-overflow-tooltip />
+        <el-table-column label="产物" width="170">
+          <template #default="{ row }">
+            {{ localArtifactNames(row) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="更新时间" width="160">
+          <template #default="{ row }">{{ new Date(row.updatedAt).toLocaleString() }}</template>
+        </el-table-column>
+      </el-table>
+    </el-card>
   </div>
 </template>
 

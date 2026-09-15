@@ -176,3 +176,36 @@ export type InboundMessagePayload = z.infer<typeof inboundMessageSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 export type GenerateWordInput = z.infer<typeof generateWordSchema>;
 export type GenerateExcelInput = z.infer<typeof generateExcelSchema>;
+
+/**
+ * Receipt of one locally-executed agent-host task, mirrored to the server by an
+ * authenticated member session so the workbench can show on-device work.
+ * The device token never appears here; receipts are device-authoritative copies.
+ */
+export const localTaskReceiptSchema = z.object({
+  deviceId: z.string().min(1).max(128),
+  agentId: z.string().min(1).max(128),
+  taskId: z.string().min(1).max(128),
+  goal: z.string().min(1).max(2000),
+  kind: z.string().min(1).max(64),
+  state: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']),
+  executor: z.enum(['hermes', 'fake']),
+  error: z.string().max(500).optional(),
+  summary: z.string().max(500).optional(),
+  artifacts: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(255),
+        sha256: z.string().min(8).max(128),
+        bytes: z.number().int().nonnegative().optional(),
+      }),
+    )
+    .max(50)
+    .default([]),
+  createdAt: z.string().min(1).max(40),
+  updatedAt: z.string().min(1).max(40),
+});
+
+export const localTaskSyncSchema = z.object({
+  receipts: z.array(localTaskReceiptSchema).min(1).max(100),
+});

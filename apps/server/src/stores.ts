@@ -10,6 +10,7 @@ import type {
   CreateAccountInput,
   SessionRecord,
   UpdateAccountInput,
+  LocalTaskReceipt,
 } from '@chatagent/contracts';
 import { DEFAULT_ORGANIZATION_ID, LEGACY_OWNER_ID } from '@chatagent/contracts';
 
@@ -1011,5 +1012,61 @@ export class ReadStateStore {
 
   private async persist(): Promise<void> {
     this.writer.schedule([...this.states.values()]);
+  }
+}
+
+/**
+ * Server-side mirror of tasks executed by on-device agent hosts. The device is
+ * authoritative: receipts arrive through authenticated member sessions and are
+ * scoped to the uploading member, so one member can never see another device's
+ * work. In-memory by design — a restarted server simply waits for the next
+ * device sync instead of becoming a second source of truth.
+ */
+export interface LocalTaskReceiptRecord extends LocalTaskReceipt {
+  memberId: string;
+  syncedAt: string;
+}
+
+export class LocalTaskReceiptStore {
+  private readonly receipts = new Map<string, LocalTaskReceiptRecord>();
+
+  constructor(private readonly maxPerMember = 500) {}
+
+  async upsert(receipts: LocalTaskReceipt[], memberId: string): Promise<number> {
+    const syncedAt = new Date().toISOString();
+    for (const receipt of receipts) {
+      this.receipts.set(this.key(memberId, receipt.deviceId, receipt.taskId), {
+        ...receipt,
+        memberId,
+        syncedAt,
+      });
+    }
+    this.prune(memberId);
+    return receipts.length;
+  }
+
+  async list(memberId: string, limit = 200): Promise<LocalTaskReceipt[]> {
+    // Internal scoping fields (memberId/syncedAt) never leave the server.
+    return [...this.receipts.values()]
+      .filter((record) => record.memberId === memberId)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+      .slice(0, limit)
+      .map(({ memberId: _m, syncedAt: _s, ...receipt }) => receipt);
+  }
+
+  count(): number {
+    return this.receipts.size;
+  }
+
+  private key(memberId: string, deviceId: string, taskId: string): string {
+    return [memberId, deviceId, taskId].join('|');
+  }
+
+  /** Keeps each member's mirror bounded; oldest syncs are dropped first. */
+  private prune(memberId: string): void {
+    const own = [...this.receipts.entries()].filter(([, r]) => r.memberId === memberId);
+    if (own.length <= this.maxPerMember) return;
+    own.sort((a, b) => Date.parse(a[1].syncedAt) - Date.parse(b[1].syncedAt));
+    for (const [key] of own.slice(0, own.length - this.maxPerMember)) this.receipts.delete(key);
   }
 }

@@ -398,3 +398,18 @@ export interface DocumentSummary {
   paragraphs?: string[];
   tables?: string[][][];
 }
+
+export interface LocalTaskReceipt {
+  deviceId: string;
+  agentId: string;
+  taskId: string;
+  goal: string;
+  kind: string;
+  state: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+  executor: 'hermes' | 'fake';
+  error?: string;
+  summary?: string;
+  artifacts: { name: string; sha256: string; bytes?: number }[];
+  createdAt: string;
+  updatedAt: string;
+}

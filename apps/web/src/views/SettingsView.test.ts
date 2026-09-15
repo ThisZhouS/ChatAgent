@@ -100,4 +100,67 @@ describe('SettingsView', () => {
     await flushPromises();
     expect(mocks.revokeOtherSessions).toHaveBeenCalledTimes(1);
   });
+
+  it('hides the local-agent card in a plain browser (no host bridge)', async () => {
+    delete (window as { chatagent?: unknown }).chatagent;
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('本机 Agent 主机');
+  });
+
+  it('shows host status and submits a task through the narrow bridge inside Electron', async () => {
+    const commands: unknown[] = [];
+    const command = vi.fn(async (cmd: unknown) => {
+      commands.push(cmd);
+      if ((cmd as { type?: string }).type === 'status') {
+        return {
+          ok: true,
+          result: { deviceId: 'desktop-win32', agentId: 'hermes', running: true, runningTasks: 1, paused: false, executor: 'fake', executorReason: 'real Hermes runtime not found' },
+        };
+      }
+      if ((cmd as { type?: string }).type === 'list') {
+        return {
+          ok: true,
+          result: { tasks: [{ taskId: 'ui-1', state: 'running', kind: 'document', goal: '生成周报', artifacts: [] }] },
+        };
+      }
+      return { ok: true, result: {} };
+    });
+    (window as { chatagent?: unknown }).chatagent = {
+      platform: 'win32',
+      versions: { electron: '33.2.0', chrome: '130', node: '20' },
+      host: { command, quitApp: vi.fn(async () => ({ ok: true })) },
+    };
+
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('本机 Agent 主机');
+    expect(wrapper.text()).toContain('desktop-win32');
+    expect(wrapper.text()).toContain('生成周报');
+    expect(command).toHaveBeenCalledWith({ type: 'status' });
+    expect(command).toHaveBeenCalledWith({ type: 'list' });
+
+    // submit a document task through the controlled bridge
+    const input = wrapper.find('input[placeholder*="任务目标"]');
+    await input.setValue('整理会议纪要');
+    const submit = wrapper.findAll('button').find((node) => node.text().trim() === '提交任务');
+    await submit?.trigger('click');
+    await flushPromises();
+
+    const submitted = commands.find((cmd) => (cmd as { type?: string }).type === 'submit') as {
+      type: string; goal: string; kind: string; toolsets: string[]; taskId: string;
+    } | undefined;
+    expect(submitted, 'a submit command went through the bridge').toBeTruthy();
+    expect(submitted?.goal).toBe('整理会议纪要');
+    expect(submitted?.kind).toBe('document');
+    expect(submitted?.toolsets).toEqual(['document']);
+    expect(submitted?.taskId).toMatch(/^ui-/);
+  });
 });
