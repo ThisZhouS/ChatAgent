@@ -693,6 +693,46 @@ async function main() {
       record('message forwarding dialog opens', Boolean(forwardOpened), `${forwardTargets} target(s) available`);
     }
 
+    // Attachment path: upload a real file through the composer's file input and
+    // require the sent bubble to carry a downloadable /api/files link. This
+    // multipart path had no coverage in the packaged client, and it is exactly
+    // where a missing credential header goes unnoticed.
+    const attachName = `e2e-note-${stamp}.txt`;
+    const attachMarker = `E2E-ATTACH-${stamp}`;
+    const injectedFile = await cdp.evaluate(`(() => {
+      const input = document.querySelector('.composer-row input[type="file"]') || document.querySelector('input[type="file"]');
+      if (!input) return 'no-input';
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([${JSON.stringify('附件内容 e2e')}], ${JSON.stringify(attachName)}, { type: 'text/plain' }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'dispatched';
+    })()`);
+    let attached = false;
+    const attachDeadline = Date.now() + 15000;
+    while (Date.now() < attachDeadline) {
+      attached = await cdp
+        .evaluate(`(document.body.innerText || '').includes(${JSON.stringify(attachName)})`)
+        .catch(() => false);
+      if (attached) break;
+      await sleep(300);
+    }
+    await sendComposerMessage(cdp, `${attachMarker} 附件验证`);
+    const attachLink = await cdp.evaluate(`(() => {
+      const bubbles = [...document.querySelectorAll('[data-testid="message-bubble"]')];
+      const hit = bubbles.find((bubble) => (bubble.innerText || '').includes(${JSON.stringify(attachMarker)}));
+      if (!hit) return '';
+      const link = [...hit.querySelectorAll('a')].find((node) =>
+        (node.getAttribute('href') || '').includes('/api/files/'),
+      );
+      return link ? (link.innerText || '').trim() + '|' + link.getAttribute('href') : '';
+    })()`);
+    record(
+      'chat attachment uploads and delivers a downloadable file',
+      injectedFile === 'dispatched' && attached && String(attachLink).includes('/api/files/'),
+      JSON.stringify({ injectedFile, attached, link: String(attachLink).slice(0, 80) }),
+    );
+
     // The export control is asserted by presence only: activating it opens the
     // generated file through the OS browser, which is a side effect a test run
     // must not trigger.

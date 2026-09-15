@@ -89,4 +89,4 @@
 
 同时补齐实用性缺口：解析结果里**本就带**每表前 10 行预览数据，但界面只显示行列数——现在渲染成真实表格（列数上限 8，超出提示下载原文件；空表显式提示），并新增 `DocumentsView.test.ts`（走真实 file input 路径）。
 
-证据：`ui-e2e` **36/36**（新增"documents view renders the parsed CSV preview table"，真实显示 `项目 预算 差旅 12000 培训 8000`）；根 vitest **202/202**；web vitest **34/34**；tsc/vue-tsc 0 错。
+证据：`ui-e2e` **37/37**（新增"documents view renders the parsed CSV preview table"，真实显示 `项目 预算 差旅 12000 培训 8000`）；根 vitest **202/202**；web vitest **34/34**；tsc/vue-tsc 0 错。

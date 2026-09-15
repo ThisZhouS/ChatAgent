@@ -6,7 +6,7 @@
 
 | 命令 | 结果 |
 |---|---|
-| `node scripts/acceptance.mjs` | **7/7 步通过**：typecheck 0 错 · 202 用例 · build 通过 · 健康检查 · API smoke 27/27 · 依赖审计门（critical 0）· client E2E **36/36**（新打包 exe，electron 39.8.10） |
+| `node scripts/acceptance.mjs` | **7/7 步通过**：typecheck 0 错 · 202 用例 · build 通过 · 健康检查 · API smoke 27/27 · 依赖审计门（critical 0）· client E2E **37/37**（新打包 exe，electron 39.8.10） |
 | `tsc --noEmit` / `vue-tsc --noEmit` | 0 错 |
 | vitest 根 / web | 202/202（21 文件）· 34/34（5 文件） |
 | `pnpm audit --registry=https://registry.npmjs.org` | **41 → 2**（仅剩 extract-zip×2，官方无已发布补丁版，仅 dev 打包链使用） |
@@ -22,7 +22,7 @@
 4. **文档链路两个真实缺陷（第三波，端到端驱动发现）**：
    - `api.documents.parse` 用裸 `fetch`：不带 `Authorization`，且打包客户端页面来自 `file://`（跨源）带不上 Cookie → **桌面端文档解析必然 401**（同文件 `upload` 反而正确）。已抽出带凭据的 multipart 助手 `postForm()` 统一两条路径，并加 `api.test.ts` 回归。
    - **UTF-8 中文 CSV 乱码**（SheetJS 自嗅探代码页）：改为 UTF-8（容忍 BOM）优先、GBK 回退自行解码后以 `type:'string'` 解析；新增 3 个文档包测试。
-5. **E2E 覆盖补强 + 发送可靠性（第三波）**：新增"文件"页真实上传 CSV → 断言解析预览表格；并新增"greeting message was posted from the client"（34 → **36** 项检查）。正是新检查暴露了上面两个文档缺陷；同时修复了 harness 自身的隐性 flake——聊天列表重渲染会把 textarea 的值清空，导致"发送"点击空转、随后误报"任务无回复"；现在发送前校验值、发送后校验气泡标记，带重试。修复后 E2E 由 53–68s 降到 **20.2s** 并稳定 36/36。
+5. **E2E 覆盖补强 + 发送可靠性（第三波）**：新增"文件"页真实上传 CSV → 断言解析预览表格；并新增"greeting message was posted from the client"（34 → **37** 项检查）。正是新检查暴露了上面两个文档缺陷；同时修复了 harness 自身的隐性 flake——聊天列表重渲染会把 textarea 的值清空，导致"发送"点击空转、随后误报"任务无回复"；现在发送前校验值、发送后校验气泡标记，带重试。修复后 E2E 由 53–68s 降到 **20.2s** 并稳定；新增附件上传端到端检查（注入真实文件 → 发送 → 断言气泡内 `/api/files/` 可下载链接），E2E 达 **37/37**。
 6. **测试稳定性**：修复 `agent-host` 崩溃恢复用例的 Windows `ENOTEMPTY` 竞态（删除带重试），连续 5 次运行 19/19 稳定。
 7. **文档**：`docs/gate7a-local-agent-host.md`（8 部分报告）+ `docs/iteration-2026-09-15.md`（逐条证据日志）+ 本报告。
 
