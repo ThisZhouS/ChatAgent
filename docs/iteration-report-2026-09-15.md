@@ -6,9 +6,9 @@
 
 | 命令 | 结果 |
 |---|---|
-| `node scripts/acceptance.mjs` | **7/7 步通过**：typecheck 0 错 · 202 用例 · build 通过 · 健康检查 · API smoke 27/27 · 依赖审计门（critical 0）· client E2E **37/37**（新打包 exe，electron 39.8.10） |
+| `node scripts/acceptance.mjs` | **7/7 步通过**：typecheck 0 错 · 242 用例 · build 通过 · 健康检查 · API smoke 27/27 · 依赖审计门（critical 0）· client E2E **37/37**（新打包 exe，electron 39.8.10） |
 | `tsc --noEmit` / `vue-tsc --noEmit` | 0 错 |
-| vitest 根 / web | 202/202（21 文件）· 34/34（5 文件） |
+| vitest 根 / web | 208/208（22 文件）· 34/34（5 文件） |
 | `pnpm audit --registry=https://registry.npmjs.org` | **41 → 2**（仅剩 extract-zip×2，官方无已发布补丁版，仅 dev 打包链使用） |
 | 桌面 exe | 重新打包成功（NSIS 102MB，electron 39.8.10 + builder 26.16.1），E2E 全过 |
 | 桌面关窗续跑 smoke（真实 Electron 运行时） | 6/6 |
@@ -44,6 +44,8 @@
 6. E2E 自身消息等待 20s→40s，acceptance 在重负载下不再偶发超时。
 
 ## 四、安全性（Security）
+
+0. **上传路由 HTTP 层安全覆盖（第四波新增）**：`POST /api/documents/parse` 是系统唯一让文件进入的入口，此前只有"解析一个 buffer"的包级测试。新增 6 项路由级测试：生产模式匿名上传 401 且不落盘、成员上传中文 CSV 正常入库、不支持类型 415 + 审计 `upload.rejected`、解压炸弹拒绝且不落盘、21 MiB 超限 413（拒绝而非截断）、上传限流第 31 次 429 + `retry-after`；并清理了路由中重复的 truncated 检查。
 
 1. **Electron IPC sender 校验**（官方清单 #17）：仅本应用 frame 可调用主机桥与退出通道（`untrusted_sender` 拒绝）。
 2. **运行时升级**：Electron 33.2.0→**39.8.10**（消解约 25 条 high/moderate：UAF、context isolation bypass、sandbox iframe 逃逸等）；升级后全量回归 + 桌面冒烟 + E2E 全绿。

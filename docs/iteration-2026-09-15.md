@@ -90,3 +90,20 @@
 同时补齐实用性缺口：解析结果里**本就带**每表前 10 行预览数据，但界面只显示行列数——现在渲染成真实表格（列数上限 8，超出提示下载原文件；空表显式提示），并新增 `DocumentsView.test.ts`（走真实 file input 路径）。
 
 证据：`ui-e2e` **37/37**（新增"documents view renders the parsed CSV preview table"，真实显示 `项目 预算 差旅 12000 培训 8000`）；根 vitest **202/202**；web vitest **34/34**；tsc/vue-tsc 0 错。
+
+## 第四波（上传路由的 HTTP 层安全覆盖）
+
+核对发现一个**覆盖空白**：`packages/document` 的测试只覆盖"解析一个 buffer"，而 `POST /api/documents/parse`——全服务唯一让文件进入系统的入口——在 HTTP 层**没有任何测试**（谁能上传、能上传什么、多快、超限与解压炸弹如何处理）。新增 `apps/server/src/documents-upload.test.ts`（6 项，全绿）：
+
+| 用例 | 断言 |
+|---|---|
+| 生产模式匿名上传 | `401`，且事后以成员身份 `GET /api/files` 确认**没有落盘** |
+| 成员正常上传中文 CSV | `200` + `summary.kind='csv'` + 一个工作表 + 文件出现在上传列表 |
+| 不支持的类型（.exe） | `415` + 审计 `upload.rejected`（`outcome=denied`、detail 为文件名） |
+| 解压炸弹 docx | `400/413` + **未落盘** |
+| 21 MiB 超限上传 | `413`（明确拒绝而非截断解析） |
+| 上传限流 | 第 31 次 `429` + `retry-after` |
+
+顺带清理：解析路由里重复的 `truncated` 检查（保留带审计的那一处）。
+
+证据：根 vitest **208/208**（22 文件）；web **34/34**；tsc 0 错。

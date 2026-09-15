@@ -1113,9 +1113,6 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
 
     const file = await request.file();
     if (!file) return reply.code(400).send({ error: 'file is required' });
-    if (file.file.truncated) {
-      return reply.code(413).send({ error: 'file too large' });
-    }
     if (!isAllowedUpload(file.filename)) {
       audit.record({
         action: 'upload.rejected',
