@@ -235,3 +235,36 @@ describe('zip guard does not trust the central directory', () => {
     expect(() => assertSafeArchive(archive)).toThrow(/unsupported compression method/);
   });
 });
+
+describe('delimited uploads keep their encoding', () => {
+  it('parses a UTF-8 CSV with Chinese headers and values', async () => {
+    const csv = Buffer.from('项目,预算\n差旅,12000\n培训,8000\n', 'utf8');
+    const summary = await parseDocumentBuffer(csv, 'budget.csv');
+
+    expect(summary.kind).toBe('csv');
+    const sheet = summary.sheets?.[0];
+    expect(sheet?.name).toBe('Sheet1');
+    // Headers must survive as real column keys, not mojibake.
+    expect(Object.keys(sheet?.preview[0] ?? {})).toEqual(['项目', '预算']);
+    expect(sheet?.preview[0]).toMatchObject({ 项目: '差旅', 预算: 12000 });
+  });
+
+  it('falls back to GBK when the bytes are not valid UTF-8', async () => {
+    // '项目,预算\n差旅,12000\n' encoded as GBK (what Chinese Excel writes).
+    const gbk = Buffer.concat([
+      Buffer.from([0xcf, 0xee, 0xc4, 0xbf, 0x2c, 0xd4, 0xa4, 0xcb, 0xe3, 0x0a]),
+      Buffer.from([0xb2, 0xee, 0xc2, 0xc3, 0x2c, 0x31, 0x32, 0x30, 0x30, 0x30, 0x0a]),
+    ]);
+    const summary = await parseDocumentBuffer(gbk, 'gbk.csv');
+
+    const sheet = summary.sheets?.[0];
+    expect(Object.keys(sheet?.preview[0] ?? {})).toEqual(['项目', '预算']);
+    expect(sheet?.preview[0]).toMatchObject({ 项目: '差旅' });
+  });
+
+  it('tolerates a UTF-8 BOM in a CSV upload', async () => {
+    const csv = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('name,值\nA,1\n', 'utf8')]);
+    const summary = await parseDocumentBuffer(csv, 'bom.csv');
+    expect(Object.keys(summary.sheets?.[0]?.preview[0] ?? {})).toEqual(['name', '值']);
+  });
+});

@@ -19,6 +19,20 @@ const excelHeader = ref('项目,值');
 const excelRows = ref('状态,完成\n负责人,ChatAgent');
 const excelResult = ref<StoredFileView | null>(null);
 
+/** 预览表格最多渲染的列数（超出时提示，避免宽表撑破卡片）。 */
+const MAX_PREVIEW_COLUMNS = 8;
+
+/** 工作表预览的列：取自首行记录的键（服务端已按表头生成）。 */
+function sheetColumns(sheet: { preview: Record<string, unknown>[] }): string[] {
+  const first = sheet.preview[0];
+  return first ? Object.keys(first).slice(0, MAX_PREVIEW_COLUMNS) : [];
+}
+
+function sheetColumnsTruncated(sheet: { preview: Record<string, unknown>[] }): boolean {
+  const first = sheet.preview[0];
+  return first ? Object.keys(first).length > MAX_PREVIEW_COLUMNS : false;
+}
+
 async function loadFiles() {
   try {
     files.value = await api.files.list();
@@ -118,8 +132,34 @@ onMounted(() => void loadFiles());
               <el-tag type="success">{{ summary.kind }}</el-tag>
             </div>
             <pre style="white-space: pre-wrap; max-height: 200px; overflow: auto; background: #f5f7fa; padding: 10px; border-radius: 8px">{{ summary.textPreview }}</pre>
-            <div v-if="summary.sheets?.length" class="stat-label">
-              工作表: {{ summary.sheets.map((sheet) => `${sheet.name}(${sheet.rows}行x${sheet.columns}列)`).join('，') }}
+            <div v-if="summary.sheets?.length" class="sheet-preview">
+              <div v-for="sheet in summary.sheets" :key="sheet.name" class="sheet-block">
+                <div class="stat-label">
+                  工作表 {{ sheet.name }}（{{ sheet.rows }} 行 × {{ sheet.columns }} 列；预览前
+                  {{ sheet.preview.length }} 行）
+                </div>
+                <el-table
+                  v-if="sheet.preview.length"
+                  :data="sheet.preview"
+                  size="small"
+                  max-height="220"
+                  style="width: 100%"
+                  :data-testid="`sheet-preview-${sheet.name}`"
+                >
+                  <el-table-column
+                    v-for="key in sheetColumns(sheet)"
+                    :key="key"
+                    :prop="key"
+                    :label="key"
+                    min-width="110"
+                    show-overflow-tooltip
+                  />
+                </el-table>
+                <div v-else class="stat-label">（该表除表头外没有数据行）</div>
+                <div v-if="sheetColumnsTruncated(sheet)" class="stat-label">
+                  仅显示前 {{ MAX_PREVIEW_COLUMNS }} 列，完整数据请下载原文件查看。
+                </div>
+              </div>
             </div>
           </div>
         </el-card>
@@ -194,3 +234,16 @@ onMounted(() => void loadFiles());
     </el-card>
   </div>
 </template>
+
+<style scoped>
+.sheet-preview {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sheet-block .stat-label {
+  margin-bottom: 6px;
+}
+</style>

@@ -75,6 +75,34 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * Multipart POST with the session credentials attached.
+ *
+ * Uploads must not go through `request()` (it forces a JSON Content-Type and
+ * would break the multipart boundary), but they still have to authenticate: the
+ * packaged desktop client loads the UI from file://, so a cross-origin request
+ * carries no cookie and a missing Authorization header means a silent 401.
+ */
+async function postForm<T>(path: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    body: form,
+    headers,
+    credentials: 'same-origin',
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    if (response.status === 401 && sessionToken) {
+      setSessionToken(null);
+      for (const listener of unauthorizedListeners) listener();
+    }
+    throw new ApiError(response.status, `${response.status} ${response.statusText}: ${body}`);
+  }
+  return (await response.json()) as T;
+}
+
 export interface AgentStatus {
   provider: string;
   uptimeSeconds?: number;
@@ -229,16 +257,7 @@ export const api = {
     upload: async (file: File) => {
       const form = new FormData();
       form.append('file', file);
-      const headers: Record<string, string> = {};
-      if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
-      const response = await fetch(`${BASE}/documents/parse`, {
-        method: 'POST',
-        body: form,
-        headers,
-        credentials: 'same-origin',
-      });
-      if (!response.ok) throw new ApiError(response.status, `upload failed: ${response.status}`);
-      return (await response.json()) as { file: StoredFileView; summary: DocumentSummary };
+      return postForm<{ file: StoredFileView; summary: DocumentSummary }>('/documents/parse', form);
     },
   },
 
@@ -315,9 +334,7 @@ export const api = {
     parse: async (file: File) => {
       const form = new FormData();
       form.append('file', file);
-      const response = await fetch(`${BASE}/documents/parse`, { method: 'POST', body: form });
-      if (!response.ok) throw new Error(`parse failed: ${response.status}`);
-      return (await response.json()) as { file: StoredFileView; summary: DocumentSummary };
+      return postForm<{ file: StoredFileView; summary: DocumentSummary }>('/documents/parse', form);
     },
     generateWord: (payload: Record<string, unknown>) =>
       request<StoredFileView>('/documents/generate/word', {

@@ -41,7 +41,7 @@ export async function parseDocumentBuffer(
   }
 
   if (kind === 'excel' || kind === 'csv') {
-    const sheets = parseExcelBuffer(buffer);
+    const sheets = parseExcelBuffer(buffer, { delimited: kind === 'csv' });
     const textPreview = sheets
       .map((sheet) => `[${sheet.name}] ${sheet.rows} rows x ${sheet.columns} columns`)
       .join('\n');

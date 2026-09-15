@@ -79,3 +79,14 @@
 ### 下一步
 
 - acceptance 7 步回归确认 → 里程碑提交 → 更新四维报告（20:00 前）。
+
+## 第三波（应用文档链路：E2E 驱动发现两个真实缺陷）
+
+为"文件"页补端到端断言（此前只验证页面能渲染），在打包客户端里真实上传 CSV 并断言解析预览表格，结果暴露出两个真实缺陷：
+
+1. **文档解析在桌面端必然 401**：`api.documents.parse` 用裸 `fetch`，既不带 `Authorization`，又因打包客户端页面来自 `file://`（跨源）而带不上会话 Cookie → 解析永远失败。同文件的 `api.documents.upload` 反而是对的，属实现不一致。修复：抽出带会话凭据的 multipart 助手 `postForm()`（保留 401 → 清 token + 通知监听者），`parse` 与 `upload` 统一走它；新增 `apps/web/src/api.test.ts` 回归（断言 Authorization 存在、FormData 不被塞 Content-Type）。
+2. **UTF-8 中文 CSV 乱码**：SheetJS 对 buffer 文本会自行嗅探代码页且不选 UTF-8，中文表头/单元格变成 `é¡¹ç®®`。修复：分隔文本（CSV）改为自己解码——UTF-8（容忍 BOM）优先，失败回退 GBK（中文 Windows Excel 默认编码），再以 `type: 'string'` 交给 SheetJS；新增 3 个文档包测试（UTF-8 中文、GBK 回退、BOM）。
+
+同时补齐实用性缺口：解析结果里**本就带**每表前 10 行预览数据，但界面只显示行列数——现在渲染成真实表格（列数上限 8，超出提示下载原文件；空表显式提示），并新增 `DocumentsView.test.ts`（走真实 file input 路径）。
+
+证据：`ui-e2e` **36/36**（新增"documents view renders the parsed CSV preview table"，真实显示 `项目 预算 差旅 12000 培训 8000`）；根 vitest **202/202**；web vitest **34/34**；tsc/vue-tsc 0 错。

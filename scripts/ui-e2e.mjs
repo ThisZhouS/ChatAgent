@@ -242,6 +242,36 @@ async function waitForHealth(timeoutMs = 20000) {
   return undefined;
 }
 
+/**
+ * Types into the composer and sends, verifying that the message was really
+ * posted before the caller starts waiting for a reply.
+ *
+ * The chat list re-renders whenever a reply or poll lands; a value written into
+ * the textarea in that window is reset before the send click, the client blocks
+ * the empty send locally, and the run then fails with "no reply" even though
+ * nothing was ever sent (observed under load). Retrying with an explicit
+ * bubble-marker check keeps that latent harness flake out of the gate.
+ */
+async function sendComposerMessage(cdp, text, { attempts = 3 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await cdp.evaluate(setFieldExpr('composer', text));
+    const current = await cdp.evaluate(
+      `(() => { const field = ${fieldExpr('composer')}; return field ? String(field.value || '') : ''; })()`,
+    );
+    if (String(current).includes(text)) {
+      await cdp.evaluate(clickTestIdExpr('send'));
+      const posted = await cdp
+        .evaluate(
+          `[...document.querySelectorAll('[data-testid="message-bubble"]')].some((node) => (node.innerText || '').includes(${JSON.stringify(text)}))`,
+        )
+        .catch(() => false);
+      if (posted) return true;
+    }
+    await sleep(400);
+  }
+  return false;
+}
+
 function launchClient() {
   const usePackaged = existsSync(packagedExe);
   const command = usePackaged ? packagedExe : devElectron;
@@ -562,7 +592,11 @@ async function main() {
     const greetingMarker = `E2E-HELLO-${stamp}`;
     const greeting = await cdp.evaluate(setFieldExpr('composer', `你好 ${greetingMarker}`));
     record('composer accepts input', Boolean(greeting));
-    await cdp.evaluate(clickTestIdExpr('send'));
+    record(
+      'greeting message was posted from the client',
+      await sendComposerMessage(cdp, `你好 ${greetingMarker}`),
+      `marker ${greetingMarker}`,
+    );
 
     const replyText = await waitForBubbleAfter(
       cdp,
@@ -575,8 +609,7 @@ async function main() {
     await cdp.screenshot('03-ai-reply');
 
     const docMarker = `E2E-DOC-${stamp}`;
-    await cdp.evaluate(setFieldExpr('composer', `帮我生成一份 Word 周报 ${docMarker}`));
-    await cdp.evaluate(clickTestIdExpr('send'));
+    await sendComposerMessage(cdp, `帮我生成一份 Word 周报 ${docMarker}`);
     const docReply = await waitForBubbleAfter(cdp, docMarker, /已生成文件|已完成|\.docx/, 60000, 'document task reply');
     record('document task finished in the UI', docReply !== '', normaliseText(docReply).slice(0, 120));
 
@@ -592,8 +625,7 @@ async function main() {
     // Recall: a member withdraws their own message inside the window; the body
     // must disappear from the bubble and from every later read.
     const recallMarker = `撤回验证-${stamp}`;
-    await cdp.evaluate(setFieldExpr('composer', recallMarker));
-    await cdp.evaluate(clickTestIdExpr('send'));
+    await sendComposerMessage(cdp, recallMarker);
     await waitForBubbleAfter(cdp, recallMarker, new RegExp(recallMarker), 40000, 'own message');
 
     // The recall assertion is anchored to the marker bubble's position counted
@@ -817,6 +849,41 @@ async function main() {
           String(settingsText).slice(0, 140),
         );
         await cdp.screenshot('07-settings');
+      }
+      if (label === '文件') {
+        // The documents page used to show only row/column counts. Upload a real
+        // UTF-8 CSV through the file input and require the parsed table to
+        // render, which covers upload -> parse -> preview end to end.
+        const csv = '项目,预算\n差旅,12000\n培训,8000\n';
+        const injected = await cdp.evaluate(`(() => {
+          const input = document.querySelector('input[type="file"]');
+          if (!input) return 'no-input';
+          const csv = ${JSON.stringify(csv)};
+          const transfer = new DataTransfer();
+          transfer.items.add(new File([csv], 'ui-e2e-budget.csv', { type: 'text/csv' }));
+          input.files = transfer.files;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return 'dispatched';
+        })()`);
+        let previewText = '';
+        const previewDeadline = Date.now() + 20000;
+        while (Date.now() < previewDeadline) {
+          previewText = await cdp.evaluate(`(() => {
+            const node = document.querySelector('.sheet-preview');
+            return node ? (node.innerText || '').replace(/\\s+/g, ' ') : '';
+          })()`);
+          if (previewText.includes('差旅') && previewText.includes('12000')) break;
+          await sleep(400);
+        }
+        record(
+          'documents view renders the parsed CSV preview table',
+          injected === 'dispatched' &&
+            previewText.includes('预算') &&
+            previewText.includes('差旅') &&
+            previewText.includes('12000'),
+          JSON.stringify({ injected, previewText: String(previewText).slice(0, 140) }),
+        );
+        await cdp.screenshot('08-documents');
       }
     }
   } catch (error) {

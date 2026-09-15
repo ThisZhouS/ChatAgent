@@ -27,7 +27,10 @@ async function makeRoot(): Promise<string> {
 
 afterEach(async () => {
   for (const root of roots.splice(0)) {
-    await rm(root, { recursive: true, force: true });
+    // The crash-recovery test deliberately leaves a "dead" host writing, and on
+    // Windows a delete that races those final writes fails with ENOTEMPTY.
+    // Retrying is the documented remedy instead of failing the suite.
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
 

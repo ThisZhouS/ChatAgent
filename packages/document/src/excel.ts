@@ -10,9 +10,39 @@ export interface ParsedSheet {
   preview: Record<string, unknown>[];
 }
 
-export function parseExcelBuffer(buffer: Buffer): ParsedSheet[] {
-  assertSafeArchive(buffer);
-  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
+export interface ParseExcelOptions {
+  /**
+   * Treat the buffer as delimited text (CSV) instead of a workbook archive.
+   *
+   * SheetJS sniffs a codepage for buffered text and does not pick UTF-8, so a
+   * Chinese CSV read as a buffer comes back as mojibake. Delimited uploads are
+   * decoded here first: UTF-8 (BOM tolerated), then GBK — what Chinese Windows
+   * Excel writes by default.
+   */
+  delimited?: boolean;
+}
+
+/** Decodes a delimited text buffer: UTF-8 first, then a GBK fallback. */
+export function decodeDelimitedText(buffer: Buffer): string {
+  const hasBom =
+    buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf;
+  const body = hasBom ? buffer.subarray(3) : buffer;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(body);
+  } catch {
+    try {
+      return new TextDecoder('gbk').decode(body);
+    } catch {
+      return body.toString('utf8');
+    }
+  }
+}
+
+export function parseExcelBuffer(buffer: Buffer, options: ParseExcelOptions = {}): ParsedSheet[] {
+  if (!options.delimited) assertSafeArchive(buffer);
+  const workbook = options.delimited
+    ? XLSX.read(decodeDelimitedText(buffer), { type: 'string', cellDates: false })
+    : XLSX.read(buffer, { type: 'buffer', cellDates: false });
   const sheets: ParsedSheet[] = [];
 
   for (const sheetName of workbook.SheetNames.slice(0, DOCUMENT_LIMITS.maxSheets)) {

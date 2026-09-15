@@ -6,20 +6,25 @@
 
 | 命令 | 结果 |
 |---|---|
-| `node scripts/acceptance.mjs` | **7/7 步通过**：typecheck 0 错 · 227 用例 · build 通过 · 健康检查 · API smoke 27/27 · 依赖审计门（critical 0）· client E2E **34/34**（新打包 exe，electron 39.8.10） |
+| `node scripts/acceptance.mjs` | **7/7 步通过**：typecheck 0 错 · 202 用例 · build 通过 · 健康检查 · API smoke 27/27 · 依赖审计门（critical 0）· client E2E **36/36**（新打包 exe，electron 39.8.10） |
 | `tsc --noEmit` / `vue-tsc --noEmit` | 0 错 |
-| vitest 根 / web | 199/199（21 文件）· 28/28（3 文件） |
+| vitest 根 / web | 202/202（21 文件）· 34/34（5 文件） |
 | `pnpm audit --registry=https://registry.npmjs.org` | **41 → 2**（仅剩 extract-zip×2，官方无已发布补丁版，仅 dev 打包链使用） |
 | 桌面 exe | 重新打包成功（NSIS 102MB，electron 39.8.10 + builder 26.16.1），E2E 全过 |
 | 桌面关窗续跑 smoke（真实 Electron 运行时） | 6/6 |
-| 提交 | `5349ff6`（37 文件，+4056/−1681；仅本人文件，显式路径提交） |
+| 提交 | `5349ff6` + `3dbaa89` + `389389c`（仅本人文件，显式路径提交） |
 
 ## 一、完整性（Completeness）
 
 1. **本地任务回执闭环（新功能）**：Gate 7A 的"下一步"已打通——桌面 Agent 主机的任务记录经认证会话同步到服务端（`POST/GET /api/local-tasks`），任务页新增"本机任务回执"表；设备为权威来源，服务端只读镜像、按成员隔离、有审计。
-2. **桌面 exe 重建**：上轮 BLOCKED 项完成——NSIS 安装包（102MB）含 Gate 7A 主机集成 + Electron 39.8.10；client E2E 34/34 直接验证打包版。
+2. **桌面 exe 重建**：上轮 BLOCKED 项完成——NSIS 安装包（102MB）含 Gate 7A 主机集成 + Electron 39.8.10；client E2E 直接验证打包版。
 3. **测试补强**：新增 `local-tasks.test.ts` 7 项（匿名 401、成员隔离、按 (device,taskId) 幂等 upsert、载荷上限、审计落账、容量上限）；**测试先行发现并修复真实缺口**：该路由原先缺 `isAuthenticated`，生产模式匿名可写——已修复。
-4. **文档**：`docs/gate7a-local-agent-host.md`（上轮 8 部分报告）+ `docs/iteration-2026-09-15.md`（逐条证据日志）+ 本报告。
+4. **文档链路两个真实缺陷（第三波，端到端驱动发现）**：
+   - `api.documents.parse` 用裸 `fetch`：不带 `Authorization`，且打包客户端页面来自 `file://`（跨源）带不上 Cookie → **桌面端文档解析必然 401**（同文件 `upload` 反而正确）。已抽出带凭据的 multipart 助手 `postForm()` 统一两条路径，并加 `api.test.ts` 回归。
+   - **UTF-8 中文 CSV 乱码**（SheetJS 自嗅探代码页）：改为 UTF-8（容忍 BOM）优先、GBK 回退自行解码后以 `type:'string'` 解析；新增 3 个文档包测试。
+5. **E2E 覆盖补强 + 发送可靠性（第三波）**：新增"文件"页真实上传 CSV → 断言解析预览表格；并新增"greeting message was posted from the client"（34 → **36** 项检查）。正是新检查暴露了上面两个文档缺陷；同时修复了 harness 自身的隐性 flake——聊天列表重渲染会把 textarea 的值清空，导致"发送"点击空转、随后误报"任务无回复"；现在发送前校验值、发送后校验气泡标记，带重试。修复后 E2E 由 53–68s 降到 **20.2s** 并稳定 36/36。
+6. **测试稳定性**：修复 `agent-host` 崩溃恢复用例的 Windows `ENOTEMPTY` 竞态（删除带重试），连续 5 次运行 19/19 稳定。
+7. **文档**：`docs/gate7a-local-agent-host.md`（8 部分报告）+ `docs/iteration-2026-09-15.md`（逐条证据日志）+ 本报告。
 
 ## 二、实用性（Practicality）
 
