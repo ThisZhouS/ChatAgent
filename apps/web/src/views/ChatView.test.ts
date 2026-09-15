@@ -61,6 +61,7 @@ const mocks = vi.hoisted(() => {
     recall: vi.fn(async () => ({ ok: true })),
     forward: vi.fn(async () => ({ ok: true, message: {} })),
     readReceipts: vi.fn(async () => ({ others: [] as Array<{ memberId: string; lastReadAt: string }> })),
+    search: vi.fn(async () => [] as Array<{ conversationId: string; title?: string; message: { id: string; text: string; senderName?: string; createdAt: string } }>),
     defaultMessages: [
       {
         id: 'm1',
@@ -119,7 +120,7 @@ vi.mock('../api', () => ({
     },
     tasks: { list: vi.fn(async () => []) },
     approvals: { list: vi.fn(async () => []), decide: vi.fn() },
-    search: vi.fn(async () => []),
+    search: mocks.search,
   },
 }));
 
@@ -149,6 +150,8 @@ beforeEach(() => {
   mocks.readReceipts.mockClear();
   mocks.readReceipts.mockResolvedValue({ others: [] });
   mocks.leave.mockClear();
+  mocks.search.mockClear();
+  mocks.search.mockResolvedValue([]);
   mocks.listConversations.mockResolvedValue([mocks.conversation]);
   // The message fixture must be restored: mockClear() keeps implementations.
   mocks.listMessages.mockResolvedValue(mocks.defaultMessages);
@@ -213,6 +216,49 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('＋群聊');
     expect(wrapper.find('input[placeholder="过滤会话或联系人"]').exists()).toBe(true);
     expect(wrapper.find('input[placeholder="搜索聊天记录（至少 2 个字）"]').exists()).toBe(true);
+  });
+
+  it('jumps to and flashes the matched message when a search hit is clicked', async () => {
+    // jsdom does not implement scrollIntoView; the jump is the behavior under test.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+
+    // The hit points at a message that exists in the loaded page (id m1), so
+    // the jump can find its DOM node.
+    mocks.search.mockResolvedValueOnce([
+      {
+        conversationId: 'conv_bob',
+        title: 'Bob',
+        message: {
+          id: 'm1',
+          text: '早上好，验收前请确认群聊',
+          senderName: 'Bob',
+          createdAt: new Date().toISOString(),
+        },
+      },
+    ]);
+
+    const input = wrapper.find('input[placeholder="搜索聊天记录（至少 2 个字）"]');
+    await input.setValue('验收');
+    // The search is debounced by 250ms; wait past it with real timers.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await flushPromises();
+
+    const hit = wrapper.find('.search-hit');
+    expect(hit.exists(), 'a search hit is rendered for the query').toBe(true);
+    expect(hit.text()).toContain('验收前请确认群聊');
+
+    await hit.trigger('click');
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(scrollIntoView).toHaveBeenCalled();
+    const flashed = document.querySelector('[data-message-id="m1"]');
+    expect(flashed?.classList.contains('search-flash')).toBe(true);
+    wrapper.unmount();
   });
 
   it('invites the selected contact into the open group conversation', async () => {

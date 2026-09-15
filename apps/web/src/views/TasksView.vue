@@ -24,6 +24,9 @@ async function loadLocalReceipts() {
   }
 }
 
+/** 回执随桌面端同步节奏变化；页面打开期间低频轮询保持新鲜。 */
+let receiptsTimer: ReturnType<typeof setInterval> | undefined;
+
 const localStateTag = (state: string) => {
   const map: Record<string, string> = {
     queued: 'warning',
@@ -145,8 +148,12 @@ watch(selectedId, (id) => {
 onMounted(() => {
   void load();
   void loadLocalReceipts();
+  receiptsTimer = setInterval(() => void loadLocalReceipts(), 30_000);
 });
-onUnmounted(closeStream);
+onUnmounted(() => {
+  closeStream();
+  if (receiptsTimer) clearInterval(receiptsTimer);
+});
 </script>
 
 <template>

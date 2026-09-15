@@ -11,11 +11,23 @@ const audit = ref<
   Array<{ at?: string; action?: string; outcome?: string; actorId?: string; target?: string; detail?: string }>
 >([]);
 const auditError = ref('');
+// 审计筛选：动作关键字 + 结果级别（客户端过滤已加载的最近 100 条）。
+const auditActionFilter = ref('');
+const auditOutcomeFilter = ref<'' | 'ok' | 'denied' | 'failed'>('');
 
 const isAdmin = computed(() => {
   const roles = props.me?.roles ?? [];
   return roles.includes('owner') || roles.includes('admin');
 });
+
+const auditFiltered = computed(() =>
+  audit.value.filter((entry) => {
+    const action = auditActionFilter.value.trim().toLowerCase();
+    if (action && !(entry.action ?? '').toLowerCase().includes(action)) return false;
+    if (auditOutcomeFilter.value && entry.outcome !== auditOutcomeFilter.value) return false;
+    return true;
+  }),
+);
 
 const rotatedToken = ref('');
 const sessions = ref<
@@ -252,9 +264,34 @@ onMounted(async () => {
           <template v-else>
             <div v-if="auditError" class="error">{{ auditError }}</div>
             <el-empty v-else-if="audit.length === 0" description="暂无审计记录" :image-size="60" />
-            <el-table v-else :data="audit" max-height="320" style="width: 100%">
-              <el-table-column label="时间" width="170">
-                <template #default="{ row }">
+            <template v-else>
+              <div class="audit-filters">
+                <el-input
+                  v-model="auditActionFilter"
+                  size="small"
+                  clearable
+                  placeholder="按动作过滤，如 task / approval / local_tasks"
+                />
+                <el-select
+                  v-model="auditOutcomeFilter"
+                  size="small"
+                  clearable
+                  placeholder="结果"
+                  style="width: 110px"
+                >
+                  <el-option label="成功" value="ok" />
+                  <el-option label="拒绝" value="denied" />
+                  <el-option label="失败" value="failed" />
+                </el-select>
+              </div>
+              <el-empty
+                v-if="auditFiltered.length === 0"
+                description="没有匹配当前过滤条件的记录"
+                :image-size="50"
+              />
+              <el-table v-else :data="auditFiltered" max-height="320" style="width: 100%">
+                <el-table-column label="时间" width="170">
+                  <template #default="{ row }">
                   {{ row.at ? new Date(row.at).toLocaleString() : '—' }}
                 </template>
               </el-table-column>
@@ -267,7 +304,8 @@ onMounted(async () => {
               <el-table-column prop="actorId" label="主体" width="130" />
               <el-table-column prop="target" label="对象" min-width="150" />
               <el-table-column prop="detail" label="详情" min-width="140" />
-            </el-table>
+              </el-table>
+            </template>
           </template>
         </el-card>
       </el-col>
@@ -424,6 +462,12 @@ CHATAGENT_MODEL_NAME=your-model</pre>
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.audit-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .host-card {

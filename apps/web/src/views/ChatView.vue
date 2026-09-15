@@ -449,13 +449,24 @@ function runSearch() {
   }, 250);
 }
 
-async function openSearchHit(conversationId: string) {
+async function openSearchHit(hit: { conversationId: string; message: { id: string } }) {
   searchQuery.value = '';
   searchResults.value = [];
-  if (!conversations.value.some((item) => item.id === conversationId)) {
+  if (!conversations.value.some((item) => item.id === hit.conversationId)) {
     await loadConversations(true);
   }
-  await select(conversationId);
+  await select(hit.conversationId);
+  // Jump to the matching message and flash it so the hit is findable in a
+  // long history instead of only opening the conversation at the newest page.
+  await nextTick();
+  const node = document.querySelector(`[data-message-id="${hit.message.id}"]`);
+  if (node instanceof HTMLElement) {
+    node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    node.classList.remove('search-flash');
+    void node.offsetWidth; // restart the animation on repeated hits
+    node.classList.add('search-flash');
+    setTimeout(() => node.classList.remove('search-flash'), 1800);
+  }
 }
 
 async function loadContacts() {
@@ -888,7 +899,7 @@ onUnmounted(() => {
               v-for="hit in searchResults"
               :key="hit.message.id"
               class="search-hit"
-              @click="openSearchHit(hit.conversationId)"
+              @click="openSearchHit(hit)"
             >
               <div class="search-hit-title">
                 {{ hit.title ?? hit.conversationId.slice(0, 8) }}
@@ -1053,7 +1064,11 @@ onUnmounted(() => {
                 <div v-if="needsDayDivider(index)" class="day-divider">
                   <span>{{ dayLabel(message.createdAt) }}</span>
                 </div>
-                <div class="bubble-row" :class="{ mine: isMine(message), compact: isCompact(index) }">
+                <div
+                  class="bubble-row"
+                  :class="{ mine: isMine(message), compact: isCompact(index) }"
+                  :data-message-id="message.id"
+                >
                   <el-avatar
                     v-if="!isCompact(index)"
                     :size="30"
@@ -1486,6 +1501,23 @@ onUnmounted(() => {
 
 .bubble-row.compact {
   margin-top: -4px;
+}
+
+/* Search-hit jump: a brief outline flash so the matched message is findable. */
+@keyframes search-flash {
+  0% {
+    box-shadow: 0 0 0 2px #409eff;
+    background: var(--ca-active);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+    background: transparent;
+  }
+}
+
+.bubble-row.search-flash {
+  animation: search-flash 1.8s ease forwards;
+  border-radius: 8px;
 }
 
 .avatar-spacer {

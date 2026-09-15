@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
   ]),
   revokeSession: vi.fn(async () => ({ ok: true })),
   revokeOtherSessions: vi.fn(async () => ({ revoked: 1 })),
-  audit: vi.fn(async () => []),
+  audit: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
   agentStatus: vi.fn(async () => ({
     provider: 'mock',
     accounts: { total: 1, online: 1 },
@@ -41,7 +41,7 @@ vi.mock('../api', () => ({
       revokeSession: mocks.revokeSession,
       revokeOtherSessions: mocks.revokeOtherSessions,
     },
-    audit: mocks.audit,
+    audit: { list: mocks.audit },
     agentStatus: mocks.agentStatus,
   },
 }));
@@ -53,6 +53,17 @@ const me: MemberView = {
   roles: ['member'],
   kind: 'member',
 };
+
+const adminMe: MemberView = {
+  ...me,
+  roles: ['owner'],
+};
+
+const auditSeed = [
+  { at: '2026-09-15T01:00:00.000Z', action: 'local_tasks.sync', outcome: 'ok', actorId: 'u_alice', target: 'member:u_alice', detail: '1 receipts' },
+  { at: '2026-09-15T01:01:00.000Z', action: 'task.submit', outcome: 'ok', actorId: 'u_alice', target: 'task:t1', detail: '' },
+  { at: '2026-09-15T01:02:00.000Z', action: 'task.submit', outcome: 'denied', actorId: 'u_bob', target: 'task:t2', detail: 'forbidden' },
+];
 
 beforeEach(() => {
   mocks.rotateToken.mockClear();
@@ -162,5 +173,37 @@ describe('SettingsView', () => {
     expect(submitted?.kind).toBe('document');
     expect(submitted?.toolsets).toEqual(['document']);
     expect(submitted?.taskId).toMatch(/^ui-/);
+  });
+
+  it('filters the admin audit log by action keyword and outcome', async () => {
+    mocks.audit.mockResolvedValueOnce(auditSeed);
+    const wrapper = mount(SettingsView, {
+      props: { me: adminMe },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+    expect(mocks.audit).toHaveBeenCalled();
+    // Seed data renders before filtering. The page has several tables, so
+    // count rows only inside the audit card.
+    expect(wrapper.text()).toContain('local_tasks.sync');
+    const auditCard = wrapper.find('.audit-filters').element.closest('.el-card') as HTMLElement;
+    const rows = () => auditCard.querySelectorAll('.el-table__row').length;
+    expect(rows()).toBe(3);
+    const outcomeSelect = wrapper.findAll('.audit-filters .el-select').at(0);
+    // Element Plus select needs pointer work; drive the ref through the input
+    // events of the underlying component instead of simulating a dropdown.
+    const vm = wrapper.findComponent({ name: 'ElSelect' });
+    expect(vm.exists()).toBe(true);
+
+    // Simpler and robust: filter by action keyword via the text input.
+    const actionInput = wrapper.find('.audit-filters input');
+    await actionInput.setValue('local_tasks');
+    expect(rows()).toBe(1);
+
+    await actionInput.setValue('task.submit');
+    expect(rows()).toBe(2);
+
+    await actionInput.setValue('');
+    expect(rows()).toBe(3);
   });
 });
