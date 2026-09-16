@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FakeHermesAdapter, type HermesAdapter } from './adapter';
+import { computeActionDigest } from './authorization';
 import { LocalAgentHost } from './host';
 import { handleHostCommand } from './ipc';
 import { MemoryAgentHostStore, JsonFileAgentHostStore } from './store';
@@ -183,73 +184,101 @@ describe('local agent host lifecycle', () => {
     await host.stop();
   });
 
-  it('never executes an organization side effect without delegation and approval', async () => {
+  it('never executes an organization side effect without a verified delegation and approval', async () => {
     const root = await makeRoot();
     const { host } = makeHost({ workRoot: root });
     await host.start();
+    const grants = host.authorizationRegistry;
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const past = new Date(Date.now() - 1_000).toISOString();
+    const issuedAt = new Date().toISOString();
 
+    // No grant registered at all.
     const noDelegation = await host.submit(baseTask({ kind: 'side_effect' }));
     expect(noDelegation.state).toBe('failed');
     expect(noDelegation.blockedReason).toBe('delegation_missing');
 
+    // An id the host never registered is not a delegation, however well formed
+    // the caller's idea of it is.
+    const unknown = await host.submit(
+      baseTask({ kind: 'side_effect', delegationId: 'delegation_never_registered' }),
+    );
+    expect(unknown.blockedReason).toBe('delegation_unknown');
+
+    grants.grantDelegation({
+      id: 'dg_expired',
+      ownerId: 'u_owner',
+      agentId: AGENT,
+      deviceId: DEVICE,
+      expiresAt: past,
+      capabilities: ['document'],
+      issuedAt,
+      source: 'test',
+    });
     const expired = await host.submit(
-      baseTask({
-        kind: 'side_effect',
-        delegation: {
-          ownerId: 'u_owner',
-          agentId: AGENT,
-          deviceId: DEVICE,
-          expiresAt: new Date(Date.now() - 1000).toISOString(),
-          capabilities: [],
-        },
-        approval: {
-          id: 'ap_1',
-          approved: true,
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          actionDigest: 'digest',
-        },
-      }),
+      baseTask({ kind: 'side_effect', delegationId: 'dg_expired', approvalId: 'ap_1' }),
     );
     expect(expired.blockedReason).toBe('delegation_expired');
 
+    grants.grantDelegation({
+      id: 'dg_ok',
+      ownerId: 'u_owner',
+      agentId: AGENT,
+      deviceId: DEVICE,
+      expiresAt: future,
+      capabilities: ['document'],
+      issuedAt,
+      source: 'test',
+    });
+    grants.grantApproval({
+      id: 'ap_pending',
+      approved: false,
+      expiresAt: future,
+      actionDigest: 'digest',
+      ownerId: 'u_owner',
+      issuedAt,
+      source: 'test',
+    });
     const notApproved = await host.submit(
-      baseTask({
-        kind: 'side_effect',
-        delegation: {
-          ownerId: 'u_owner',
-          agentId: AGENT,
-          deviceId: DEVICE,
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          capabilities: ['message.send'],
-        },
-        approval: {
-          id: 'ap_2',
-          approved: false,
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          actionDigest: 'digest',
-        },
-      }),
+      baseTask({ kind: 'side_effect', delegationId: 'dg_ok', approvalId: 'ap_pending' }),
     );
     expect(notApproved.blockedReason).toBe('approval_not_approved');
 
-    const approved = await host.submit(
-      baseTask({
-        kind: 'side_effect',
-        delegation: {
-          ownerId: 'u_owner',
-          agentId: AGENT,
-          deviceId: DEVICE,
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          capabilities: ['message.send'],
-        },
-        approval: {
-          id: 'ap_3',
-          approved: true,
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          actionDigest: 'digest',
-        },
-      }),
+    // An approval bound to a different payload must not authorize this task.
+    grants.grantApproval({
+      id: 'ap_other_action',
+      approved: true,
+      expiresAt: future,
+      actionDigest: 'digest-of-something-else',
+      ownerId: 'u_owner',
+      delegationId: 'dg_ok',
+      issuedAt,
+      source: 'test',
+    });
+    const mismatched = await host.submit(
+      baseTask({ kind: 'side_effect', delegationId: 'dg_ok', approvalId: 'ap_other_action' }),
     );
+    expect(mismatched.blockedReason).toBe('approval_digest_mismatch');
+
+    // The correctly bound approval lets exactly this payload run.
+    const approvedTask = baseTask({ kind: 'side_effect', delegationId: 'dg_ok' });
+    grants.grantApproval({
+      id: 'ap_bound',
+      approved: true,
+      expiresAt: future,
+      actionDigest: computeActionDigest({
+        taskId: approvedTask.taskId,
+        agentId: AGENT,
+        kind: approvedTask.kind,
+        goal: approvedTask.goal,
+        toolsets: approvedTask.toolsets,
+      }),
+      ownerId: 'u_owner',
+      delegationId: 'dg_ok',
+      issuedAt,
+      source: 'test',
+    });
+    const approved = await host.submit({ ...approvedTask, approvalId: 'ap_bound' });
     expect(approved.state).toBe('queued');
     await waitFor(async () => (await host.get(approved.taskId))?.state === 'succeeded');
     await host.stop();

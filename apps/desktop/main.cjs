@@ -1,7 +1,7 @@
-const { app, BrowserWindow, session, shell, ipcMain, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, session, shell, ipcMain, Tray, Menu, nativeImage, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { randomBytes } = require('crypto');
+const { randomBytes, randomUUID } = require('crypto');
 
 // Bundled local agent host (packages/agent-host compiled to one CJS file by
 // build-agent-host.mjs). It is the single scheduler on this device.
@@ -45,6 +45,22 @@ function isAppOrigin(target, serverUrl) {
   }
 }
 
+/**
+ * Hands a link to the real browser, but only for the protocols we expect. The
+ * check is on the *parsed* protocol, not on a string prefix, so neither
+ * `https://evil.example`-style lookalikes nor exotic schemes reach the OS.
+ */
+function openExternalIfSafe(target) {
+  try {
+    const parsed = new URL(target);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
+      void shell.openExternal(target);
+    }
+  } catch {
+    // not a URL: nothing to open
+  }
+}
+
 function createWindow(serverUrl) {
   const win = new BrowserWindow({
     width: 1280,
@@ -66,9 +82,7 @@ function createWindow(serverUrl) {
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      void shell.openExternal(url);
-    }
+    openExternalIfSafe(url);
     return { action: 'deny' };
   });
 
@@ -78,15 +92,22 @@ function createWindow(serverUrl) {
   win.webContents.on('will-navigate', (event, url) => {
     if (isAppOrigin(url, serverUrl)) return;
     event.preventDefault();
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      void shell.openExternal(url);
-    }
+    openExternalIfSafe(url);
   });
 
   win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
     if (isMainFrame) {
       void win.loadFile('error.html', { query: { url: serverUrl } });
     }
+  });
+
+  // Windows shutdown / restart / logout does not emit `before-quit`; the OS gives
+  // the app a short window here, so the same teardown runs.
+  win.on('query-session-end', () => {
+    void shutdownHostOnce('os_session_end');
+  });
+  win.on('session-end', () => {
+    void shutdownHostOnce('os_session_end');
   });
 
   void win.loadURL(serverUrl);
@@ -127,9 +148,68 @@ let deviceToken = '';
 let tray = null;
 let mainWindow = null;
 
+// Single idempotent shutdown path shared by every quit route (tray, menu, IPC,
+// OS session end). Teardown is bounded: if the host cannot stop in time the app
+// is force-exited instead of lingering with a live agent behind it.
+const SHUTDOWN_DEADLINE_MS = 8000;
+let shutdownPromise = null;
+let shutdownDone = false;
+
+function shutdownHostOnce(reason) {
+  if (shutdownDone) return Promise.resolve();
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    const current = host;
+    if (current) {
+      let timer;
+      const deadline = new Promise((resolve) => {
+        timer = setTimeout(resolve, SHUTDOWN_DEADLINE_MS);
+      });
+      await Promise.race([
+        current.close(reason).catch((err) => {
+          console.error('[chatagent] host shutdown failed:', err);
+        }),
+        deadline,
+      ]);
+      clearTimeout(timer);
+    }
+    shutdownDone = true;
+  })();
+  return shutdownPromise;
+}
+
 function hostRoot() {
   if (process.env.CHATAGENT_HOST_ROOT) return process.env.CHATAGENT_HOST_ROOT;
   return path.join(app.getPath('userData'), 'agent-host');
+}
+
+/**
+ * Stable device identity (Gate 7A.2). The old value was `desktop-<platform>`,
+ * which is identical on every Windows machine — task ownership and receipts
+ * could not be told apart. The id is generated once and kept in userData.
+ */
+function resolveDeviceId() {
+  const file = path.join(app.getPath('userData'), 'device.json');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed && typeof parsed.deviceId === 'string' && parsed.deviceId.length >= 8) {
+      return parsed.deviceId;
+    }
+  } catch {
+    // first run or unreadable file: fall through and mint a new identity
+  }
+  const deviceId = `desktop-${randomUUID()}`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ deviceId, createdAt: new Date().toISOString() }, null, 2),
+      'utf8',
+    );
+  } catch (err) {
+    console.error('[chatagent] could not persist device id:', err.message);
+  }
+  return deviceId;
 }
 
 function createHost() {
@@ -143,7 +223,7 @@ function createHost() {
     : 'real Hermes runtime not found; using offline fake executor (never passed off as real)';
 
   host = new LocalAgentHost({
-    deviceId: `desktop-${process.platform}`,
+    deviceId: resolveDeviceId(),
     agentId: 'hermes',
     workRoot: path.join(root, 'work'),
     store: new JsonFileAgentHostStore(path.join(root, 'tasks.json')),
@@ -185,12 +265,12 @@ function registerHostIpc(serverUrl) {
   });
 
   // Explicit "stop agent, then quit" — distinct from closing the window, which
-  // keeps the host alive.
+  // keeps the host alive. The actual teardown lives in the single before-quit
+  // path below, so every quit route (tray, menu, IPC, OS) behaves identically.
   ipcMain.handle('chatagent:host:quit-app', async (event) => {
     if (!isTrustedSender(event)) {
       return { ok: false, error: 'untrusted_sender' };
     }
-    await host.stop('app_quit');
     app.quit();
     return { ok: true };
   });
@@ -206,10 +286,9 @@ function createTray(serverUrl) {
         { label: '显示主窗口', click: () => showMainWindow(serverUrl) },
         { type: 'separator' },
         {
+          // Same single shutdown path as every other quit route.
           label: '退出（停止后台 Agent）',
-          click: () => {
-            void host.stop('app_quit').finally(() => app.quit());
-          },
+          click: () => app.quit(),
         },
       ]),
     );
@@ -246,15 +325,29 @@ if (!hasSingleInstanceLock) {
 
     // The client needs no device permission: deny every request by default so a
     // compromised page cannot reach the camera, microphone or location APIs.
+    // Both handlers are required — `setPermissionRequestHandler` alone still
+    // leaves synchronous permission *checks* answering "granted".
     const allowedPermissions = new Set(['clipboard-sanitized-write']);
     session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
       callback(allowedPermissions.has(permission));
     });
+    session.defaultSession.setPermissionCheckHandler((_contents, permission) =>
+      allowedPermissions.has(permission),
+    );
 
     deviceToken = randomBytes(32).toString('hex');
     createHost();
     void host.start().catch((err) => {
       console.error('[chatagent] host failed to start:', err);
+      const locked = err && err.code === 'agent_host_store_locked';
+      const detail = locked
+        ? '本机任务库已被另一个 ChatAgent 进程占用，为避免两个调度器写同一份任务记录，后台 Agent 未启动。请关闭其它实例后重启。'
+        : `后台 Agent 启动失败：${err && err.message ? err.message : String(err)}`;
+      try {
+        dialog.showErrorBox('ChatAgent', detail);
+      } catch {
+        // headless/CI: the console line above is the record
+      }
     });
     registerHostIpc(serverUrl);
     createTray(serverUrl);
@@ -269,5 +362,24 @@ if (!hasSingleInstanceLock) {
   // host first (see chatagent:host:quit-app / tray "退出").
   app.on('window-all-closed', () => {
     // Intentionally not calling app.quit(): the local agent must keep running.
+  });
+
+  // Single shutdown path for every quit route: stop dispatching, cancel in-flight
+  // runs (the adapter kills each executor's own process tree), persist, release
+  // the task-store lock, then let the quit continue. The latch makes the second
+  // before-quit (our own app.quit()) pass straight through, so quit semantics stay
+  // standard instead of being replaced by a bare app.exit().
+  app.on('before-quit', (event) => {
+    if (shutdownDone) return;
+    event.preventDefault();
+    void shutdownHostOnce('app_quit').then(() => app.quit());
+  });
+
+  app.on('will-quit', () => {
+    try {
+      tray?.destroy();
+    } catch {
+      // tray may already be gone
+    }
   });
 }

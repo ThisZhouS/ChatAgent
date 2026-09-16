@@ -25,10 +25,15 @@ export type LocalTaskState =
 /** Why a task is not allowed to run (authorization, not execution). */
 export type BlockReason =
   | 'delegation_missing'
+  | 'delegation_unknown'
   | 'delegation_expired'
+  | 'agent_mismatch'
+  | 'capability_not_granted'
   | 'approval_missing'
+  | 'approval_unknown'
   | 'approval_not_approved'
   | 'approval_expired'
+  | 'approval_digest_mismatch'
   | 'host_stopped'
   | 'host_paused'
   | 'work_root_missing';
@@ -59,6 +64,31 @@ export interface ApprovalReference {
   actionDigest: string;
 }
 
+/**
+ * Issuer of a delegation/approval grant. Only trusted code paths may mint grants:
+ * verified organization-server responses, or an explicit local user consent
+ * dialog driven from the Electron main process. A renderer-supplied object is
+ * never a grant — that is exactly what the registry exists to prevent.
+ */
+export type GrantSource = 'organization-server' | 'local-user-consent' | 'test';
+
+/** A delegation the host trusts, keyed by id. */
+export interface DelegationGrant extends DelegationScope {
+  id: string;
+  issuedAt: string;
+  source: GrantSource;
+}
+
+/** An approval the host trusts, keyed by id and bound to one action digest. */
+export interface ApprovalGrant extends ApprovalReference {
+  issuedAt: string;
+  source: GrantSource;
+  /** Owner the approval was issued to; must match the delegation owner. */
+  ownerId: string;
+  /** When set, the approval only applies to this delegation. */
+  delegationId?: string;
+}
+
 export interface LocalTaskInput {
   /** Business task id from ChatAgent's TaskEngine (or a local-only id). */
   taskId: string;
@@ -72,9 +102,13 @@ export interface LocalTaskInput {
   /** Executor toolset allow-list. Never empty, never `*`. */
   toolsets: string[];
   timeoutMs?: number;
-  /** Present for side effects; absent for pure local document work. */
-  delegation?: DelegationScope;
-  approval?: ApprovalReference;
+  /**
+   * Reference to a delegation already held by the host. Callers pass an id, never
+   * a scope object: the host resolves and validates it against its own registry.
+   */
+  delegationId?: string;
+  /** Reference to an approval already held by the host, bound by action digest. */
+  approvalId?: string;
   /** Extra context for the executor (already sanitized by the caller). */
   notes?: string;
 }
@@ -94,6 +128,12 @@ export interface LocalTaskRecord {
   goal: string;
   kind: LocalTaskInput['kind'];
   state: LocalTaskState;
+  /**
+   * Compare-and-set version. Every accepted write bumps it, so an execution that
+   * finishes after a cancel/stop can be rejected instead of overwriting the
+   * terminal state.
+   */
+  version: number;
   /** Set for every execution attempt; a retry gets a new runId. */
   runId?: string;
   workDir: string;
@@ -110,8 +150,16 @@ export interface LocalTaskRecord {
   blockedReason?: BlockReason;
   /** Single-dispatcher guard: whoever holds the lease may run the task. */
   lease?: { holder: string; expiresAt: string };
+  /** Resolved snapshot of the verified delegation (audit only; ids are the key). */
   delegation?: DelegationScope;
+  /** Id of the delegation that was verified for this task (re-checked before running). */
+  delegationId?: string;
+  /** Resolved snapshot of the verified approval (audit only; ids are the key). */
   approval?: ApprovalReference;
+  /** Id of the approval that was verified for this task (re-checked before running). */
+  approvalId?: string;
+  /** Digest the approval had to match; recorded so a later reviewer can re-check. */
+  actionDigest?: string;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -180,5 +228,10 @@ export interface HostStatus {
   /** How many tasks are executing right now (distinct from `running` above). */
   runningTasks: number;
   finished: number;
+  /**
+   * Results that arrived after a task had already reached a terminal state and
+   * were therefore discarded. A non-zero value means the CAS guard did its job.
+   */
+  lateResultsDropped: number;
   lastError?: string;
 }

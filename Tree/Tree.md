@@ -56,6 +56,7 @@ ChatAgent/
 │   ├── hermes/          Agent 运行时（工具循环/提供商/记忆/事件）
 │   ├── document/        Word/Excel 解析与生成 + 工具封装
 │   ├── im-gateway/      IM 网关抽象 + 钉钉/飞书/企微/QQ 规范化
+│   ├── agent-host/      本机 Agent Host（任务库/租约/停止/Hermes 适配/IPC）
 │   └── task-engine/     任务状态机、队列、重试、取消、持久化
 ├── docs/                项目简报、调研、需求、任务、架构、环境、验收、Gate 记录
 │   ├── gate1-2-identity-task-integrity.md  认证/状态机/迁移策略
@@ -64,6 +65,11 @@ ChatAgent/
 │   ├── gate5-standalone-hardening.md       原生投递/安全加固/成员与审批自助
 │   ├── security-checklist.md               部署安全清单
 │   ├── gate6-access-control-fixes.md       第三轮对抗性复核的访问控制修复
+│   ├── adr-0002-dual-mode-client-agent-host.md  双用途客户端与本机 Hermes 工作节点（生命周期部分被 ADR-0003 取代）
+│   ├── gate7a-local-agent-host.md          本机 Agent Host 与桌面集成验收
+│   ├── adr-0003-window-resident-agent.md   后台绑定关窗常驻、明确退出即停止（当前生命周期决策）
+│   ├── review-2026-09-15-host-gaps-roadmap.md   当前复核基线：Host 六项缺口与 Gate 7A 路线
+│   ├── iteration-2026-09-16-gate7a1-hardening.md  H-01～H-06 加固与桌面生命周期收敛
 │   └── acceptance-guide.md                 10 分钟人工验收指南
 ├── Prompt/              原始 Prompt 留痕
 ├── Tree/                目录树索引

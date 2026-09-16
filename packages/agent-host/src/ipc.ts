@@ -6,46 +6,45 @@ import type { LocalAgentHost } from './host';
  *
  * Deliberately not a shell: there is no command that starts an arbitrary
  * process, reads an arbitrary path or forwards arbitrary arguments. Every field
- * is validated, the caller must present the per-launch token, and the host
- * applies its own authorization on top.
+ * is validated and the host applies its own authorization on top.
+ *
+ * Notably absent: any command that *grants* a delegation or an approval. Those
+ * are minted by the Electron main process from verified organization-server
+ * responses or an explicit local consent dialog (`host.authorizationRegistry`),
+ * never by the page — otherwise "renderer-supplied approval" would be back.
  */
 export const hostCommandSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('status') }),
-  z.object({ type: z.literal('list') }),
-  z.object({ type: z.literal('pause') }),
-  z.object({ type: z.literal('resume') }),
-  z.object({ type: z.literal('stop') }),
-  z.object({ type: z.literal('cancel'), taskId: z.string().min(1).max(128) }),
-  z.object({
-    type: z.literal('submit'),
-    taskId: z.string().min(1).max(128),
-    goal: z.string().min(1).max(4000),
-    kind: z.enum(['document', 'side_effect']),
-    toolsets: z.array(z.string().min(1).max(64)).max(10).default(['document']),
-    delegation: z
-      .object({
-        ownerId: z.string().min(1).max(128),
-        agentId: z.string().min(1).max(128),
-        deviceId: z.string().min(1).max(128),
-        expiresAt: z.string().min(1),
-        capabilities: z.array(z.string().min(1).max(64)).max(20).default([]),
-      })
-      .optional(),
-    approval: z
-      .object({
-        id: z.string().min(1).max(128),
-        approved: z.boolean(),
-        expiresAt: z.string().min(1),
-        actionDigest: z.string().min(1).max(128),
-      })
-      .optional(),
-  }),
+  z.object({ type: z.literal('status') }).strict(),
+  z.object({ type: z.literal('list') }).strict(),
+  z.object({ type: z.literal('pause') }).strict(),
+  z.object({ type: z.literal('resume') }).strict(),
+  z.object({ type: z.literal('stop') }).strict(),
+  z.object({ type: z.literal('cancel'), taskId: z.string().min(1).max(128) }).strict(),
+  z.object({ type: z.literal('retry'), taskId: z.string().min(1).max(128) }).strict(),
+  z
+    .object({
+      type: z.literal('submit'),
+      taskId: z.string().min(1).max(128),
+      goal: z.string().min(1).max(4000),
+      kind: z.enum(['document', 'side_effect']),
+      toolsets: z.array(z.string().min(1).max(64)).max(10).default(['document']),
+      /** References to grants the host already holds; never a caller-built object. */
+      delegationId: z.string().min(1).max(128).optional(),
+      approvalId: z.string().min(1).max(128).optional(),
+    })
+    // Strict: an unexpected field (`delegation`, `approval`, …) is a rejected
+    // command instead of being silently dropped, so a caller that still believes
+    // it can declare its own authorization gets an explicit error.
+    .strict(),
 ]);
 
 export type HostCommand = z.input<typeof hostCommandSchema>;
 
 export interface HostCommandContext {
-  /** Token minted for this application launch; never written to disk. */
+  /**
+   * Token minted for this application launch; never written to disk. Kept as a
+   * second gate in front of the sender validation done by the main process.
+   */
   token: string;
 }
 
@@ -68,38 +67,58 @@ export async function handleHostCommand(
     return { ok: false, error: 'invalid_command', detail: parsed.error.issues[0]?.message ?? 'schema' };
   }
   const command = parsed.data;
-  switch (command.type) {
-    case 'status':
-      return { ok: true, result: await host.status() };
-    case 'list':
-      return { ok: true, result: await host.list() };
-    case 'pause':
-      host.pause();
-      return { ok: true, result: { paused: true } };
-    case 'resume':
-      host.resume();
-      return { ok: true, result: { paused: false } };
-    case 'stop':
-      await host.stop('stopped_from_ui');
-      return { ok: true, result: { running: false } };
-    case 'cancel':
-      return { ok: true, result: { cancelled: await host.cancel(command.taskId) } };
-    case 'submit': {
-      const record = await host.submit({
-        taskId: command.taskId,
-        agentId: host.agentId,
-        goal: command.goal,
-        kind: command.kind,
-        // The work directory is assigned by the host inside its own root; the UI
-        // cannot point the executor at an arbitrary path.
-        workDir: host.workRoot,
-        toolsets: command.toolsets,
-        delegation: command.delegation,
-        approval: command.approval,
-      });
-      return { ok: true, result: record };
+  try {
+    switch (command.type) {
+      case 'status':
+        return { ok: true, result: await host.status() };
+      case 'list':
+        // H-06: one documented shape for both sides. The workbench reads
+        // `result.tasks`; returning a bare array here is what made every local
+        // task invisible in the UI.
+        return { ok: true, result: { tasks: await host.list() } };
+      case 'pause':
+        host.pause();
+        return { ok: true, result: { paused: true } };
+      case 'resume':
+        host.resume();
+        return { ok: true, result: { paused: false } };
+      case 'stop':
+        await host.stop('stopped_from_ui');
+        return { ok: true, result: { running: false } };
+      case 'cancel':
+        return { ok: true, result: { cancelled: await host.cancel(command.taskId) } };
+      case 'retry': {
+        const record = await host.retry(command.taskId);
+        return record
+          ? { ok: true, result: record }
+          : { ok: false, error: 'retry_refused', detail: 'task is not retryable' };
+      }
+      case 'submit': {
+        const record = await host.submit({
+          taskId: command.taskId,
+          agentId: host.agentId,
+          goal: command.goal,
+          kind: command.kind,
+          // The work directory is assigned by the host inside its own root; the UI
+          // cannot point the executor at an arbitrary path.
+          workDir: host.workRoot,
+          toolsets: command.toolsets,
+          delegationId: command.delegationId,
+          approvalId: command.approvalId,
+        });
+        return { ok: true, result: record };
+      }
+      default:
+        return { ok: false, error: 'unsupported_command' };
     }
-    default:
-      return { ok: false, error: 'unsupported_command' };
+  } catch (error) {
+    // A store write failure (H-03), an idempotency conflict or any other host
+    // error is reported as a failure; the UI must not show an optimistic success.
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: detail.startsWith('idempotency_conflict') ? 'idempotency_conflict' : 'host_error',
+      detail,
+    };
   }
 }

@@ -175,6 +175,76 @@ describe('SettingsView', () => {
     expect(submitted?.taskId).toMatch(/^ui-/);
   });
 
+  it('surfaces the block reason and offers a retry for a failed local task', async () => {
+    const commands: unknown[] = [];
+    const command = vi.fn(async (cmd: unknown) => {
+      commands.push(cmd);
+      if ((cmd as { type?: string }).type === 'status') {
+        return {
+          ok: true,
+          result: {
+            deviceId: 'desktop-9f2c4d1e',
+            agentId: 'hermes',
+            running: true,
+            runningTasks: 0,
+            paused: false,
+            executor: 'fake',
+            lateResultsDropped: 1,
+          },
+        };
+      }
+      if ((cmd as { type?: string }).type === 'list') {
+        return {
+          ok: true,
+          result: {
+            tasks: [
+              {
+                taskId: 'ui-blocked',
+                state: 'failed',
+                kind: 'side_effect',
+                goal: '发送周报',
+                artifacts: [],
+                blockedReason: 'approval_digest_mismatch',
+                error: 'approval_digest_mismatch',
+              },
+              {
+                taskId: 'ui-retryable',
+                state: 'failed',
+                kind: 'document',
+                goal: '整理纪要',
+                artifacts: [],
+                error: 'no_provider',
+              },
+            ],
+          },
+        };
+      }
+      return { ok: true, result: {} };
+    });
+    (window as { chatagent?: unknown }).chatagent = {
+      platform: 'win32',
+      versions: { electron: '39.8.10', chrome: '142', node: '22' },
+      host: { command, quitApp: vi.fn(async () => ({ ok: true })) },
+    };
+
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+
+    // The reason a task did not run is visible instead of a bare "failed".
+    expect(wrapper.text()).toContain('approval_digest_mismatch');
+    expect(wrapper.text()).toContain('no_provider');
+    expect(wrapper.text()).toContain('desktop-9f2c4d1e');
+
+    const retry = wrapper.findAll('button').filter((node) => node.text().trim() === '重试');
+    expect(retry.length, 'a retry control exists for failed tasks').toBeGreaterThan(0);
+    await retry[0]?.trigger('click');
+    await flushPromises();
+    expect(commands).toContainEqual({ type: 'retry', taskId: 'ui-blocked' });
+  });
+
   it('filters the admin audit log by action keyword and outcome', async () => {
     mocks.audit.mockResolvedValueOnce(auditSeed);
     const wrapper = mount(SettingsView, {

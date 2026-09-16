@@ -233,7 +233,13 @@ Prompt/              增量 Prompt 留痕（每轮变更的原始指令与决策
 | [`docs/gate6-access-control-fixes.md`](docs/gate6-access-control-fixes.md) | 第三轮对抗性复核的全部修复、N1–N6 与三次复核证据 |
 | [`docs/security-checklist.md`](docs/security-checklist.md) | 部署安全清单与已知缺口 |
 | [`docs/adr-0001-standalone-native-chat.md`](docs/adr-0001-standalone-native-chat.md) | 「独立产品」决策记录 |
-| [`Prompt/2026-09-13-chatagent-gate6-access-control-and-client-e2e.md`](Prompt/2026-09-13-chatagent-gate6-access-control-and-client-e2e.md) | 本轮增量 Prompt 留痕 |
+| [`docs/adr-0002-dual-mode-client-agent-host.md`](docs/adr-0002-dual-mode-client-agent-host.md) | 「双用途客户端 + 本机 Hermes 工作节点」决策记录（后台生命周期部分由 ADR-0003 取代） |
+| [`docs/adr-0003-window-resident-agent.md`](docs/adr-0003-window-resident-agent.md) | 「后台绑定关窗常驻、明确退出即停止」生命周期决策（当前有效） |
+| [`docs/review-2026-09-15-host-gaps-roadmap.md`](docs/review-2026-09-15-host-gaps-roadmap.md) | 当前复核基线：Host 六项缺口与 Gate 7A.1 修复清单 |
+| [`docs/iteration-2026-09-16-gate7a1-hardening.md`](docs/iteration-2026-09-16-gate7a1-hardening.md) | 本轮：H-01～H-06 加固、桌面生命周期收敛与证据 |
+| [`Prompt/2026-09-13-chatagent-gate6-access-control-and-client-e2e.md`](Prompt/2026-09-13-chatagent-gate6-access-control-and-client-e2e.md) | Gate 6 增量 Prompt 留痕 |
+| [`Prompt/2026-09-15-window-resident-agent.md`](Prompt/2026-09-15-window-resident-agent.md) | 后台生命周期简化 Prompt 留痕 |
+| [`Prompt/2026-09-16-continuous-iteration.md`](Prompt/2026-09-16-continuous-iteration.md) | 本轮增量 Prompt 留痕（持续迭代加固） |
 
 ## 群成员与自助令牌
 

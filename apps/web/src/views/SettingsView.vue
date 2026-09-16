@@ -430,6 +430,16 @@ CHATAGENT_MODEL_NAME=your-model</pre>
         </el-table-column>
         <el-table-column prop="kind" label="类型" width="100" />
         <el-table-column prop="goal" label="目标" min-width="200" show-overflow-tooltip />
+        <el-table-column label="说明" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            <!-- Why nothing ran (authorization block) or why it failed; the host
+                 records a reason instead of a silent failure. -->
+            <span v-if="row.blockedReason || row.error" class="muted">
+              {{ row.blockedReason || row.error }}
+            </span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="产物" width="160">
           <template #default="{ row }">
             <span v-if="row.artifacts?.length">
@@ -438,7 +448,7 @@ CHATAGENT_MODEL_NAME=your-model</pre>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="90">
+        <el-table-column label="操作" width="150">
           <template #default="{ row }">
             <el-button
               v-if="row.state === 'queued' || row.state === 'running'"
@@ -448,6 +458,15 @@ CHATAGENT_MODEL_NAME=your-model</pre>
               @click="runHostCommand({ type: 'cancel', taskId: row.taskId })"
             >
               取消
+            </el-button>
+            <el-button
+              v-else-if="row.state === 'failed' || row.state === 'interrupted'"
+              size="small"
+              text
+              type="primary"
+              @click="runHostCommand({ type: 'retry', taskId: row.taskId })"
+            >
+              重试
             </el-button>
           </template>
         </el-table-column>

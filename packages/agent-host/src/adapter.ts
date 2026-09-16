@@ -177,14 +177,41 @@ export class HermesProcessAdapter implements HermesAdapter {
       let timedOut = false;
       let cancelled = false;
 
+      /**
+       * Terminates the executor *and its children*. Hermes spawns helper
+       * processes (python, browsers, shells); killing only the direct child would
+       * leave orphans behind after a cancel or an app quit. `taskkill /T` is
+       * scoped to the pid we spawned, so unrelated Python/Hermes processes on the
+       * machine are never touched.
+       */
+      const killTree = (): void => {
+        if (child.pid === undefined) {
+          child.kill('SIGKILL');
+          return;
+        }
+        if (process.platform === 'win32') {
+          try {
+            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+              windowsHide: true,
+              stdio: 'ignore',
+            }).on('error', () => child.kill('SIGKILL'));
+            return;
+          } catch {
+            child.kill('SIGKILL');
+            return;
+          }
+        }
+        child.kill('SIGKILL');
+      };
+
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGKILL');
+        killTree();
       }, request.timeoutMs);
 
       const onAbort = (): void => {
         cancelled = true;
-        child.kill('SIGKILL');
+        killTree();
       };
       request.signal?.addEventListener('abort', onAbort, { once: true });
 

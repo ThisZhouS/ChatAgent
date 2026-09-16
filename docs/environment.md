@@ -1,5 +1,15 @@
 # ChatAgent 环境 / Environment
 
+## 2026-09-16 Gate 7A.1 加固验证
+
+同一台 Windows 机器、Node v24.11.0，继续使用已存在的 `node_modules` 本地入口（未安装依赖、未联网）。根 Vitest：23 文件 / 226 用例通过；`apps/web` Vitest：6 文件 / 40 用例通过；`tsc --noEmit` 与 `vue-tsc --noEmit` 退出码均为 0；新回归 `packages/agent-host/src/host-security.test.ts` 37 项全绿。未重跑 Electron 打包/E2E、未调用真实模型或真实 Hermes。详见 `docs/iteration-2026-09-16-gate7a1-hardening.md`。
+
+## 2026-09-15 审查补测
+
+PowerShell，Node v24.11.0，当前 PATH 未找到 pnpm；使用现有 node_modules 本地入口，无依赖安装。获批沙箱外运行 Vitest v4.1.11：根目录 22 文件/208 用例通过，apps/web 6 文件/39 用例通过；tsc 与 vue-tsc 退出码均为 0。命令、范围及日志路径见 `docs/review-2026-09-15-host-gaps-roadmap.md`。
+
+另有 6 项 Temp 隔离诊断复现错误行为，不计入安全通过数量。本轮不重跑安装包/E2E、依赖联网扫描或真实 Hermes/模型调用；下方旧环境与验收数字是历史记录。
+
 测量日期: 2026-09-06
 
 | 项目 | 值 | 备注 |
