@@ -166,7 +166,10 @@
 2. ~~**Host 侧持续回执同步**~~ **已完成**：主进程 `apps/desktop/receipt-sync.cjs` 周期同步（离线排队 + 按版本去重 + 失败退避），`status().receiptSync` 对 UI 可见；回执携带 `ownerId` 并由服务端校验（403 `receipt_owner_mismatch` + denied 审计）。真实 Electron 校验 16/16（`scripts/electron-receipt-sync-check.mjs`）。
 3. **缺口收敛**：~~陈旧单 writer 锁的自愈（需本地明确同意 + 审计）~~ **已完成**（歧义情形弹窗询问、默认不接管、旧锁改名保留 + `lock-audit.jsonl` 审计、无人值守时锁获胜；`electron-lock-check.mjs` 9/9）；`taskkill /T /F` 子进程树回收已用真实两级进程树实测（`packages/agent-host/src/process-tree.ts` + 5 例真实进程测试），**Windows Job Object 仍未做**（需原生模块，离线无法验证）；`node:sqlite` 经实测（Electron 39 = Node 22.22.1，`node:sqlite` 仍 experimental）**决定暂不采用**，见 `docs/electron-upgrade.md`；Electron 升级（39.8.x 已于 2026-05-05 EOL，目标 42.11.x → 43/44）因本机无外网无法下载二进制，已写升级预研与回归清单。
 4. ~~**持久化行治理**~~ **已完成**：`packages/agent-host/src/record-integrity.ts` 载入时校验/修复/隔离（未知 kind/state、缺 taskId/workDir 的行保留为 `failed`+`invalid_persisted_row`，永不执行），损坏文件另存为 `.corrupt-<时间戳>` 不删除，`status().storeIntegrity` 在服务端工作台与离线工作台均可见。
-5. ~~**远程页面加固**~~ **已完成**：`persist:chatagent-workbench` 独立持久分区 + 缺省 CSP 注入（服务端已有 CSP 则不削弱）+ 分区内权限全拒 + 分区内权限全拒；`status().shell` 可核对；`electron-csp-check.mjs` 用内联脚本载荷证明策略被浏览器强制执行（5/5），`electron-receipt-sync-check.mjs` 19/19 覆盖同步与分区。
+5. ~~**远程页面加固**~~ **已完成**：`persist:chatagent-workbench` 独立持久分区 + 缺省 CSP 注入（服务端已有 CSP 则不削弱）+ 分区内权限全拒；`status().shell` 可核对；`electron-csp-check.mjs` 用内联脚本载荷证明策略被浏览器强制执行（5/5），`electron-receipt-sync-check.mjs` 19/19 覆盖同步与分区。
+6. ~~**任务库保留策略**~~ **已完成**：`selectExpiredRecords` 只淘汰终态记录、进行中的任务永不淘汰、载入只报告不改写文件、淘汰发生在下一次被接受的写入、写入失败时把记录放回内存；`status().storeIntegrity.prunable` 与设置页「保留策略」提示可见（`retention.test.ts` 7 例）。
+7. ~~**服务端回执单调性**~~ **已完成**：离线队列乱序/重发时，比已存版本更旧的收据一律忽略并计入 `stale`，不会把已完成任务打回进行中；接口返回 `{accepted, stale}` 并在审计写明忽略条数（`local-tasks.test.ts` 10/10）。
+8. **下一轮候选（未开始）**：打包 exe 重建与打包后 E2E（需联网）；Windows Job Object 子进程回收（需原生模块）；Electron 升级到受支持版本（需联网下载二进制）；真实 IM/模型凭据下的端到端联调；SSE 断线补发与持久游标（Gate 7）。
 
 ## 后续方向
 
