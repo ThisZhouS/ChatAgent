@@ -176,6 +176,21 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 刻意保留：无 cookie 时的首次尝试仍会发出（开发档位允许无凭据回环调用），失败按退避重试；同步只是**镜像**，设备始终是权威，服务端没有反向下发命令的通道。
 
+## 第五轮（2026-09-16 晚）：远程工作台会话隔离与响应头加固
+
+问题（`docs/tasks.md` 第 5 项）：远程工作台此前跑在默认会话里，与任何其它内容共享 cookie/存储；且安全头完全依赖服务端配置——服务端漏发就静默失去纵深防御。
+
+| 面 | 内容 |
+| --- | --- |
+| 会话隔离 | 远程页面改用 `persist:chatagent-workbench` 独立持久分区（与默认会话隔离，登录仍跨重启）；该分区权限请求/权限检查一律拒绝 |
+| 响应头加固 | 服务端**未**给 CSP 时由主进程注入保守策略（`default-src 'self'`、`object-src 'none'`、`frame-ancestors 'none'`…）；服务端已有 CSP 时只记录、不削弱；补 `X-Content-Type-Options: nosniff` 与 `Referrer-Policy: no-referrer` |
+| 可观测 | `status().shell = { partition, remoteResponses, cspInjected, cspFromServer }`；回执同步的 cookie 改从该分区读取（分区化后必须如此） |
+| 调研结论 | `docs/electron-upgrade.md`：Electron 39 于 2026-05-05 EOL（支持线为 42/43/44）；实测 Electron 39 = Node 22.22.1 且 `node:sqlite` 仍是 experimental，故**保留 JSON 任务库**并记录为有证据的决策 |
+
+证据：`scripts/electron-receipt-sync-check.mjs` 扩到 **19/19**（新增：独立分区、无 CSP 响应被注入 1 次、注入后页面仍正常渲染）；`electron-workbench-check.cjs` 11/11、`electron-host-smoke.cjs` 6/6、`electron-quit-check.cjs` 10/10 全部重跑通过（说明分区化没有破坏离线工作台与退出路径）。
+
+仍未验证：注入 CSP 对真实 XSS 载荷的拦截效果；Electron 升级本身（本机无外网，无法下载二进制）——两者都不得声称完成。
+
 ## 未完成 / 不在本轮
 
 - Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。

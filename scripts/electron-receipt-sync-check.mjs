@@ -264,6 +264,7 @@ async function main() {
       `state=${acceptedReceipt.state}`,
     );
 
+
     // 2. Dedupe: an unchanged task must not be uploaded again (retries for the
     //    failed attempt do not count — only accepted uploads do).
     const acceptedBefore = posts.filter((post) => hasSeed(post) && post.status === 200).length;
@@ -273,6 +274,22 @@ async function main() {
       syncState?.ok === true && syncState.result?.receiptSync !== undefined,
       JSON.stringify(syncState?.result?.receiptSync ?? null),
     );
+    // Shell hardening travels with the same status payload: the remote page runs
+    // in its own persistent partition and the desktop supplies the security
+    // headers when the server does not.
+    const shell = syncState?.result?.shell ?? {};
+    check(
+      'the remote workbench uses its own persistent session partition',
+      shell.partition === 'persist:chatagent-workbench',
+      `partition=${shell.partition}`,
+    );
+    check(
+      'the desktop injected a CSP for a server response that had none',
+      Number(shell.cspInjected) >= 1 && Number(shell.remoteResponses) >= 1,
+      `responses=${shell.remoteResponses} injected=${shell.cspInjected} fromServer=${shell.cspFromServer}`,
+    );
+    const pageTitle = await cdp.evaluate('document.title');
+    check('the page still renders under the injected policy', pageTitle === 'stub', `title=${pageTitle}`);
     await sleep(35000); // one full sync interval with nothing changed
     const acceptedAfter = posts.filter((post) => hasSeed(post) && post.status === 200).length;
     check(

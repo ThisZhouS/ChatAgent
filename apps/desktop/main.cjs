@@ -78,7 +78,52 @@ function openExternalIfSafe(target) {
   }
 }
 
+/**
+ * Remote workbench session (Gate 7A follow-up).
+ *
+ * The remote page gets its own persistent partition instead of the default
+ * session: cookies/storage of the organization server cannot be reached by any
+ * other content, and the login survives a restart ("persist:"). Responses are
+ * hardened here as well — a server misconfiguration must not silently drop the
+ * headers the desktop relies on. A CSP sent by the server is never weakened;
+ * one is only added when it is missing.
+ */
+const WORKBENCH_PARTITION = 'persist:chatagent-workbench';
+const FALLBACK_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+  "font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+
+const remoteSessionState = { partition: WORKBENCH_PARTITION, responses: 0, cspInjected: 0, cspKept: 0 };
+
+function hardenRemoteSession(serverUrl) {
+  const remoteSession = session.fromPartition(WORKBENCH_PARTITION);
+  const filter = { urls: [`${serverUrl.replace(/\/+$/, '')}/*`] };
+  remoteSession.webRequest.onHeadersReceived(filter, (details, callback) => {
+    const headers = { ...(details.responseHeaders ?? {}) };
+    const has = (name) => Object.keys(headers).some((key) => key.toLowerCase() === name);
+    const append = (name, value) => {
+      headers[name] = [...(headers[name] ?? []), value];
+    };
+    remoteSessionState.responses += 1;
+    if (has('content-security-policy')) {
+      // The server owns its policy; the desktop only records that it saw one.
+      remoteSessionState.cspKept += 1;
+    } else if (details.resourceType === 'mainFrame' || details.resourceType === 'subFrame') {
+      append('Content-Security-Policy', FALLBACK_CSP);
+      remoteSessionState.cspInjected += 1;
+    }
+    if (!has('x-content-type-options')) append('X-Content-Type-Options', 'nosniff');
+    if (!has('referrer-policy')) append('Referrer-Policy', 'no-referrer');
+    callback({ responseHeaders: headers });
+  });
+  // Same default-deny posture as the default session, but scoped to this page.
+  remoteSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  remoteSession.setPermissionCheckHandler(() => false);
+  return remoteSession;
+}
+
 function createWindow(serverUrl) {
+  hardenRemoteSession(serverUrl);
   const win = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -95,6 +140,8 @@ function createWindow(serverUrl) {
       sandbox: true,
       webviewTag: false,
       allowRunningInsecureContent: false,
+      // Remote content lives in its own persistent session, never the default one.
+      partition: WORKBENCH_PARTITION,
     },
   });
 
@@ -298,7 +345,9 @@ function startReceiptSync(serverUrl) {
     statePath: path.join(hostRoot(), 'receipts-sync.json'),
     cookieProvider: async () => {
       try {
-        const cookies = await session.defaultSession.cookies.get({ url: serverUrl });
+        // The remote workbench runs in its own partition, so its session cookies
+        // live there — reading the default session would find nothing.
+        const cookies = await session.fromPartition(WORKBENCH_PARTITION).cookies.get({ url: serverUrl });
         return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
       } catch {
         return '';
@@ -362,8 +411,19 @@ function registerHostIpc(serverUrl) {
     const result = await handleHostCommand(host, command, { token: deviceToken }, deviceToken);
     // The page also gets the receipt-sync state: "the workbench does not show my
     // task" and "the device never uploaded it" are different problems.
-    if (result.ok && command && command.type === 'status' && receiptSync) {
-      result.result = { ...result.result, receiptSync: receiptSync.status() };
+    if (result.ok && command && command.type === 'status') {
+      result.result = {
+        ...result.result,
+        ...(receiptSync ? { receiptSync: receiptSync.status() } : {}),
+        // Shell-level diagnostics: which session the remote page uses and whether
+        // the desktop had to supply the security headers itself.
+        shell: {
+          partition: WORKBENCH_PARTITION,
+          remoteResponses: remoteSessionState.responses,
+          cspInjected: remoteSessionState.cspInjected,
+          cspFromServer: remoteSessionState.cspKept,
+        },
+      };
     }
     return result;
   });
