@@ -56,7 +56,7 @@ ChatAgent/
 │   ├── hermes/          Agent 运行时（工具循环/提供商/记忆/事件）
 │   ├── document/        Word/Excel 解析与生成 + 工具封装
 │   ├── im-gateway/      IM 网关抽象 + 钉钉/飞书/企微/QQ 规范化
-│   ├── agent-host/      本机 Agent Host（任务库/租约/停止/Hermes 适配/IPC）
+│   ├── agent-host/      本机 Agent Host（任务库/租约/停止/Hermes 适配/IPC/载入校验/保留策略/进程树/锁接管）
 │   └── task-engine/     任务状态机、队列、重试、取消、持久化
 ├── docs/                项目简报、调研、需求、任务、架构、环境、验收、Gate 记录
 │   ├── gate1-2-identity-task-integrity.md  认证/状态机/迁移策略
@@ -71,7 +71,8 @@ ChatAgent/
 │   ├── review-2026-09-15-host-gaps-roadmap.md   当前复核基线：Host 六项缺口与 Gate 7A 路线
 │   ├── review-2026-09-16-adversarial-verification.md 独立对抗性复核：11 项攻击复现→修复→复跑失效
 │   ├── review-2026-09-16-adversarial-verification-round2.md 第二轮复核：12 项发现，7 项已修
-│   ├── iteration-2026-09-16-gate7a1-hardening.md  H-01～H-06 加固与桌面生命周期收敛
+│   ├── iteration-2026-09-16-gate7a1-hardening.md  H-01～H-06 加固、桌面生命周期收敛与第四～九轮（回执同步/分区/进程树/锁接管/CSP/保留策略）
+│   ├── electron-upgrade.md                  Electron 支持窗口与升级预研（39 已 EOL，含 node:sqlite 实测结论）
 │   └── acceptance-guide.md                 10 分钟人工验收指南
 ├── Prompt/              原始 Prompt 留痕
 ├── Tree/                目录树索引
@@ -82,10 +83,17 @@ ChatAgent/
 ├── vitest.config.ts     测试（alias + include：packages 与 apps/server）
 ├── scripts/
 │   ├── add-member.mjs        生产成员/token 签发（只写 sha256）
-│   ├── acceptance.mjs        一条命令跑完整验收链（6 步，失败即非零退出）
+│   ├── acceptance.mjs        一条命令跑完整验收链（含桌面壳检查，失败即非零退出）
 │   ├── restart-server.mjs    按端口重启服务端并等待 /health（记录真实 pid）
 │   ├── smoke.mjs             端到端冒烟（健康→登录→会话→任务→审批→投递→搜索→群聊）
-│   └── ui-e2e.mjs            真实客户端 E2E（Electron/CDP 驱动打包 exe，含截图与对比度检查）
+│   ├── ui-e2e.mjs            真实客户端 E2E（Electron/CDP 驱动打包 exe，含截图与对比度检查）
+│   ├── gate7a-verify.mjs     本机 Agent 主机级流程（22/22；含真实 Hermes 进程契约）
+│   ├── electron-workbench-check.cjs  断网本机工作台（11/11，真实 Electron）
+│   ├── electron-host-smoke.cjs       关窗常驻与任务继续（6/6）
+│   ├── electron-quit-check.cjs       显式退出路径（10/10）
+│   ├── electron-receipt-sync-check.mjs 回执持续同步（19/19，含分区与 CSP 注入断言）
+│   ├── electron-lock-check.mjs       单 writer 锁（9/9：歧义锁不静默接管、残留锁自愈）
+│   └── electron-csp-check.mjs        远程页面 CSP 强制执行（5/5，内联载荷）
 ├── Dockerfile           容器构建（pnpm install + build + start）
 ├── docker-compose.yml   单容器开箱部署（端口 8787 + 数据卷）
 ├── start-server.cmd     Windows 一键启动服务端

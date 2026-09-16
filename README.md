@@ -100,12 +100,21 @@ node scripts/acceptance.mjs        # 7 步，任一步失败即非零退出；--
 
 ```bash
 pnpm typecheck                     # 全仓库类型检查（tsc + vue-tsc）
-pnpm test                          # 单元/集成测试：21 文件 / 199 用例
+pnpm test                          # 单元/集成测试：29 文件 / 278 用例（前端另 6 文件 / 40 用例）
 pnpm build                         # 服务端打包 + 前端构建
 node scripts/restart-server.mjs    # 按端口重启并等待 /health（Windows 上可靠）
 node scripts/smoke.mjs             # 27 步端到端冒烟（真实 HTTP）
 node scripts/ui-e2e.mjs            # 真实客户端 E2E：驱动打包 exe，34 项检查 + 截图
 pnpm start                         # 前台运行服务端产物（同时托管前端 dist）
+
+# 本机 Agent（桌面壳）——全部是真实 Electron，不需要组织服务与凭据
+node scripts/gate7a-verify.mjs                 # 主机级流程 22/22（设 CHATAGENT_HERMES_EXE 时含真实 Hermes 进程契约）
+node scripts/electron-workbench-check.cjs      # 断网工作台 11/11
+node scripts/electron-host-smoke.cjs           # 关窗常驻、任务继续 6/6
+node scripts/electron-quit-check.cjs           # 显式退出即停止 10/10
+node scripts/electron-receipt-sync-check.mjs   # 回执持续同步/离线队列/归属绑定 19/19
+node scripts/electron-lock-check.mjs           # 单 writer 锁：歧义锁不静默接管 9/9
+node scripts/electron-csp-check.mjs            # 远程页面 CSP 强制执行 5/5
 ```
 
 `scripts/ui-e2e.mjs` 通过 Electron 的 CDP 端口操作**打包后的客户端**：填表登录 → 打开与 AI 的会话 →
@@ -236,7 +245,8 @@ Prompt/              增量 Prompt 留痕（每轮变更的原始指令与决策
 | [`docs/adr-0002-dual-mode-client-agent-host.md`](docs/adr-0002-dual-mode-client-agent-host.md) | 「双用途客户端 + 本机 Hermes 工作节点」决策记录（后台生命周期部分由 ADR-0003 取代） |
 | [`docs/adr-0003-window-resident-agent.md`](docs/adr-0003-window-resident-agent.md) | 「后台绑定关窗常驻、明确退出即停止」生命周期决策（当前有效） |
 | [`docs/review-2026-09-15-host-gaps-roadmap.md`](docs/review-2026-09-15-host-gaps-roadmap.md) | 当前复核基线：Host 六项缺口与 Gate 7A.1 修复清单 |
-| [`docs/iteration-2026-09-16-gate7a1-hardening.md`](docs/iteration-2026-09-16-gate7a1-hardening.md) | 本轮：H-01～H-06 加固、桌面生命周期收敛与证据 |
+| [`docs/iteration-2026-09-16-gate7a1-hardening.md`](docs/iteration-2026-09-16-gate7a1-hardening.md) | 本轮：H-01～H-06 加固、桌面生命周期收敛，以及回执同步、会话分区、进程树回收、锁接管、CSP 强制执行、保留策略 |
+| [`docs/electron-upgrade.md`](docs/electron-upgrade.md) | Electron 支持窗口（39 已 EOL）与升级预研；`node:sqlite` 实测结论 |
 | [`docs/review-2026-09-16-adversarial-verification.md`](docs/review-2026-09-16-adversarial-verification.md) | 独立对抗性复核：11 项攻击复现→修复→复跑全部失效 |
 | [`docs/review-2026-09-16-adversarial-verification-round2.md`](docs/review-2026-09-16-adversarial-verification-round2.md) | 第二轮独立对抗性复核：12 项发现（7 项已修、1 项保留为嵌入边界） |
 | [`Prompt/2026-09-13-chatagent-gate6-access-control-and-client-e2e.md`](Prompt/2026-09-13-chatagent-gate6-access-control-and-client-e2e.md) | Gate 6 增量 Prompt 留痕 |

@@ -35,4 +35,24 @@
 | 是否外发 | 否；本轮不调用模型、不投递消息、不启动真实 Hermes |
 | 幂等/取消语义 | 同 id 同载荷幂等返回；同 id 异载荷 `idempotency_conflict`；取消立即写终态，迟到结果按 version CAS 丢弃 |
 | 测试 profile | 根 vitest 278、web vitest 40、tsc/vue-tsc 0、Electron 校验：工作台 11/11、关窗常驻 6/6、显式退出 10/10、回执同步 19/19、单 writer 锁 9/9、远程页面 CSP 5/5（真实应用）；打包 exe 与打包后 E2E 未重跑 |
-| 未验证边界 | 真实 Hermes+模型、断网账号归属与回执持续同步、干净安装、多设备并发、主进程被强杀后的子进程回收 |
+| 未验证边界 | 真实 Hermes+模型（Gate 7A.3，BLOCKED）、干净安装、多设备并发、Electron 升级后的回归、完整 XSS 利用链 |
+
+## 第二时间窗续记：2026-09-16 19:00 → 22:00（第四～九轮）
+
+第二时间窗的原始指令与目标不变（窗口顺延至 22:00），按 `docs/tasks.md`「下一轮建议」逐项推进。每轮都遵循同一节奏：**先复现/证明、再改、再回归、最后写进文档**；没有真实凭据的部分保持 BLOCKED，不写成已完成。
+
+| 轮次 | 主题 | 关键证据 |
+| --- | --- | --- |
+| ④ | 任务库**载入即校验**与隔离（不可信行隔离为失败、可修的行修复、未知字段丢弃、重复 id 按版本取舍、损坏文件另存不留删） | `store-integrity.test.ts` 9 例 + `host-security-verify.test.ts` V-07/V-08；被隔离的行永不进执行器 |
+| ⑤ | **回执持续同步**（主进程周期同步、离线队列、按版本去重、失败退避、cookie 不落盘）与**回执归属绑定**（`ownerId` 必须等于登录成员，否则 403 + denied 审计） | `scripts/electron-receipt-sync-check.mjs` 16/19 项（真实 Electron + 进程内 stub 组织服务）；服务端 2 例归属测试 |
+| ⑥ | 远程工作台**独立持久分区 + 响应头加固**（缺省 CSP 注入、服务端 CSP 不削弱、分区内权限全拒）；Electron 升级预研（39 已 EOL，实测 Node 22.22.1 且 `node:sqlite` 仍 experimental） | 回执同步检查扩到 19/19（含分区与注入断言）；工作台 11/11、冒烟 6/6、退出 10/10 全部重跑 |
+| ⑦ | **执行器子进程树回收**实测（`terminateProcessTree` 提取为可测单元） | `process-tree.test.ts` 5 例真实两级进程树 + `adapter-kill.test.ts` 调用点回归 |
+| ⑧ | **单 writer 锁的歧义情形交给人**：弹窗询问（默认不接管）、旧锁改名保留、`lock-audit.jsonl` 审计、无人值守时锁获胜 | `lock-takeover.test.ts` 11 例 + `scripts/electron-lock-check.mjs` 9/9 |
+| ⑨ | **CSP 强制执行**用真实载荷证明（内联脚本被拦、同源外链不被误伤、服务端策略不被覆盖）；并修掉检查脚本自身的假通过 | `scripts/electron-csp-check.mjs` 5/5 |
+| ⑩ | **任务库保留策略**（只淘汰终态、进行中永不淘汰、载入只报告、写入时才落盘、写失败回滚不丢历史） | `retention.test.ts` 7 例；顺带修掉 zip 炸弹用例的随机失败 |
+
+轮次编号在 `docs/iteration-2026-09-16-gate7a1-hardening.md` 中为第四～九轮（"任务库保留策略"并入第九轮之后的收尾）；以该文档为准。
+
+第二时间窗新增/修改的可执行证据：`scripts/electron-receipt-sync-check.mjs`、`scripts/electron-lock-check.mjs`、`scripts/electron-csp-check.mjs`（均接入 `scripts/acceptance.mjs`），以及 `packages/agent-host/src/{record-integrity.ts,process-tree.ts,lock-takeover.ts,retention.ts}` 与其测试。
+
+仍未完成（不得声称已完成）：Gate 7A.3（真实 Hermes + 真实模型的安全办公闭环）、Windows Job Object 回收、Electron 39→42/43/44 升级（本机无外网，二进制无法下载）、打包 exe 重跑与打包后 E2E、完整 XSS 利用链。

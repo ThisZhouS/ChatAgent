@@ -190,7 +190,7 @@ describe('SettingsView', () => {
             paused: false,
             executor: 'fake',
             lateResultsDropped: 1,
-            storeIntegrity: { repaired: 2, quarantined: 1, duplicates: 0 },
+            storeIntegrity: { repaired: 2, quarantined: 1, duplicates: 0, prunable: 3 },
           },
         };
       }
@@ -241,6 +241,11 @@ describe('SettingsView', () => {
     // A quarantined/repared task store is surfaced instead of silently absorbed.
     expect(wrapper.find('[data-testid="host-integrity"]').text()).toContain('1 条记录无法解析');
     expect(wrapper.find('[data-testid="host-integrity"]').text()).toContain('2 条记录已按当前格式修复');
+    // Retention is housekeeping, not a repair: it is reported separately and says
+    // which work is unaffected.
+    const retention = wrapper.find('[data-testid="host-retention"]').text();
+    expect(retention).toContain('3 条更早的终态记录');
+    expect(retention).toContain('进行中的任务不受影响');
 
     const retry = wrapper.findAll('button').filter((node) => node.text().trim() === '重试');
     // Only the retryable document task gets a control: a blocked side effect needs
