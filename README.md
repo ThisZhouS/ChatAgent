@@ -238,6 +238,7 @@ Prompt/              增量 Prompt 留痕（每轮变更的原始指令与决策
 | [`docs/review-2026-09-15-host-gaps-roadmap.md`](docs/review-2026-09-15-host-gaps-roadmap.md) | 当前复核基线：Host 六项缺口与 Gate 7A.1 修复清单 |
 | [`docs/iteration-2026-09-16-gate7a1-hardening.md`](docs/iteration-2026-09-16-gate7a1-hardening.md) | 本轮：H-01～H-06 加固、桌面生命周期收敛与证据 |
 | [`docs/review-2026-09-16-adversarial-verification.md`](docs/review-2026-09-16-adversarial-verification.md) | 独立对抗性复核：11 项攻击复现→修复→复跑全部失效 |
+| [`docs/review-2026-09-16-adversarial-verification-round2.md`](docs/review-2026-09-16-adversarial-verification-round2.md) | 第二轮独立对抗性复核：12 项发现（7 项已修、1 项保留为嵌入边界） |
 | [`Prompt/2026-09-13-chatagent-gate6-access-control-and-client-e2e.md`](Prompt/2026-09-13-chatagent-gate6-access-control-and-client-e2e.md) | Gate 6 增量 Prompt 留痕 |
 | [`Prompt/2026-09-15-window-resident-agent.md`](Prompt/2026-09-15-window-resident-agent.md) | 后台生命周期简化 Prompt 留痕 |
 | [`Prompt/2026-09-16-continuous-iteration.md`](Prompt/2026-09-16-continuous-iteration.md) | 本轮增量 Prompt 留痕（持续迭代加固） |

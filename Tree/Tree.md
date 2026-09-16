@@ -70,6 +70,7 @@ ChatAgent/
 │   ├── adr-0003-window-resident-agent.md   后台绑定关窗常驻、明确退出即停止（当前生命周期决策）
 │   ├── review-2026-09-15-host-gaps-roadmap.md   当前复核基线：Host 六项缺口与 Gate 7A 路线
 │   ├── review-2026-09-16-adversarial-verification.md 独立对抗性复核：11 项攻击复现→修复→复跑失效
+│   ├── review-2026-09-16-adversarial-verification-round2.md 第二轮复核：12 项发现，7 项已修
 │   ├── iteration-2026-09-16-gate7a1-hardening.md  H-01～H-06 加固与桌面生命周期收敛
 │   └── acceptance-guide.md                 10 分钟人工验收指南
 ├── Prompt/              原始 Prompt 留痕
