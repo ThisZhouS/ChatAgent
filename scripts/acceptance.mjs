@@ -112,6 +112,7 @@ if (!skipE2e) {
       ['local receipt sync (Electron)', 'electron-receipt-sync-check.mjs'],
       ['single-writer lock (Electron)', 'electron-lock-check.mjs'],
       ['remote page CSP (Electron)', 'electron-csp-check.mjs'],
+      ['navigation + bridge (Electron)', 'electron-nav-check.mjs'],
     ]) {
       steps.push(() =>
         run(label, electronBin, [join(root, 'scripts', script)], {

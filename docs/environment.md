@@ -4,7 +4,7 @@
 
 同一台 Windows 机器、Node v24.11.0，继续使用已存在的 `node_modules` 本地入口（未安装依赖、未联网）。根 Vitest：29 文件 / 279 用例通过（含真实进程树回收、锁接管、保留策略、回执单调性用例）
 
-桌面壳（真实 Electron）检查：离线工作台 11/11、主机冒烟 6/6、显式退出 10/10、回执同步 19/19、单 writer 锁 9/9、远程页面 CSP 5/5。；`apps/web` Vitest：6 文件 / 40 用例通过；`tsc --noEmit` 与 `vue-tsc --noEmit` 退出码均为 0；新回归 `host-security.test.ts` 18 项与 `host-security-verify.test.ts` 17 项全绿（agent-host 共 63 项（含新增 store-integrity.test.ts 9 项））。Electron 侧检查已在真实运行时跑过（断网工作台 11/11、关窗常驻 6/6、显式退出 10/10）；打包 exe 与打包后客户端 E2E 未重跑。真实 Hermes 二进制被调用过两次，但均以“未配置 provider 的诚实失败”结束（主机级 Flow8、桌面退出检查），没有接入任何模型凭据。详见 `docs/iteration-2026-09-16-gate7a1-hardening.md`。
+桌面壳（真实 Electron）检查：离线工作台 11/11、主机冒烟 6/6、显式退出 10/10、回执同步 19/19、单 writer 锁 9/9、远程页面 CSP 5/5、导航与桥面 7/7。；`apps/web` Vitest：6 文件 / 40 用例通过；`tsc --noEmit` 与 `vue-tsc --noEmit` 退出码均为 0；新回归 `host-security.test.ts` 18 项与 `host-security-verify.test.ts` 17 项全绿（agent-host 共 63 项（含新增 store-integrity.test.ts 9 项））。Electron 侧检查已在真实运行时跑过（断网工作台 11/11、关窗常驻 6/6、显式退出 10/10）；打包 exe 与打包后客户端 E2E 未重跑。真实 Hermes 二进制被调用过两次，但均以“未配置 provider 的诚实失败”结束（主机级 Flow8、桌面退出检查），没有接入任何模型凭据。详见 `docs/iteration-2026-09-16-gate7a1-hardening.md`。
 
 ## 2026-09-15 审查补测
 
@@ -55,6 +55,16 @@ node scripts/restart-server.mjs  # 只重启服务端并等待 /health
 ```
 
 `.env.example` 已覆盖服务端读取的**全部**环境变量（含 `CHATAGENT_RECALL_WINDOW_SECONDS`），并在文末单列仅供脚本/客户端使用的变量（`CHATAGENT_URL`、`SMOKE_*`）。
+
+## 桌面壳（Electron）可用的开关
+
+| 变量 | 作用 | 默认 |
+| --- | --- | --- |
+| `CHATAGENT_SERVER_URL` | 外壳加载的组织服务地址 | `http://127.0.0.1:8787` |
+| `CHATAGENT_HOST_ROOT` | 本机 Agent 的数据目录（任务库、回执同步状态、锁与审计） | 应用 userData |
+| `CHATAGENT_NO_PROMPT=1` | 无人值守：即使是歧义锁也不弹窗（锁获胜，不接管） | 关闭 |
+| `CHATAGENT_OPEN_EXTERNAL=off|0|false|no` | 外链只记日志、不拉起系统浏览器（终端服务器/共享机器） | 打开外链 |
+| `CHATAGENT_HERMES_EXE` | 指定真实 Hermes 运行时（缺省用 fake 适配器，仅用于契约测试） | 自动探测 |
 
 ## 配置
 

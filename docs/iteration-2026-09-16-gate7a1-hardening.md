@@ -267,6 +267,24 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 证据：`apps/server/src/local-tasks.test.ts` 新增"旧收据被忽略而不回退"用例（旧 `running` 不覆盖 `succeeded`、同版本重发幂等、新版本仍胜出），10/10 通过；根套件 **29 文件 / 279 用例**。
 
+## 第十一轮（2026-09-16 晚）：远程页面能做什么——导航/窗口/桥面收敛**有证据**
+
+问题：`setWindowOpenHandler`、`will-navigate`、`will-attach-webview`、窄桥这些防护此前只有代码，没有"对着远程页面真的试一遍"的证据；而远程页面（组织服务端渲染的工作台）是唯一会被外部内容影响的渲染进程。
+
+新增 `scripts/electron-nav-check.mjs`（真实 Electron + 本地 stub 页面，7/7）：
+
+| 断言 | 结果 |
+| --- | --- |
+| 页面桥面就是窄桥：顶层只有 `host/platform/versions`，`host` 只有 `command/openWorkbench/quitApp`（没有通用 `ipcRenderer` 直通） | 通过 |
+| 未知命令被主机拒绝（`invalid_command` + 允许值列表），不静默接受 | 通过 |
+| `window.open("https://…")` **不产生任何窗口/标签**（CDP 目标数仍为 1） | 通过 |
+| 顶层跳转到其它源被阻止，外壳仍停在配置页面 | 通过 |
+| 被拒绝的外链**没有交给操作系统浏览器**（终端服务器场景） | 通过，日志为 `external link not opened (CHATAGENT_OPEN_EXTERNAL=off): https://example.invalid`（只记源，不记路径） |
+| 两次尝试后页面仍是我方外壳页面 | 通过 |
+| 同源跳转**仍然允许**（证明不是一刀切拦截） | 通过 |
+
+顺带补上一个真实部署开关：`CHATAGENT_OPEN_EXTERNAL=off|0|false|no` 让外链只记日志、不拉起浏览器（终端服务器/共享机器上不希望点一个链接就弹出浏览器）。默认行为不变。
+
 ## 未完成 / 不在本轮
 
 - Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。

@@ -115,6 +115,7 @@ node scripts/electron-quit-check.cjs           # 显式退出即停止 10/10
 node scripts/electron-receipt-sync-check.mjs   # 回执持续同步/离线队列/归属绑定 19/19
 node scripts/electron-lock-check.mjs           # 单 writer 锁：歧义锁不静默接管 9/9
 node scripts/electron-csp-check.mjs            # 远程页面 CSP 强制执行 5/5
+node scripts/electron-nav-check.mjs            # 导航/窗口/桥面收敛 7/7（外链开关同样被验证）
 ```
 
 `scripts/ui-e2e.mjs` 通过 Electron 的 CDP 端口操作**打包后的客户端**：填表登录 → 打开与 AI 的会话 →

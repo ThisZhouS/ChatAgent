@@ -65,6 +65,15 @@ function isAppOrigin(target, serverUrl) {
 }
 
 /**
+ * Whether links may be handed to the OS browser. Default on; a deployment can
+ * turn it off (`CHATAGENT_OPEN_EXTERNAL=off|0|false|no`) on shared machines.
+ */
+function externalLinksDisabled() {
+  const value = String(process.env.CHATAGENT_OPEN_EXTERNAL ?? '').trim().toLowerCase();
+  return value === 'off' || value === '0' || value === 'false' || value === 'no';
+}
+
+/**
  * Hands a link to the real browser, but only for the protocols we expect. The
  * check is on the *parsed* protocol, not on a string prefix, so neither
  * `https://evil.example`-style lookalikes nor exotic schemes reach the OS.
@@ -72,9 +81,16 @@ function isAppOrigin(target, serverUrl) {
 function openExternalIfSafe(target) {
   try {
     const parsed = new URL(target);
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
-      void shell.openExternal(target);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'mailto:') {
+      return;
     }
+    // Terminal servers and kiosks must not spawn a browser on the employee's
+    // desktop: CHATAGENT_OPEN_EXTERNAL=off turns link opening into a log line.
+    if (externalLinksDisabled()) {
+      console.info(`[chatagent] external link not opened (CHATAGENT_OPEN_EXTERNAL=off): ${parsed.origin}`);
+      return;
+    }
+    void shell.openExternal(target);
   } catch {
     // not a URL: nothing to open
   }

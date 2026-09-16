@@ -48,6 +48,7 @@
 - [ ] 工具集白名单：`document` 任务只允许 `document`/`document.read`，`*`/`terminal`/`code_execution` 等一律 `capability_not_granted`（host 级，不依赖适配器）。
 - [ ] 单 writer：任务库 `tasks.json.lock` 由存活 pid 独占，第二写者被拒（`agent_host_store_locked`）；`close()` 后进程拒绝再写（`agent_host_store_closed`），且只释放自己写的锁。
 - [ ] 桌面端：`app.enableSandbox()`、`contextIsolation` 且无 `nodeIntegration`、外链协议白名单（http/https/mailto）、权限检查默认拒绝、拒绝 webview 附着、断网本机工作台 `workbench.html` 用严格 CSP + `textContent` 渲染且不接受页面传入的加载位置。
+- [ ] 远程页面的**导航与桥面已实测**：`scripts/electron-nav-check.mjs`（7/7）证明页面桥只有 `host/platform/versions` + `command/openWorkbench/quitApp`（无通用 IPC 直通）、未知命令被拒、`window.open` 不产生窗口、跨源顶层跳转被阻止、同源跳转仍允许；外链在 `CHATAGENT_OPEN_EXTERNAL=off` 时只记日志不拉起浏览器。
 - [ ] CSP **强制执行已验证**：`scripts/electron-csp-check.mjs`（真实 Electron，5/5）用 stub 页面证明——服务端不发 CSP 时注入策略真的阻止内联脚本执行、且不误伤同源外链脚本；服务端自带 CSP 时桌面不覆盖（`cspInjected=0`/`cspFromServer=1`）。完整 XSS 利用链（含被信任第三方脚本）仍未构造，不夸大结论。
 - [ ] 单 writer 锁的**歧义**情形不静默处理：持有者 pid 仍存活（可能被复用）或锁损坏时，桌面弹窗询问，默认"不接管"；只有本地用户明确选择才 `takeOverStoreLock`。旧锁改名保留（`*.replaced-<ts>`）而非删除，接管写入 `<store>.lock-audit.jsonl`（actor=`local-user-consent`、原因、原持有者）。无人值守（`CHATAGENT_NO_PROMPT=1`）时锁获胜且不挂起；明确残留（pid 已消失）仍自动自愈且不产生"同意"审计。
 - [ ] 远程工作台独立会话分区：`persist:chatagent-workbench`（cookie/存储与默认会话隔离，登录跨重启）；该分区默认拒绝一切权限请求与权限检查。

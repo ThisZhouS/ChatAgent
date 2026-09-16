@@ -93,7 +93,8 @@ ChatAgent/
 │   ├── electron-quit-check.cjs       显式退出路径（10/10）
 │   ├── electron-receipt-sync-check.mjs 回执持续同步（19/19，含分区与 CSP 注入断言）
 │   ├── electron-lock-check.mjs       单 writer 锁（9/9：歧义锁不静默接管、残留锁自愈）
-│   └── electron-csp-check.mjs        远程页面 CSP 强制执行（5/5，内联载荷）
+│   ├── electron-csp-check.mjs        远程页面 CSP 强制执行（5/5，内联载荷）
+│   └── electron-nav-check.mjs        导航/窗口/桥面收敛（7/7）
 ├── Dockerfile           容器构建（pnpm install + build + start）
 ├── docker-compose.yml   单容器开箱部署（端口 8787 + 数据卷）
 ├── start-server.cmd     Windows 一键启动服务端
