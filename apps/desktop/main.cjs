@@ -12,6 +12,7 @@ const {
   FakeHermesAdapter,
   handleHostCommand,
 } = require('./agent-host.bundle.cjs');
+const { createReceiptSync } = require('./receipt-sync.cjs');
 
 const DEFAULT_SERVER_URL = 'http://localhost:8787';
 const TRAY_ICON = path.join(__dirname, 'assets', 'tray.png');
@@ -166,6 +167,7 @@ function resolveHermesExecutable() {
 }
 
 let host = null;
+let receiptSync = null;
 let deviceToken = '';
 let tray = null;
 let mainWindow = null;
@@ -182,6 +184,16 @@ function shutdownHostOnce(reason) {
   if (shutdownDone) return Promise.resolve();
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
+    if (receiptSync) {
+      try {
+        // One last attempt before the process goes away; a failure here only
+        // leaves the receipts in the on-disk queue for the next launch.
+        await Promise.race([receiptSync.kick('shutdown'), new Promise((resolve) => setTimeout(resolve, 1500))]);
+      } catch {
+        // best effort
+      }
+      receiptSync.stop();
+    }
     const current = host;
     if (current) {
       let timer;
@@ -271,6 +283,33 @@ async function reportStoreIntegrity() {
   }
 }
 
+/**
+ * Keeps the organization server's copy of on-device work up to date.
+ *
+ * Runs in the main process so it works with the window closed (tray-resident),
+ * queues receipts on disk while offline, and reads the session cookie per
+ * request — no credential is ever written to disk by this module.
+ */
+function startReceiptSync(serverUrl) {
+  if (receiptSync) return receiptSync;
+  receiptSync = createReceiptSync({
+    host,
+    serverUrl,
+    statePath: path.join(hostRoot(), 'receipts-sync.json'),
+    cookieProvider: async () => {
+      try {
+        const cookies = await session.defaultSession.cookies.get({ url: serverUrl });
+        return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+      } catch {
+        return '';
+      }
+    },
+    logger: console,
+  });
+  void receiptSync.start();
+  return receiptSync;
+}
+
 function createHost() {
   const root = hostRoot();
   const executable = resolveHermesExecutable();
@@ -316,11 +355,17 @@ function registerHostIpc(serverUrl) {
   // The renderer sends the raw command object; main holds the per-launch token
   // and never forwards it to the page. handleHostCommand enforces the schema,
   // the token gate and the host's own authorization.
-  ipcMain.handle('chatagent:host', (event, command) => {
+  ipcMain.handle('chatagent:host', async (event, command) => {
     if (!isTrustedSender(event)) {
       return { ok: false, error: 'untrusted_sender', detail: 'IPC sender is not the app frame' };
     }
-    return handleHostCommand(host, command, { token: deviceToken }, deviceToken);
+    const result = await handleHostCommand(host, command, { token: deviceToken }, deviceToken);
+    // The page also gets the receipt-sync state: "the workbench does not show my
+    // task" and "the device never uploaded it" are different problems.
+    if (result.ok && command && command.type === 'status' && receiptSync) {
+      result.result = { ...result.result, receiptSync: receiptSync.status() };
+    }
+    return result;
   });
 
   // Explicit "stop agent, then quit" — distinct from closing the window, which
@@ -427,7 +472,10 @@ if (!hasSingleInstanceLock) {
 
     deviceToken = randomBytes(32).toString('hex');
     createHost();
-    void host.start().then(() => reportStoreIntegrity()).catch((err) => {
+    void host.start()
+      .then(() => reportStoreIntegrity())
+      .then(() => startReceiptSync(serverUrl))
+      .catch((err) => {
       console.error('[chatagent] host failed to start:', err);
       const locked = err && err.code === 'agent_host_store_locked';
       const detail = locked

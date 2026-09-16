@@ -184,6 +184,58 @@ describe('local task receipts (on-device agent host mirror)', () => {
     expect(audit.length).toBeGreaterThan(0);
   });
 
+  it('binds on-device work to its owner: a foreign claim is refused and audited', async () => {
+    const { app } = await boot();
+    // Alice's device work, claimed by Bob's session on a shared machine.
+    const spoof = await app.inject({
+      method: 'POST',
+      url: '/api/local-tasks',
+      headers: devHeaders('u_bob'),
+      payload: { receipts: [receipt({ ownerId: 'u_alice', taskId: 'task-alice' })] },
+    });
+    expect(spoof.statusCode).toBe(403);
+    expect(spoof.json()).toEqual({ error: 'receipt_owner_mismatch' });
+
+    // Nothing was stored for Bob, and Alice's own list stays empty too.
+    const bob = await app.inject({ method: 'GET', url: '/api/local-tasks', headers: devHeaders('u_bob') });
+    expect(bob.json()).toEqual([]);
+    const alice = await app.inject({ method: 'GET', url: '/api/local-tasks', headers: devHeaders('u_alice') });
+    expect(alice.json()).toEqual([]);
+
+    const audit = await poll(
+      async () => {
+        const res = await app.inject({
+          method: 'GET',
+          url: '/api/audit?limit=50',
+          headers: ownerHeaders(),
+        });
+        if (res.statusCode !== 200) return [] as Array<{ action?: string; outcome?: string }>;
+        const entries = res.json() as Array<{ action?: string; outcome?: string }>;
+        return entries.some((entry) => entry.action === 'local_tasks.sync' && entry.outcome === 'denied')
+          ? entries
+          : ([] as Array<{ action?: string; outcome?: string }>);
+      },
+      (entries) => entries.length > 0,
+    );
+    expect(audit.some((entry) => entry.action === 'local_tasks.sync' && entry.outcome === 'denied')).toBe(true);
+  });
+
+  it('accepts a receipt that claims the authenticated member, and local work without an owner', async () => {
+    const { app } = await boot();
+    const own = await app.inject({
+      method: 'POST',
+      url: '/api/local-tasks',
+      headers: devHeaders('u_alice'),
+      payload: { receipts: [receipt({ ownerId: 'u_alice', taskId: 'task-owned' }), receipt({ taskId: 'task-local' })] },
+    });
+    expect(own.statusCode).toBe(200);
+    expect(own.json()).toEqual({ accepted: 2 });
+
+    const list = await app.inject({ method: 'GET', url: '/api/local-tasks', headers: devHeaders('u_alice') });
+    const receipts = list.json() as Array<Record<string, unknown>>;
+    expect(receipts.map((item) => item.taskId).sort()).toEqual(['task-local', 'task-owned']);
+  });
+
   it('keeps receipts bounded per member', async () => {
     const { app } = await boot();
     const headers = devHeaders('u_alice');

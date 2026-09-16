@@ -155,6 +155,27 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 刻意保留：载入时**不**回写规范化结果（避免销毁原始证据），首次成功写入才把规范形态落盘。
 
+## 第四轮（2026-09-16 晚）：回执持续同步与归属绑定
+
+问题（Gate 7A.2 剩余项）：本机任务只有打开"设置"页时才由页面 best-effort 上传——关窗常驻或没人看那个页面时，本机真实发生的工作在服务端账本里是缺失的；而且回执不携带归属，共享电脑上可以把别人的本机工作镜像进自己的列表。
+
+改动：
+
+| 面 | 内容 |
+| --- | --- |
+| 主进程同步（新 `apps/desktop/receipt-sync.cjs`） | 周期（默认 30s）把"有变化"的本地任务上传到 `POST /api/local-tasks`；离线排队落盘 `receipts-sync.json`；按任务 `updatedAt` 去重（同版本不重发）；失败指数退避 30s→10min；队列上限 200 条（超出丢最旧）；cookie **只在请求时**从 Electron 会话读取，不落盘 |
+| 生命周期 | 随主机启动（关窗后托盘常驻时照常同步）；退出前做一次有界（1.5s）收尾尝试，失败留给下次启动；`status().receiptSync` 暴露 pending/synced/lastSuccessAt/lastError，服务端工作台显示"未上传 N 条（原因）" |
+| 归属绑定 | 回执新增可选 `ownerId`（取自主机**已验证**的委托快照）；服务端校验 owner 必须等于登录成员，否则 403 `receipt_owner_mismatch` 且写 `local_tasks.sync` denied 审计；纯本地任务无 owner，不受影响 |
+| 契约与页面 | `packages/contracts` 的 `localTaskReceiptSchema` / `LocalTaskReceipt` 增加可选 `ownerId`；页面同步路径改为上报设备验证过的 owner，而不是"当前登录者" |
+
+证据：
+
+- 新增 `scripts/electron-receipt-sync-check.mjs`（真实 Electron + 进程内 stub 组织服务，16/16）：无需打开设置页即自动上传、重试一次 500 后带 cookie 成功、`ownerId` 来自已验证委托、同版本不重发、运行时新增任务被同步、服务端持续故障时退出仍保留队列、下次启动补交成功。
+- 服务端新增 2 项测试：异主回执 403 + 不存储 + denied 审计；同主回执与无 owner 回执均接受。
+- 根套件 25 文件 / 254 用例、web 6 文件 / 40 用例、tsc/vue-tsc 0；一键验收新增该项 Electron 检查。
+
+刻意保留：无 cookie 时的首次尝试仍会发出（开发档位允许无凭据回环调用），失败按退避重试；同步只是**镜像**，设备始终是权威，服务端没有反向下发命令的通道。
+
 ## 未完成 / 不在本轮
 
 - Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。

@@ -204,6 +204,13 @@ export const localTaskReceiptSchema = z.object({
     .default([]),
   createdAt: z.string().min(1).max(40),
   updatedAt: z.string().min(1).max(40),
+  /**
+   * Owner the device claims this work belongs to (from the delegation the host
+   * verified). The server refuses a receipt whose owner is not the authenticated
+   * member, so a shared machine cannot mirror one account's local work into
+   * another account's workbench. Absent for purely local work.
+   */
+  ownerId: z.string().min(1).max(128).optional(),
 });
 
 export const localTaskSyncSchema = z.object({

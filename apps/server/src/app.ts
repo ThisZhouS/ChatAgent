@@ -981,6 +981,23 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
     const memberId = request.principal.id;
+    // Ownership binding: a receipt may only claim work that belongs to the
+    // authenticated member. Without this a shared machine could mirror one
+    // account's on-device work into another account's workbench.
+    const foreign = parsed.data.receipts.find(
+      (receipt) => receipt.ownerId !== undefined && receipt.ownerId !== memberId,
+    );
+    if (foreign) {
+      audit.record({
+        action: 'local_tasks.sync',
+        outcome: 'denied',
+        actorId: memberId,
+        target: `device:${String(foreign.deviceId).slice(0, 64)}`,
+        detail: 'receipt owner does not match the authenticated member',
+        ip: request.ip,
+      });
+      return reply.code(403).send({ error: 'receipt_owner_mismatch' });
+    }
     const accepted = await localTasks.upsert(parsed.data.receipts, memberId);
     audit.record({
       action: 'local_tasks.sync',

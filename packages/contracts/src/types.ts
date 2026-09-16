@@ -412,4 +412,9 @@ export interface LocalTaskReceipt {
   artifacts: { name: string; sha256: string; bytes?: number }[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * Owner the device claims this work belongs to. The server rejects a receipt
+   * whose owner is not the authenticated member; absent for local-only work.
+   */
+  ownerId?: string;
 }

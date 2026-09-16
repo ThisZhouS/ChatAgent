@@ -24,6 +24,7 @@
       "preload.cjs",
       "error.html",
       "workbench.html",
+      "receipt-sync.cjs",
       "config.default.json",
       "agent-host.bundle.cjs",
       "build-agent-host.mjs",

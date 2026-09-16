@@ -43,6 +43,8 @@ type HostStatus = {
   paused?: boolean;
   executor?: string;
   executorReason?: string;
+  /** Main-process upload state for local task receipts (offline queue). */
+  receiptSync?: { pending?: number; synced?: number; lastSuccessAt?: string; lastError?: string };
   /** What the task store found while loading (repaired/quarantined/duplicate rows). */
   storeIntegrity?: {
     repaired?: number;
@@ -62,6 +64,8 @@ type HostTask = {
   summary?: string;
   createdAt?: string;
   exitCode?: number | null;
+  /** Verified delegation snapshot (audit only): carries the work's real owner. */
+  delegation?: { ownerId?: string };
 };
 
 const hasHost = computed(() => Boolean(window.chatagent?.host));
@@ -130,6 +134,10 @@ async function syncHostReceipts(tasks: HostTask[]): Promise<void> {
       artifacts: (t.artifacts ?? []).map((a) => ({ name: a.name ?? 'artifact', sha256: a.sha256 ?? '' })),
       createdAt: t.createdAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      // Only the owner the device verified — never "whoever is logged in here".
+      // A shared machine must not mirror another account's local work; the
+      // server refuses a receipt whose owner is not the authenticated member.
+      ownerId: t.delegation?.ownerId,
     }));
   if (receipts.length === 0) return;
   try {
@@ -419,6 +427,10 @@ CHATAGENT_MODEL_NAME=your-model</pre>
       <p v-if="hostStatus?.executorReason" class="muted">
         <el-tag size="small" type="warning">注意</el-tag>
         {{ hostStatus.executorReason }}
+      </p>
+      <p v-if="hostStatus?.receiptSync?.lastError" class="muted" data-testid="receipt-sync">
+        <el-tag size="small" type="info">回执同步</el-tag>
+        未上传 {{ hostStatus.receiptSync.pending ?? 0 }} 条（{{ hostStatus.receiptSync.lastError }}），联网后自动重试
       </p>
       <p v-if="hostIntegrityWarning" class="muted" data-testid="host-integrity">
         <el-tag size="small" type="danger">任务库</el-tag>
