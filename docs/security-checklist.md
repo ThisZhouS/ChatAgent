@@ -52,6 +52,7 @@
 - [ ] 单 writer 锁的**歧义**情形不静默处理：持有者 pid 仍存活（可能被复用）或锁损坏时，桌面弹窗询问，默认"不接管"；只有本地用户明确选择才 `takeOverStoreLock`。旧锁改名保留（`*.replaced-<ts>`）而非删除，接管写入 `<store>.lock-audit.jsonl`（actor=`local-user-consent`、原因、原持有者）。无人值守（`CHATAGENT_NO_PROMPT=1`）时锁获胜且不挂起；明确残留（pid 已消失）仍自动自愈且不产生"同意"审计。
 - [ ] 远程工作台独立会话分区：`persist:chatagent-workbench`（cookie/存储与默认会话隔离，登录跨重启）；该分区默认拒绝一切权限请求与权限检查。
 - [ ] 响应头加固：服务端未提供 CSP 时由主进程注入保守策略（`default-src 'self'`…），服务端已有 CSP 时不削弱；补 `X-Content-Type-Options`/`Referrer-Policy`。`status().shell` 可核对 `cspInjected`/`cspFromServer`。
+- [ ] 回执单调性：服务端镜像只接受**不比已存版本更旧**的收据（`updatedAt` 比较），乱序或重发的旧副本不会把已完成的任务打回进行中；接口返回 `{accepted, stale}` 并在审计里写明忽略条数。
 - [ ] 回执归属绑定：设备把**已验证委托**里的 owner 随回执上报（`ownerId`），服务端拒绝 owner 与登录成员不一致的回执（403 `receipt_owner_mismatch` + `local_tasks.sync` denied 审计）。共享电脑无法把别人的本机工作镜像进自己的账本；纯本地任务不带 owner（无可绑定对象）。
 - [ ] 回执持续同步在**主进程**（关窗后托盘常驻时照常工作）：离线排队到 `receipts-sync.json`，按任务版本去重，失败指数退避（30s→10min，队列上限 200 条）；cookie 只在请求时从会话读取、不落盘；`status().receiptSync` 暴露 pending/lastSuccessAt/lastError。
 - [ ] 任务库载入即校验：字段缺失按安全默认值修复（并计入 status().storeIntegrity），无法信任的行（未知 kind/state、缺 taskId/workDir）保留为 failed + blockedReason=invalid_persisted_row，永不执行；重复 id 按版本取舍，未知字段丢弃。损坏文件另存为 tasks.json.corrupt-<时间戳>（不删除）并空库启动；载入阶段不回写文件，首次成功写入才落盘规范形态。

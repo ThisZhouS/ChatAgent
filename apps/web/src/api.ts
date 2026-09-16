@@ -323,7 +323,7 @@ export const api = {
   localTasks: {
     /** Mirror on-device agent-host task receipts into the workbench (auth-scoped). */
     sync: (receipts: LocalTaskReceipt[]) =>
-      request<{ accepted: number }>('/local-tasks', {
+      request<{ accepted: number; stale?: number }>('/local-tasks', {
         method: 'POST',
         body: JSON.stringify({ receipts }),
       }),

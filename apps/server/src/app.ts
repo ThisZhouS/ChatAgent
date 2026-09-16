@@ -998,16 +998,16 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       });
       return reply.code(403).send({ error: 'receipt_owner_mismatch' });
     }
-    const accepted = await localTasks.upsert(parsed.data.receipts, memberId);
+    const { accepted, stale } = await localTasks.upsert(parsed.data.receipts, memberId);
     audit.record({
       action: 'local_tasks.sync',
       outcome: 'ok',
       actorId: memberId,
       target: `member:${memberId}`,
-      detail: `${accepted} receipts`,
+      detail: stale > 0 ? `${accepted} receipts (${stale} stale ignored)` : `${accepted} receipts`,
       ip: request.ip,
     });
-    return { accepted };
+    return { accepted, stale };
   });
 
   app.get('/api/local-tasks', async (request, reply) => {

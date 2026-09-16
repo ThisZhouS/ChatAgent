@@ -50,6 +50,7 @@
 | ⑧ | **单 writer 锁的歧义情形交给人**：弹窗询问（默认不接管）、旧锁改名保留、`lock-audit.jsonl` 审计、无人值守时锁获胜 | `lock-takeover.test.ts` 11 例 + `scripts/electron-lock-check.mjs` 9/9 |
 | ⑨ | **CSP 强制执行**用真实载荷证明（内联脚本被拦、同源外链不被误伤、服务端策略不被覆盖）；并修掉检查脚本自身的假通过 | `scripts/electron-csp-check.mjs` 5/5 |
 | ⑩ | **任务库保留策略**（只淘汰终态、进行中永不淘汰、载入只报告、写入时才落盘、写失败回滚不丢历史） | `retention.test.ts` 7 例；顺带修掉 zip 炸弹用例的随机失败 |
+| ⑪ | **服务端回执单调性**（旧副本不覆盖新状态、同版本幂等、返回 `{accepted, stale}` 并在审计写明） | `apps/server/src/local-tasks.test.ts` 10/10 |
 
 轮次编号在 `docs/iteration-2026-09-16-gate7a1-hardening.md` 中为第四～九轮（"任务库保留策略"并入第九轮之后的收尾）；以该文档为准。
 

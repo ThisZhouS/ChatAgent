@@ -1027,22 +1027,44 @@ export interface LocalTaskReceiptRecord extends LocalTaskReceipt {
   syncedAt: string;
 }
 
+export interface ReceiptUpsertResult {
+  /** Receipts that were stored (a re-send of the newest version counts again). */
+  accepted: number;
+  /** Receipts ignored because the store already had a newer version. */
+  stale: number;
+}
+
 export class LocalTaskReceiptStore {
   private readonly receipts = new Map<string, LocalTaskReceiptRecord>();
 
   constructor(private readonly maxPerMember = 500) {}
 
-  async upsert(receipts: LocalTaskReceipt[], memberId: string): Promise<number> {
+  /**
+   * Stores receipts, newest version wins.
+   *
+   * A device that was offline queues receipts and may deliver them out of order
+   * (or retry a batch it already sent). Without a monotonic guard an older
+   * receipt could overwrite a newer outcome — e.g. a queued "running" copy
+   * landing after the "succeeded" one and making the workbench show a task that
+   * never finished. Receipts carrying an older `updatedAt` for the same
+   * (device, taskId) are therefore ignored and counted, never applied.
+   */
+  async upsert(receipts: LocalTaskReceipt[], memberId: string): Promise<ReceiptUpsertResult> {
     const syncedAt = new Date().toISOString();
+    let accepted = 0;
+    let stale = 0;
     for (const receipt of receipts) {
-      this.receipts.set(this.key(memberId, receipt.deviceId, receipt.taskId), {
-        ...receipt,
-        memberId,
-        syncedAt,
-      });
+      const key = this.key(memberId, receipt.deviceId, receipt.taskId);
+      const existing = this.receipts.get(key);
+      if (existing && Date.parse(existing.updatedAt) > Date.parse(receipt.updatedAt)) {
+        stale += 1;
+        continue;
+      }
+      this.receipts.set(key, { ...receipt, memberId, syncedAt });
+      accepted += 1;
     }
     this.prune(memberId);
-    return receipts.length;
+    return { accepted, stale };
   }
 
   async list(memberId: string, limit = 200): Promise<LocalTaskReceipt[]> {

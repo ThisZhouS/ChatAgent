@@ -50,7 +50,7 @@ describe('local task receipts (on-device agent host mirror)', () => {
       payload: { receipts: [receipt()] },
     });
     expect(synced.statusCode).toBe(200);
-    expect(synced.json()).toEqual({ accepted: 1 });
+    expect(synced.json()).toEqual({ accepted: 1, stale: 0 });
 
     const list = await app.inject({
       method: 'GET',
@@ -184,6 +184,50 @@ describe('local task receipts (on-device agent host mirror)', () => {
     expect(audit.length).toBeGreaterThan(0);
   });
 
+  it('a receipt older than the stored one is ignored, not applied', async () => {
+    const { app } = await boot();
+    const headers = devHeaders('u_alice');
+    const newest = receipt({
+      state: 'succeeded',
+      summary: '完成',
+      updatedAt: '2026-09-16T10:00:00.000Z',
+    });
+    await app.inject({ method: 'POST', url: '/api/local-tasks', headers, payload: { receipts: [newest] } });
+
+    // A device that queued receipts while offline may deliver them out of order:
+    // an older "running" copy must not undo the finished outcome.
+    const late = await app.inject({
+      method: 'POST',
+      url: '/api/local-tasks',
+      headers,
+      payload: {
+        receipts: [
+          receipt({ state: 'running', summary: undefined, updatedAt: '2026-09-16T09:00:00.000Z' }),
+        ],
+      },
+    });
+    expect(late.statusCode).toBe(200);
+    expect(late.json()).toEqual({ accepted: 0, stale: 1 });
+
+    const list = await app.inject({ method: 'GET', url: '/api/local-tasks', headers });
+    const receipts = list.json() as Array<Record<string, unknown>>;
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ state: 'succeeded', summary: '完成' });
+
+    // Re-sending the same version is idempotent, and a newer version still wins.
+    const same = await app.inject({ method: 'POST', url: '/api/local-tasks', headers, payload: { receipts: [newest] } });
+    expect(same.json()).toEqual({ accepted: 1, stale: 0 });
+    const newer = await app.inject({
+      method: 'POST',
+      url: '/api/local-tasks',
+      headers,
+      payload: { receipts: [receipt({ state: 'failed', error: 'boom', updatedAt: '2026-09-16T11:00:00.000Z' })] },
+    });
+    expect(newer.json()).toEqual({ accepted: 1, stale: 0 });
+    const after = await app.inject({ method: 'GET', url: '/api/local-tasks', headers });
+    expect((after.json() as Array<Record<string, unknown>>)[0]).toMatchObject({ state: 'failed' });
+  });
+
   it('binds on-device work to its owner: a foreign claim is refused and audited', async () => {
     const { app } = await boot();
     // Alice's device work, claimed by Bob's session on a shared machine.
@@ -229,7 +273,7 @@ describe('local task receipts (on-device agent host mirror)', () => {
       payload: { receipts: [receipt({ ownerId: 'u_alice', taskId: 'task-owned' }), receipt({ taskId: 'task-local' })] },
     });
     expect(own.statusCode).toBe(200);
-    expect(own.json()).toEqual({ accepted: 2 });
+    expect(own.json()).toEqual({ accepted: 2, stale: 0 });
 
     const list = await app.inject({ method: 'GET', url: '/api/local-tasks', headers: devHeaders('u_alice') });
     const receipts = list.json() as Array<Record<string, unknown>>;
