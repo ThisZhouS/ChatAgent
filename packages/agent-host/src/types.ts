@@ -242,6 +242,8 @@ export interface HostStatus {
   storeIntegrity?: {
     /** Terminal records past the retention cap; dropped by the next write. */
     prunable?: number;
+    /** Records retention has already dropped in this session. */
+    pruned?: number;
     repaired: number;
     quarantined: number;
     duplicates: number;

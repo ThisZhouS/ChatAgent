@@ -584,11 +584,55 @@ describe('H-06 one IPC contract', () => {
     const listed = await handleHostCommand(host, { type: 'list' }, { token }, token);
     expect(listed.ok).toBe(true);
     if (listed.ok) {
-      const result = listed.result as { tasks?: LocalTaskRecord[] };
+      const result = listed.result as { tasks?: LocalTaskRecord[]; total?: number };
       expect(Array.isArray(result.tasks)).toBe(true);
       expect(result.tasks?.map((item) => item.taskId)).toContain(task.taskId);
       expect(result.tasks?.[0]?.version).toBeGreaterThan(0);
+      expect(result.total).toBe(result.tasks?.length);
     }
+    await host.stop();
+  });
+
+  it('lists newest first and never returns an unbounded page', async () => {
+    const root = await makeRoot();
+    // Seeded directly: the ordering contract is what is under test, and real
+    // submit() timestamps land in the same millisecond while a task is running.
+    const store = new MemoryAgentHostStore();
+    const { host } = makeHost({ workRoot: root, store });
+    await host.start();
+    const token = 'security-token';
+    for (const [taskId, updatedAt, version] of [
+      ['oldest', '2026-09-16T00:00:00.000Z', 1],
+      ['middle', '2026-09-16T01:00:00.000Z', 1],
+      ['newest', '2026-09-16T02:00:00.000Z', 1],
+    ] as const) {
+      await store.put({
+        ...baseTask({ taskId, workDir: join(root, taskId) }),
+        deviceId: DEVICE,
+        state: 'succeeded',
+        version,
+        artifacts: [],
+        attempts: 1,
+        maxAttempts: 2,
+        createdAt: updatedAt,
+        updatedAt,
+      });
+    }
+
+    const two = await handleHostCommand(host, { type: 'list', limit: 2 }, { token }, token);
+    expect(two.ok).toBe(true);
+    if (two.ok) {
+      const result = two.result as { tasks?: LocalTaskRecord[]; total?: number };
+      expect(result.tasks?.map((item) => item.taskId)).toEqual(['newest', 'middle']);
+      // The page is capped but the total is honest, so the UI can say what it hides.
+      expect(result.total).toBe(3);
+    }
+
+    const refused = await handleHostCommand(host, { type: 'list', limit: 0 }, { token }, token);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error).toBe('invalid_command');
+    const tooMany = await handleHostCommand(host, { type: 'list', limit: 5000 }, { token }, token);
+    expect(tooMany.ok).toBe(false);
     await host.stop();
   });
 
@@ -605,6 +649,116 @@ describe('H-06 one IPC contract', () => {
     expect(record?.delegationId).toBe(refs.delegationId);
     expect(record?.approvalId).toBe(refs.approvalId);
     expect(record?.actionDigest).toMatch(/^[a-f0-9]{64}$/);
+    await host.stop();
+  });
+});
+
+/**
+ * Regression suite for the round-3 adversarial findings (F1, F7) in
+ * Temp/verify-round3/REPORT.md. The probe asserted the bug; these assert the
+ * safe behaviour that replaced it.
+ */
+describe('H-07 quarantined rows and the capability floor', () => {
+  it('never executes a quarantined row, not even after retry() or an IPC retry', async () => {
+    const root = await makeRoot();
+    const file = join(root, 'tasks.json');
+    await writeFile(
+      file,
+      JSON.stringify([
+        // Quarantined: no workDir, so the loader must not trust the row.
+        { ...baseTask({ taskId: 'q-dir', workDir: '' }), state: 'failed', version: 1 },
+        // Quarantined: an unknown kind.
+        { ...baseTask({ taskId: 'q-kind', workDir: join(root, 'q-kind') }), kind: 'shell', state: 'failed', version: 1 },
+        // Quarantined: toolset names that are not a list.
+        { ...baseTask({ taskId: 'q-tools', workDir: join(root, 'q-tools') }), toolsets: 'terminal', state: 'failed', version: 1 },
+        // Runnable shape, but no capability at all: refused by the floor, not run.
+        { ...baseTask({ taskId: 'q-empty', workDir: join(root, 'q-empty') }), toolsets: [], state: 'queued', version: 1 },
+      ]),
+      'utf8',
+    );
+    const calls: string[] = [];
+    const adapter: HermesAdapter = {
+      kind: 'fake',
+      async run(request: Parameters<HermesAdapter['run']>[0]) {
+        calls.push(request.taskId);
+        throw new Error('a quarantined row must never reach the executor');
+      },
+    } as unknown as HermesAdapter;
+    const store = new JsonFileAgentHostStore(file);
+    const { host } = makeHost({ workRoot: root, store, adapter });
+    await host.start();
+
+    for (const taskId of ['q-dir', 'q-kind', 'q-tools']) {
+      const record = await host.get(taskId);
+      expect(record?.state).toBe('failed');
+      expect(record?.blockedReason).toBe('invalid_persisted_row');
+      expect(await host.retry(taskId)).toBeUndefined();
+    }
+    // The empty-capability row passes row validation but is refused by the floor.
+    await waitFor(async () => (await host.get('q-empty'))?.state === 'failed');
+    const empty = await host.get('q-empty');
+    expect([empty?.state, empty?.blockedReason]).toEqual(['failed', 'capability_not_granted']);
+    expect(await host.retry('q-empty')).toBeUndefined();
+
+    const token = 'security-token';
+    const ipc = await handleHostCommand(host, { type: 'retry', taskId: 'q-dir' }, { token }, token);
+    expect(ipc.ok).toBe(false);
+    if (!ipc.ok) expect(ipc.error).toBe('retry_refused');
+    expect(calls).toEqual([]);
+    await host.stop();
+  });
+
+  it('refuses an empty, blank or wrong-typed toolset list instead of substituting a capability', async () => {
+    const root = await makeRoot();
+    const calls: string[] = [];
+    const adapter: HermesAdapter = {
+      kind: 'fake',
+      async run(request) {
+        calls.push(request.taskId);
+        return {
+          executor: 'fake',
+          exitCode: 0,
+          output: '',
+          artifacts: [],
+          audit: ['recording adapter'],
+          durationMs: 1,
+        };
+      },
+    };
+    const { host } = makeHost({ workRoot: root, adapter });
+    await host.start();
+
+    for (const [label, toolsets] of [
+      ['blank', ['']],
+      ['spaces', ['   ']],
+      ['number', 7],
+      ['string', 'document'],
+    ] as Array<[string, unknown]>) {
+      const record = await host.submit({
+        ...baseTask({ taskId: `floor-${label}`, workDir: join(root, label) }),
+        toolsets: toolsets as string[],
+      });
+      expect([label, record.state, record.blockedReason]).toEqual([
+        label,
+        'failed',
+        'capability_not_granted',
+      ]);
+    }
+    // An omitted (or empty) toolset at this trusted surface keeps the documented
+    // default instead of being refused: the IPC contract defaults the same way.
+    for (const [label, toolsets] of [
+      ['omitted', undefined],
+      ['empty', []],
+    ] as Array<[string, unknown]>) {
+      const record = await host.submit({
+        ...baseTask({ taskId: `floor-${label}`, workDir: join(root, label) }),
+        toolsets: toolsets as string[],
+      });
+      expect([label, record.toolsets]).toEqual([label, ['document']]);
+    }
+    // Only the two defaulted rows are runnable; every refused row above stayed out.
+    await waitFor(async () => calls.length === 2);
+    expect(calls.sort()).toEqual(['floor-empty', 'floor-omitted']);
     await host.stop();
   });
 });

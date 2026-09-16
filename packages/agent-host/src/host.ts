@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import type { HermesAdapter } from './adapter';
 import { computeActionDigest, TrustedAuthorizationRegistry } from './authorization';
+import { INVALID_ROW_REASON } from './record-integrity';
 import { assertInsideWorkRoot, ensureTaskWorkDir } from './sandbox';
 import type { AgentHostStore } from './store';
 import { isTerminal } from './store';
@@ -184,6 +185,9 @@ export class LocalAgentHost {
           quarantined: report.quarantined.length,
           duplicates: report.duplicates.length,
           prunable: report.prunable?.length,
+          // Records retention already dropped in this session, so a shrinking
+          // store is visible instead of looking like unexplained data loss.
+          pruned: this.options.store.retentionStats?.().pruned,
           corruptFile: report.corruptFile,
         };
       })(),
@@ -216,7 +220,13 @@ export class LocalAgentHost {
     if (existing) return await this.replayOrConflict(existing, input);
 
     const timestamp = new Date(this.now()).toISOString();
-    const toolsets = input.toolsets.length > 0 ? input.toolsets : ['document'];
+    // A trusted caller that omits the capability (or sends the empty list) gets the
+    // documented default `['document']`, which is also what the IPC contract
+    // defaults to. Anything that is *not* a list of names is refused instead of
+    // being coerced, and a blank/unknown name is refused by the floor itself.
+    const toolsetsInvalid = input.toolsets !== undefined && !Array.isArray(input.toolsets);
+    const requested: string[] = Array.isArray(input.toolsets) ? input.toolsets : [];
+    const toolsets = requested.length > 0 ? requested : ['document'];
     const agentId = input.agentId || this.options.agentId;
     const actionDigest = computeActionDigest({
       taskId: input.taskId,
@@ -260,7 +270,9 @@ export class LocalAgentHost {
     // for local document toolsets. Without this a caller could label an
     // external-effect toolset (web/terminal/… or the `*` wildcard) as a document
     // task and skip delegation/approval entirely.
-    const refused = refuseCapabilities(input.kind, toolsets);
+    const refused = toolsetsInvalid
+      ? 'capability_not_granted'
+      : refuseCapabilities(input.kind, toolsets);
 
     if (refused) {
       record.state = 'failed';
@@ -383,6 +395,10 @@ export class LocalAgentHost {
     if (record.state !== 'failed' && record.state !== 'interrupted') return undefined;
     if (record.kind === 'side_effect') return undefined;
     if (record.attempts >= record.maxAttempts) return undefined;
+    // A row the loader could not trust is quarantined precisely because nobody may
+    // run it; retrying it used to clear the quarantine and put the untrusted row
+    // back in the queue (round-3 finding F1).
+    if (record.blockedReason === INVALID_ROW_REASON) return undefined;
     // Same capability floor as submit/dispatch: never re-queue work the host
     // would refuse to run.
     if (refuseCapabilities(record.kind, record.toolsets)) return undefined;
@@ -651,7 +667,15 @@ export function refuseCapabilities(
   const forbidden = toolsets.find((toolset) => FORBIDDEN_TOOLSETS.has(toolset));
   if (forbidden) return 'capability_not_granted';
   if (kind !== 'document') return undefined; // side effects are gated by delegation
-  const unknown = toolsets.find((toolset) => !DOCUMENT_TOOLSETS.has(toolset));
+  // Fail closed: an empty list is not "the default capability" (a planted
+  // empty-toolset row used to run), and a blank entry is not a document toolset.
+  if (toolsets.length === 0) return 'capability_not_granted';
+  // `some`, not `find`: the offending entry may be the empty string, which is
+  // falsy — `find(...) ? refused : allowed` would wave a blank name through.
+  const unknown = toolsets.some(
+    (toolset) =>
+      typeof toolset !== 'string' || toolset.trim() === '' || !DOCUMENT_TOOLSETS.has(toolset),
+  );
   return unknown ? 'capability_not_granted' : undefined;
 }
 

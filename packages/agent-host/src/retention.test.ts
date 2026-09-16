@@ -41,6 +41,23 @@ describe('task store retention', () => {
     expect(expired).toEqual(['done']);
   });
 
+  it('keeps interrupted work: it is retryable, not terminal', () => {
+    const records = [
+      record('i-old', 'interrupted', '2025-01-01T00:00:00.000Z'),
+      record('i-new', 'interrupted', '2026-09-01T00:00:00.000Z'),
+      record('done', 'succeeded', '2026-08-01T00:00:00.000Z'),
+    ];
+    expect(selectExpiredRecords(records, { maxRecords: 1 })).toEqual(['done']);
+    // Even the age rule leaves retryable rows alone.
+    expect(
+      selectExpiredRecords(records, {
+        maxRecords: 10,
+        maxAgeMs: 24 * 60 * 60 * 1000,
+        now: () => Date.parse('2026-09-16T00:00:00.000Z'),
+      }),
+    ).toEqual(['done']);
+  });
+
   it('drops the oldest terminal records first when the cap is exceeded', () => {
     const records = [
       record('a', 'succeeded', '2026-01-01T00:00:00.000Z'),

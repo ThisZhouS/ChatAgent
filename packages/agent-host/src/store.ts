@@ -70,6 +70,12 @@ export interface AgentHostStore {
    * has nothing to report (the in-memory one) simply omits it.
    */
   getLoadReport?(): StoreLoadReport | undefined;
+  /**
+   * Retention activity: how many records this store has dropped so far, and how
+   * many the loaded rows say are past the cap. Optional — a store without
+   * retention simply omits it. Reported so pruning is never invisible.
+   */
+  retentionStats?(): { pruned: number };
 }
 
 interface LockPayload {
@@ -78,7 +84,7 @@ interface LockPayload {
 }
 
 /** A live holder keeps its lock; only a lock this old may be taken over by pid reuse. */
-const LOCK_PID_REUSE_MS = 30 * 24 * 60 * 60 * 1000;
+// Liveness decides staleness; see isLockStale().
 
 export class JsonFileAgentHostStore implements AgentHostStore {
   private records = new Map<string, LocalTaskRecord>();
@@ -94,6 +100,7 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private readonly lockEnabled: boolean;
   private readonly maxRecords: number;
   private readonly maxAgeMs?: number;
+  private prunedRecords = 0;
 
   constructor(
     filePath: string,
@@ -213,6 +220,11 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       this.lastLoadError = reason;
       return undefined;
     }
+  }
+
+  /** How many records retention has dropped since this store was opened. */
+  retentionStats(): { pruned: number } {
+    return { pruned: this.prunedRecords };
   }
 
   /** Integrity report from the last load; undefined before the store is loaded. */
@@ -365,6 +377,7 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     });
     const pruned = prunable.length > 0 ? prunable.map((id) => this.records.get(id)!) : [];
     for (const record of pruned) this.records.delete(record.taskId);
+    this.prunedRecords += pruned.length;
     try {
       await this.persist();
     } catch (error) {
@@ -454,11 +467,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       alive = (error as NodeJS.ErrnoException).code !== 'ESRCH';
     }
     if (!alive) return true;
-    // Liveness comes first: the desktop host is designed to stay resident for
-    // days, so age alone must never hand a live holder's lock to a second writer.
-    // The age rule only covers pid reuse on a lock nobody has refreshed for a month.
-    const startedAt = payload.startedAt ? Date.parse(payload.startedAt) : Number.NaN;
-    return !Number.isNaN(startedAt) && Date.now() - startedAt > LOCK_PID_REUSE_MS;
+    // A live holder keeps its lock, full stop. The host is designed to stay
+    // resident for weeks, and the lock payload is written once at acquisition, so
+    // an age rule ("older than a month ⇒ probably a reused pid") ended up handing
+    // a running instance's lock to a second writer (round-3 finding F5). A live
+    // pid that may have been reused is exactly the ambiguous case the desktop
+    // resolves with an explicit, audited local consent (see lock-takeover.ts);
+    // unattended runs keep the lock and refuse to start instead.
+    return false;
   }
 
   private async releaseLock(): Promise<void> {

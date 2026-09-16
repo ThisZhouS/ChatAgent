@@ -6,8 +6,9 @@
  * growing cost per write — and the file itself becomes the biggest thing in
  * userData. Retention bounds that without ever touching work that still matters:
  *
- * - only *terminal* records are candidates (`succeeded` / `failed` / `cancelled` /
- *   `interrupted`); queued or running work is never dropped, however old;
+ * - only *finished and non-retryable* records are candidates (`succeeded` /
+ *   `failed` / `cancelled`); queued, running and `interrupted` work is never
+ *   dropped, however old (`interrupted` can still be retried by the user);
  * - the newest records are always kept (the cap is about volume, not history);
  * - the age rule is opt-in (default: no age limit), so a quiet device keeps its
  *   history until the count cap is reached.
@@ -24,12 +25,14 @@ export interface RetentionOptions {
 
 export const DEFAULT_MAX_RECORDS = 500;
 
-const TERMINAL: ReadonlySet<LocalTaskRecord['state']> = new Set([
+const PRUNABLE: ReadonlySet<LocalTaskRecord['state']> = new Set([
   'succeeded',
   'failed',
   'cancelled',
-  'interrupted',
 ]);
+// `interrupted` is deliberately absent: it is a *retryable* outcome (the host
+// keeps it, retry() accepts it, status() counts it as finished), so dropping it
+// silently removed work the user could still re-queue (round-3 finding F4).
 
 function updatedAtMs(record: LocalTaskRecord): number {
   const parsed = Date.parse(record.updatedAt ?? record.createdAt ?? '');
@@ -51,7 +54,7 @@ export function selectExpiredRecords(
   if (options.maxAgeMs !== undefined) {
     const cutoff = now - options.maxAgeMs;
     for (const record of records) {
-      if (TERMINAL.has(record.state) && updatedAtMs(record) < cutoff) expired.add(record.taskId);
+      if (PRUNABLE.has(record.state) && updatedAtMs(record) < cutoff) expired.add(record.taskId);
     }
   }
 
@@ -60,7 +63,7 @@ export function selectExpiredRecords(
   const over = remaining.length - maxRecords;
   if (over > 0) {
     const candidates = remaining
-      .filter((record) => TERMINAL.has(record.state))
+      .filter((record) => PRUNABLE.has(record.state))
       .sort((a, b) => updatedAtMs(a) - updatedAtMs(b));
     for (const record of candidates.slice(0, over)) expired.add(record.taskId);
   }

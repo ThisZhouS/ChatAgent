@@ -106,9 +106,8 @@ function toolsetsOf(
   kind: LocalTaskRecord['kind'],
 ): { value: string[]; repaired: boolean } {
   if (!Array.isArray(value)) {
-    // A document task without a recorded toolset used to be the pre-floor shape;
-    // defaulting it to the document capability keeps it runnable, while an
-    // unknown kind (already quarantined) never gets here.
+    // Only a *missing* toolset is the pre-floor shape; a wrong-typed value never
+    // reaches this point because it quarantines the row earlier.
     return { value: kind === 'document' ? ['document'] : [], repaired: true };
   }
   const seen = new Set<string>();
@@ -154,7 +153,7 @@ function quarantineRecord(taskId: string, reason: string, now: string): LocalTas
  * Validates one persisted row and returns a record the host may use.
  *
  * Rules: the fields that decide *whether* a task may run (taskId, kind, state,
- * workDir) must be trustworthy, otherwise the row is quarantined; everything
+ * workDir, toolsets) must be trustworthy, otherwise the row is quarantined; everything
  * else is repaired with a safe default. A *wrong value* is recorded as a repair,
  * an absent optional field is filled silently (its absence stays visible in the
  * record itself, e.g. an empty deviceId). Unknown extra fields are dropped
@@ -182,6 +181,14 @@ export function validatePersistedRow(raw: unknown, index: number, now: string): 
   }
   if (typeof raw.workDir !== 'string' || raw.workDir.trim() === '') {
     const reason = 'workDir is missing';
+    return { record: quarantineRecord(taskId, reason, now), repairs: [], quarantined: reason };
+  }
+
+  // Toolset names decide what the executor may use, so a row whose value is not a
+  // list is untrustworthy: repairing a planted "terminal" string into
+  // ["document"] would let that row run under a substituted capability (F7).
+  if (raw.toolsets !== undefined && !Array.isArray(raw.toolsets)) {
+    const reason = 'toolsets is not a list';
     return { record: quarantineRecord(taskId, reason, now), repairs: [], quarantined: reason };
   }
 

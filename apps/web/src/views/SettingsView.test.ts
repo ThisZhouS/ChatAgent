@@ -198,6 +198,7 @@ describe('SettingsView', () => {
         return {
           ok: true,
           result: {
+            total: 42,
             tasks: [
               {
                 taskId: 'ui-blocked',
@@ -243,6 +244,8 @@ describe('SettingsView', () => {
     expect(wrapper.find('[data-testid="host-integrity"]').text()).toContain('2 条记录已按当前格式修复');
     // Retention is housekeeping, not a repair: it is reported separately and says
     // which work is unaffected.
+    // The device may hold more than one page; the card says so.
+    expect(wrapper.find('[data-testid="host-task-page"]').text()).toContain('本机共 42 条任务记录');
     const retention = wrapper.find('[data-testid="host-retention"]').text();
     expect(retention).toContain('3 条更早的终态记录');
     expect(retention).toContain('进行中的任务不受影响');

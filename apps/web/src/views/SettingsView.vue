@@ -97,6 +97,8 @@ const hostRetentionNote = computed(() => {
 });
 const hostStatus = ref<HostStatus | null>(null);
 const hostTasks = ref<HostTask[]>([]);
+/** Total records on the device; `hostTasks` is the newest page of them. */
+const hostTaskTotal = ref(0);
 const hostError = ref('');
 const hostBusy = ref(false);
 const hostGoal = ref('');
@@ -112,7 +114,11 @@ async function loadHost() {
 
     const listRes = await bridge.command({ type: 'list' });
     if (listRes.ok) {
-      hostTasks.value = ((listRes.result ?? {}) as { tasks?: HostTask[] }).tasks ?? [];
+      const page = (listRes.result ?? {}) as { tasks?: HostTask[]; total?: number };
+      hostTasks.value = page.tasks ?? [];
+      // The host caps the page (newest first) and reports the true total, so the
+      // card can say what it is not showing instead of looking complete.
+      hostTaskTotal.value = typeof page.total === 'number' ? page.total : hostTasks.value.length;
       void syncHostReceipts(hostTasks.value);
     } else {
       hostError.value = `list: ${listRes.error ?? 'unknown'}`;
@@ -474,6 +480,9 @@ CHATAGENT_MODEL_NAME=your-model</pre>
         </el-button>
       </div>
 
+      <p v-if="hostTaskTotal > hostTasks.length" class="muted" data-testid="host-task-page">
+        本机共 {{ hostTaskTotal }} 条任务记录，此处显示最近 {{ hostTasks.length }} 条
+      </p>
       <el-table v-if="hostTasks.length > 0" :data="hostTasks" size="small" style="width: 100%; margin-top: 12px">
         <el-table-column prop="taskId" label="任务" width="150" />
         <el-table-column label="状态" width="110">

@@ -140,12 +140,17 @@ describe('local agent host lifecycle', () => {
       adapter: new FakeHermesAdapter({ durationMs: 10 }),
       defaultTimeoutMs: 2_000,
     });
+    // Paused first: the recovery evidence (queued + host_restart_retry) is written
+    // by start(), and on a loaded machine the dispatcher would otherwise claim the
+    // row before this assertion reads it.
+    revived.pause();
     await revived.start();
     const recovered = await revived.get(submitted.taskId);
     expect(recovered?.state).toBe('queued');
     expect(recovered?.error).toBe('host_restart_retry');
     expect(recovered?.summary).toContain('未计为完成');
 
+    revived.resume();
     await waitFor(async () => (await revived.get(submitted.taskId))?.state === 'succeeded');
     await revived.stop();
     await first.host.stop();

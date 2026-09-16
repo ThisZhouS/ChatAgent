@@ -15,7 +15,13 @@ import type { LocalAgentHost } from './host';
  */
 export const hostCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('status') }).strict(),
-  z.object({ type: z.literal('list') }).strict(),
+  z
+    .object({
+      type: z.literal('list'),
+      /** Newest-first cap for the UI; the store itself is bounded by retention. */
+      limit: z.number().int().min(1).max(500).default(200),
+    })
+    .strict(),
   z.object({ type: z.literal('pause') }).strict(),
   z.object({ type: z.literal('resume') }).strict(),
   z.object({ type: z.literal('stop') }).strict(),
@@ -71,11 +77,22 @@ export async function handleHostCommand(
     switch (command.type) {
       case 'status':
         return { ok: true, result: await host.status() };
-      case 'list':
+      case 'list': {
         // H-06: one documented shape for both sides. The workbench reads
         // `result.tasks`; returning a bare array here is what made every local
         // task invisible in the UI.
-        return { ok: true, result: { tasks: await host.list() } };
+        const all = await host.list();
+        // Newest first, capped: an install that has run for months must not make
+        // the settings page render hundreds of finished rows on every open. The
+        // total is reported so the UI can say what is not shown.
+        const newestFirst = [...all].sort(
+          (a, b) => Date.parse(b.updatedAt ?? b.createdAt ?? '') - Date.parse(a.updatedAt ?? a.createdAt ?? ''),
+        );
+        return {
+          ok: true,
+          result: { tasks: newestFirst.slice(0, command.limit), total: all.length },
+        };
+      }
       case 'pause':
         host.pause();
         return { ok: true, result: { paused: true } };
