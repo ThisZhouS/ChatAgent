@@ -6,7 +6,7 @@
 // Run: node scripts/gate7a-verify.mjs
 import { mkdtemp, rm, readFile, mkdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -27,7 +27,11 @@ function blocked(name, detail) {
 }
 
 const ROOT = await mkdtemp(join(tmpdir(), 'gate7a-verify-'));
-const HERMES_EXE = process.env.CHATAGENT_HERMES_EXE;
+// Resolve to an absolute path: the executor runs with the task directory as CWD,
+// so a relative path here would fail for the wrong reason (ENOENT).
+const HERMES_EXE = process.env.CHATAGENT_HERMES_EXE
+  ? resolve(process.env.CHATAGENT_HERMES_EXE)
+  : undefined;
 const TOKEN = 'verify-token-0123456789abcdef';
 const ctx = { token: TOKEN };
 

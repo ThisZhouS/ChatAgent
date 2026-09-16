@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { collectArtifacts, writeFileIfUnchanged } from './sandbox';
+import { terminateProcessTree } from './process-tree';
 import type { ExecutorRequest, ExecutorResult, HermesAdapterConfig } from './types';
 
 /**
@@ -185,23 +186,7 @@ export class HermesProcessAdapter implements HermesAdapter {
        * machine are never touched.
        */
       const killTree = (): void => {
-        if (child.pid === undefined) {
-          child.kill('SIGKILL');
-          return;
-        }
-        if (process.platform === 'win32') {
-          try {
-            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
-              windowsHide: true,
-              stdio: 'ignore',
-            }).on('error', () => child.kill('SIGKILL'));
-            return;
-          } catch {
-            child.kill('SIGKILL');
-            return;
-          }
-        }
-        child.kill('SIGKILL');
+        terminateProcessTree(child);
       };
 
       const timer = setTimeout(() => {

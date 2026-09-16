@@ -2,6 +2,7 @@ export * from './types';
 export * from './store';
 export * from './sandbox';
 export * from './adapter';
+export * from './process-tree';
 export * from './authorization';
 export * from './host';
 export * from './ipc';

@@ -191,6 +191,22 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 仍未验证：注入 CSP 对真实 XSS 载荷的拦截效果；Electron 升级本身（本机无外网，无法下载二进制）——两者都不得声称完成。
 
+## 第六轮（2026-09-16 晚）：执行器子进程树回收（可执行证据）
+
+问题（`docs/tasks.md` 第 3 项"Windows Job Object 子进程回收"）：`taskkill /pid <child> /T /F` 这条路径此前**没有实测过**——代码里有、注释写了理由，但没有真实进程证据；而它恰好是"取消/超时/退出后不留孤儿进程"的唯一手段。
+
+| 面 | 内容 |
+| --- | --- |
+| 重构 | 把 `killTree` 闭包提取为 `packages/agent-host/src/process-tree.ts` 的 `terminateProcessTree(child, options)`（返回值 `tree`/`signal`，可注入 platform 与 taskkill runner）。适配器改为调用它，行为不变 |
+| 真实进程证据 | 新测试用**真实两级进程树**（node 子进程再 spawn 孙进程并回报 pid）：断言 `taskkill /T /F` 后父子**都**消失；旁观进程不受影响；pid 缺失或 taskkill 起不来时回落 `SIGKILL`；Windows 分支确实使用收到的 pid |
+| 调用点回归 | 新测试（模块 mock）断言**中止信号**会让适配器走 `terminateProcessTree`，防止有人日后删掉这条调用链 |
+
+证据：`packages/agent-host/src/process-tree.test.ts`（5 例，真实进程）与 `adapter-kill.test.ts`（1 例，调用点）全绿；根套件 **27 文件 / 260 用例**；`tsc` 0；`gate7a-verify.mjs` 22/0/0；`electron-quit-check.mjs` 10/10。
+
+顺带修掉一个"环境导致的假失败"：`gate7a-verify.mjs` 现在把 `CHATAGENT_HERMES_EXE` 解析为绝对路径（执行器以任务目录为 CWD，相对路径会 ENOENT，看起来像产品缺陷）。
+
+仍未做：Windows Job Object（在进程创建即绑定，连崩溃的父进程也能被内核级回收）。当前用的是 `taskkill /T`，父子正常退出路径已实测；Job Object 需要原生模块或 `node-ffi`，在离线环境无法验证，保持为已知缺口。
+
 ## 未完成 / 不在本轮
 
 - Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。

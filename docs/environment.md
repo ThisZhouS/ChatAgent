@@ -2,7 +2,7 @@
 
 ## 2026-09-16 Gate 7A.1 加固验证
 
-同一台 Windows 机器、Node v24.11.0，继续使用已存在的 `node_modules` 本地入口（未安装依赖、未联网）。根 Vitest：25 文件 / 254 用例通过
+同一台 Windows 机器、Node v24.11.0，继续使用已存在的 `node_modules` 本地入口（未安装依赖、未联网）。根 Vitest：27 文件 / 260 用例通过（含真实进程树回收用例）
 
 桌面壳（真实 Electron）检查：离线工作台 11/11、主机冒烟 6/6、显式退出 10/10、回执同步 19/19。；`apps/web` Vitest：6 文件 / 40 用例通过；`tsc --noEmit` 与 `vue-tsc --noEmit` 退出码均为 0；新回归 `host-security.test.ts` 18 项与 `host-security-verify.test.ts` 17 项全绿（agent-host 共 63 项（含新增 store-integrity.test.ts 9 项））。Electron 侧检查已在真实运行时跑过（断网工作台 11/11、关窗常驻 6/6、显式退出 10/10）；打包 exe 与打包后客户端 E2E 未重跑。真实 Hermes 二进制被调用过两次，但均以“未配置 provider 的诚实失败”结束（主机级 Flow8、桌面退出检查），没有接入任何模型凭据。详见 `docs/iteration-2026-09-16-gate7a1-hardening.md`。
 
