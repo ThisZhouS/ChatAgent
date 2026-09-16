@@ -126,7 +126,7 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 | 单元/集成 | `node node_modules/vitest/vitest.mjs run --reporter=dot` | 24 文件 / 243 用例通过 |
 | Web | `cd apps/web && node ../../node_modules/vitest/vitest.mjs run` | 6 文件 / 40 用例通过 |
 | 类型 | `tsc --noEmit` + `vue-tsc --noEmit` | 退出码 0 / 0 |
-| 主机级 8 流程 | `CHATAGENT_HERMES_EXE=Temp/hermes-runtime/hermes-agent-cn-runtime-win32-x64.exe node scripts/gate7a-verify.mjs` | 19 通过 / 0 失败 / 0 阻塞 |
+| 主机级流程（8 流程 + 第二轮回归） | `CHATAGENT_HERMES_EXE=Temp/hermes-runtime/hermes-agent-cn-runtime-win32-x64.exe node scripts/gate7a-verify.mjs` | 22 通过 / 0 失败 / 0 阻塞 |
 | 断网本机工作台 | `apps/desktop/node_modules/.bin/electron scripts/electron-workbench-check.cjs` | 11/11 |
 | 显式退出路径 | `node scripts/electron-quit-check.mjs` | 10/10 |
 | 关窗常驻 | `apps/desktop/node_modules/.bin/electron scripts/electron-host-smoke.cjs` | 6/6 |

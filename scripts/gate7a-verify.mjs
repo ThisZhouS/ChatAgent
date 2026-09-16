@@ -257,6 +257,53 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
   }
 }
 
+// ---- Flow 9: round-2 regressions (capability floor + counters) --------------
+{
+  // A row written by an older version (document kind + an external toolset) must
+  // not reach the executor just because submit() never saw it.
+  const seen = [];
+  const spy = {
+    kind: 'fake',
+    async run(request) {
+      seen.push(request.toolsets);
+      return new FakeHermesAdapter({ durationMs: 10 }).run(request);
+    },
+  };
+  const storePath = join(ROOT, 'tasks-f9.json');
+  const store = new JsonFileAgentHostStore(storePath);
+  const host = new LocalAgentHost({
+    deviceId: 'desktop-verify', agentId: 'hermes', workRoot: join(ROOT, 'work'),
+    store, adapter: spy, executorReason: 'offline fake for verification',
+  });
+  await host.start();
+  const now = new Date().toISOString();
+  await store.createIfAbsent({
+    taskId: 'f9-legacy', deviceId: 'desktop-verify', agentId: 'hermes',
+    goal: '旧版本写入的行', kind: 'document', state: 'queued', version: 1,
+    workDir: join(ROOT, 'work'), toolsets: ['web'], artifacts: [],
+    attempts: 0, maxAttempts: 2, createdAt: now, updatedAt: now,
+  });
+  await host.tick();
+  const legacy = await waitState(host, 'f9-legacy', ['failed', 'succeeded', 'cancelled'], 6000);
+  check('Flow9 旧版本写下的越权行在派发时被能力下限拦下',
+    legacy?.state === 'failed' && legacy?.blockedReason === 'capability_not_granted' && seen.length === 0,
+    `state=${legacy?.state} blockedReason=${legacy?.blockedReason ?? ''} executorCalls=${seen.length}`);
+  check('Flow9 该行不可重试', (await host.retry('f9-legacy')) === undefined, 'retry() -> undefined');
+
+  // `interrupted` is a finished outcome: it must be visible in the counters.
+  const interrupted = await store.createIfAbsent({
+    taskId: 'f9-interrupted', deviceId: 'desktop-verify', agentId: 'hermes',
+    goal: '上次退出时中断的任务', kind: 'side_effect', state: 'interrupted', version: 1,
+    workDir: join(ROOT, 'work'), toolsets: ['messages.send'], artifacts: [],
+    attempts: 1, maxAttempts: 2, createdAt: now, updatedAt: now,
+  });
+  const status = await host.status();
+  check('Flow9 interrupted 计入 finished 而不是从计数里消失',
+    Boolean(interrupted) && status.finished >= 1,
+    `finished=${status.finished} queued=${status.queued} running=${status.running}`);
+  await host.close('done');
+}
+
 // ---- summary ----------------------------------------------------------------
 console.log('');
 const passed = results.filter((r) => r.ok === true).length;
