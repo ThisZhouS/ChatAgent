@@ -61,7 +61,7 @@
 ## 证据
 
 ```text
-node node_modules/vitest/vitest.mjs run --reporter=dot        # 24 文件 / 238 用例通过
+node node_modules/vitest/vitest.mjs run --reporter=dot        # 24 文件 / 243 用例通过
 cd apps/web && node ../../node_modules/vitest/vitest.mjs run  # 6 文件 / 40 用例通过
 node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json      # exit 0
 node apps/web/node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p apps/web/tsconfig.json   # exit 0

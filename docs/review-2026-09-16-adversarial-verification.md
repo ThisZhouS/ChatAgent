@@ -10,7 +10,7 @@
 | 防线复核 | 23 项 `FIX-HOLDS` 探针仍然通过（原先就攻不破的部分没有被削弱） |
 | 已修 | C1 关店后仍写库；C2 12 小时规则夺走存活持有者的锁；C3 释放非自己的锁；C4 截断锁被当作废弃；C5 并发首次访问自锁；C6 `document` 种类绕过委托与审批；C7/C13 写失败仍报成功与幽灵记录；C8 并发提交竞态；C9 旧记录缺少摘要即免检；C10 派发器未捕获拒绝；C11 缺少工具集白名单；C12 陈旧 `put` 复活终态；C15 审批可重复使用 |
 | 保留并记录（未改语义） | C14 桌面链路中设备令牌是纵深防御而非主控制（真正的控制是发送方校验）；审批未绑定委托时仍可授权（动作摘要已锁定具体载荷）；真正同时的多进程写、`CHATAGENT_HOST_ROOT` 被两个安装共享、Windows 上 `taskkill` 的实际执行，均未在测试中覆盖 |
-| 回归 | `packages/agent-host/src/host-security-verify.test.ts`（12 项）逐条封堵上述攻击；根套件 24 文件 / 238 用例、web 6 文件 / 40 用例、tsc/vue-tsc 0、真实 Electron 工作台 11/11 与关窗常驻 6/6 |
+| 回归 | `packages/agent-host/src/host-security-verify.test.ts`（17 项）逐条封堵上述攻击；根套件 24 文件 / 243 用例、web 6 文件 / 40 用例、tsc/vue-tsc 0、真实 Electron 工作台 11/11、关窗常驻 6/6 与显式退出 10/10 |
 
 修复细节与文件位置见 `docs/iteration-2026-09-16-gate7a1-hardening.md`。
 
