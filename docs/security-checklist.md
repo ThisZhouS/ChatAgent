@@ -110,5 +110,5 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 能力下限 fail-closed：`document` 任务的 `toolsets` 为空列表、含空白项或非数组时**一律拒绝**（`capability_not_granted`），不再“缺省即默认 capability”；可信提交面（IPC）省略 `toolsets` 时仍按契约默认 `['document']`。被种在磁盘上的空能力行按 `capability_not_granted` 拒绝且不可重试。
 - 隔离的坏行是“只读的墓碑”：既不交给执行器，也不能通过 `retry()`/IPC `retry` 复活（否则等于绕过 `invalid_persisted_row`）。
 - 回执同步的三条硬约束：去重键必须是“版本+内容”指纹（`updatedAt` 同毫秒会让最终结果永不镜像）；单次请求必须 ≤ 契约上限（100 条，超出即永久 400）；产物必须符合共享契约（无 `sha256` 的产物丢弃、字段截断、非法 state 跳过），否则一条坏记录会毒死整批。
-- 保留策略只淘汰 `succeeded`/`failed`/`cancelled`；`interrupted`（可重试）与进行中的行永不淘汰，且淘汰数量必须可观测。
+- 保留策略只淘汰 `succeeded`/`failed`/`cancelled`；`interrupted`（可重试）与进行中的行永不淘汰，且淘汰数量必须可观测（`storeIntegrity.prunable` = 待清理，`storeIntegrity.pruned` = 本次运行已清理，设置页分别提示）。
 - 锁的接管只看“持有者是否存活”，年龄不是接管理由；歧义情形必须由人确认并留审计。

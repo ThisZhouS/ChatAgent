@@ -190,7 +190,7 @@ describe('SettingsView', () => {
             paused: false,
             executor: 'fake',
             lateResultsDropped: 1,
-            storeIntegrity: { repaired: 2, quarantined: 1, duplicates: 0, prunable: 3 },
+            storeIntegrity: { repaired: 2, quarantined: 1, duplicates: 0, prunable: 3, pruned: 5 },
           },
         };
       }
@@ -249,6 +249,9 @@ describe('SettingsView', () => {
     const retention = wrapper.find('[data-testid="host-retention"]').text();
     expect(retention).toContain('3 条更早的终态记录');
     expect(retention).toContain('进行中的任务不受影响');
+    // Already-pruned records are reported too: housekeeping must not look like
+    // unexplained data loss.
+    expect(retention).toContain('已按保留策略清理 5 条');
 
     const retry = wrapper.findAll('button').filter((node) => node.text().trim() === '重试');
     // Only the retryable document task gets a control: a blocked side effect needs

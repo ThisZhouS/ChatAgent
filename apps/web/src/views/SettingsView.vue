@@ -52,6 +52,8 @@ type HostStatus = {
     duplicates?: number;
     /** Terminal records past the retention cap; the next write drops them. */
     prunable?: number;
+    /** Records retention already dropped in this session (still visible, not silent). */
+    pruned?: number;
     corruptFile?: string;
   };
   error?: string;
@@ -90,10 +92,17 @@ const hostIntegrityWarning = computed(() => {
 
 /** Retention is normal housekeeping: shown as information, not as a warning. */
 const hostRetentionNote = computed(() => {
-  const prunable = hostStatus.value?.storeIntegrity?.prunable ?? 0;
-  return prunable > 0
-    ? `本机任务库已保留最近记录，${prunable} 条更早的终态记录会在下次写入时清理（进行中的任务不受影响）`
-    : '';
+  const integrity = hostStatus.value?.storeIntegrity;
+  const prunable = integrity?.prunable ?? 0;
+  const pruned = integrity?.pruned ?? 0;
+  const parts: string[] = [];
+  if (prunable > 0) {
+    parts.push(`${prunable} 条更早的终态记录会在下次写入时清理（进行中的任务不受影响）`);
+  }
+  if (pruned > 0) {
+    parts.push(`本次运行已按保留策略清理 ${pruned} 条更早的终态记录`);
+  }
+  return parts.length > 0 ? `本机任务库已保留最近记录：${parts.join('；')}` : '';
 });
 const hostStatus = ref<HostStatus | null>(null);
 const hostTasks = ref<HostTask[]>([]);
