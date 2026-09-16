@@ -3,6 +3,7 @@ export * from './store';
 export * from './sandbox';
 export * from './adapter';
 export * from './process-tree';
+export * from './lock-takeover';
 export * from './authorization';
 export * from './host';
 export * from './ipc';

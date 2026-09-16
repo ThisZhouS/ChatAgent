@@ -48,6 +48,7 @@
 - [ ] 工具集白名单：`document` 任务只允许 `document`/`document.read`，`*`/`terminal`/`code_execution` 等一律 `capability_not_granted`（host 级，不依赖适配器）。
 - [ ] 单 writer：任务库 `tasks.json.lock` 由存活 pid 独占，第二写者被拒（`agent_host_store_locked`）；`close()` 后进程拒绝再写（`agent_host_store_closed`），且只释放自己写的锁。
 - [ ] 桌面端：`app.enableSandbox()`、`contextIsolation` 且无 `nodeIntegration`、外链协议白名单（http/https/mailto）、权限检查默认拒绝、拒绝 webview 附着、断网本机工作台 `workbench.html` 用严格 CSP + `textContent` 渲染且不接受页面传入的加载位置。
+- [ ] 单 writer 锁的**歧义**情形不静默处理：持有者 pid 仍存活（可能被复用）或锁损坏时，桌面弹窗询问，默认"不接管"；只有本地用户明确选择才 `takeOverStoreLock`。旧锁改名保留（`*.replaced-<ts>`）而非删除，接管写入 `<store>.lock-audit.jsonl`（actor=`local-user-consent`、原因、原持有者）。无人值守（`CHATAGENT_NO_PROMPT=1`）时锁获胜且不挂起；明确残留（pid 已消失）仍自动自愈且不产生"同意"审计。
 - [ ] 远程工作台独立会话分区：`persist:chatagent-workbench`（cookie/存储与默认会话隔离，登录跨重启）；该分区默认拒绝一切权限请求与权限检查。
 - [ ] 响应头加固：服务端未提供 CSP 时由主进程注入保守策略（`default-src 'self'`…），服务端已有 CSP 时不削弱；补 `X-Content-Type-Options`/`Referrer-Policy`。`status().shell` 可核对 `cspInjected`/`cspFromServer`。
 - [ ] 回执归属绑定：设备把**已验证委托**里的 owner 随回执上报（`ownerId`），服务端拒绝 owner 与登录成员不一致的回执（403 `receipt_owner_mismatch` + `local_tasks.sync` denied 审计）。共享电脑无法把别人的本机工作镜像进自己的账本；纯本地任务不带 owner（无可绑定对象）。

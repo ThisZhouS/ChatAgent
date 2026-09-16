@@ -207,6 +207,25 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 仍未做：Windows Job Object（在进程创建即绑定，连崩溃的父进程也能被内核级回收）。当前用的是 `taskkill /T`，父子正常退出路径已实测；Job Object 需要原生模块或 `node-ffi`，在离线环境无法验证，保持为已知缺口。
 
+## 第七轮（2026-09-16 晚）：单 writer 锁——歧义情形交给人，接管留痕
+
+问题（`docs/tasks.md` 第 3 项"陈旧锁自愈需本地明确同意 + 审计"）：原实现里，**明确**的残留锁（持有者 pid 已不存在）会自动清掉，这是对的；但**歧义**情形（锁里的 pid 仍然活着，却可能是被复用的无关进程；或锁内容损坏）此前只有两个选择——要么一直起不来，要么教用户"自己删锁文件"。删锁是静默的、无审计的，正是双写风险的开端。
+
+| 面 | 内容 |
+| --- | --- |
+| 只读检查 | 新增 `inspectStoreLock(filePath)`：返回持有者 pid、起始时间、年龄、是否存活、是否**歧义**及原因；`parseLockPayload` 能从被截断的锁里救回 pid |
+| 同意后接管 | 新增 `takeOverStoreLock(filePath, { actor: 'local-user-consent', reason })`：旧锁**改名保留**（`*.replaced-<ts>`，绝不删除），接管事实追加到 `<store>.lock-audit.jsonl`（含 actor、原因、原持有者、是否存活）；拒绝对"本进程自己的锁"接管 |
+| 桌面流程 | 启动失败且错误为 `agent_host_store_locked` 时：弹窗显示锁路径/持有者 pid/起始时间，默认按钮是**不接管**；用户点"接管并重启后台 Agent"才调用接管并重试启动。无人值守（`CHATAGENT_NO_PROMPT=1`）时不弹窗、不挂起，锁获胜并打印原因 |
+| 可观测 | `status().shell.lockTakeover` 暴露最近一次接管与其审计文件路径 |
+
+证据：
+
+- 单元/集成：`packages/agent-host/src/lock-takeover.test.ts` 11 例——检查（无锁/死 pid/活 pid/损坏锁/截断锁救回 pid）、拒接自己的锁、改名保留证据 + 审计内容、多次接管各留一行、**活 pid 锁下 store 仍然拒绝启动**、同意接管后 store 正常启动且旁观进程未被杀、死 pid 锁自愈**不写**审计（自愈不是"同意"事件）。
+- 真实 Electron：`scripts/electron-lock-check.mjs` **9/9**——歧义锁下后台 Agent 不启动且锁文件逐字节未变、无改名无审计、无人值守时打印原因不挂起；残留锁（死 pid）下自动恢复单 writer、不写审计、锁被新 writer 重建。
+- 根套件 28 文件 / 271 用例、web 40、tsc/vue-tsc 0。
+
+仍未做：交互式弹窗的"点击接管"路径需要真人点击，已写入 `docs/acceptance-guide.md` 作为手动步骤（不伪造）；Job Object 仍未做（见上一轮）。
+
 ## 未完成 / 不在本轮
 
 - Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。

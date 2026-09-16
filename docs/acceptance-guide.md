@@ -143,6 +143,12 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 3. **副作用任务不会被本机批准**：以“副作用任务”提交 → 立即失败并在“说明”列显示 `delegation_missing`，执行次数为 0；只有组织服务下发委托并由用户批准后才可能执行。
 4. **显式退出即停止**：托盘“退出（停止后台 Agent）”或工作台“退出” → 后台 Agent 与自有子进程树被清理，任务库锁释放，再次启动可正常接管；直接关窗不会停止 Agent（自动化：`node scripts/electron-quit-check.mjs` 10/10，真实应用 + 真实退出路径）。
 5. **稳定设备标识**：设置页本机卡片中的设备号为 `desktop-<uuid>`，重启客户端后不变（存放在用户数据目录 `device.json`）。
+6. **歧义锁需要人来决定（手动步骤）**：手工在任务库旁写一个锁文件，pid 指向一个**仍在运行**的无关进程：
+   ```powershell
+   # pid 换成任意存活进程；路径按实际 userData 目录
+   '{"pid":12345,"startedAt":"2026-09-16T00:00:00.000Z"}' | Set-Content "$env:APPDATA\ChatAgent\agent-host\tasks.json.lock"
+   ```
+   启动客户端：弹窗显示锁路径/持有者 pid/起始时间，默认按钮是「不接管（默认）」。点「接管并重启后台 Agent」后，旧锁被改名为 `tasks.json.lock.replaced-<时间戳>` 保留、接管记录追加到 `tasks.json.lock-audit.jsonl`、后台 Agent 正常启动。自动化只覆盖"不接管"与"残留锁自愈"两半（`scripts/electron-lock-check.mjs` 9/9）；点击那一下必须真人完成。
 
 ## 9. 已知缺口（不是回归）
 

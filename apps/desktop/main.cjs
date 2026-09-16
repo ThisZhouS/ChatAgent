@@ -11,6 +11,8 @@ const {
   HermesProcessAdapter,
   FakeHermesAdapter,
   handleHostCommand,
+  inspectStoreLock,
+  takeOverStoreLock,
 } = require('./agent-host.bundle.cjs');
 const { createReceiptSync } = require('./receipt-sync.cjs');
 
@@ -215,6 +217,8 @@ function resolveHermesExecutable() {
 
 let host = null;
 let receiptSync = null;
+/** Last consented lock takeover, surfaced through status() for support. */
+let lastLockTakeover = null;
 let deviceToken = '';
 let tray = null;
 let mainWindow = null;
@@ -359,6 +363,107 @@ function startReceiptSync(serverUrl) {
   return receiptSync;
 }
 
+/**
+ * Starts the local agent host, and — only with explicit local consent — recovers
+ * from a disputed single-writer lock.
+ *
+ * The store heals the unambiguous case on its own (the holder pid is gone). When
+ * the lock names a *live* pid that may simply have been reused, the desktop asks
+ * the human instead of stealing it: two schedulers writing one task file is worse
+ * than not starting. A consented takeover is recorded in an append-only audit
+ * file and the old lock is renamed aside, never deleted. When nobody can answer
+ * (headless run) the lock wins and the host stays down.
+ */
+async function startHostWithLockRecovery(serverUrl) {
+  try {
+    await host.start();
+    await reportStoreIntegrity();
+    startReceiptSync(serverUrl);
+    return true;
+  } catch (err) {
+    console.error('[chatagent] host failed to start:', err);
+    const locked = err && err.code === 'agent_host_store_locked';
+    if (!locked || !err.lockPath) {
+      const detail = `后台 Agent 启动失败：${err && err.message ? err.message : String(err)}`;
+      try {
+        dialog.showErrorBox('ChatAgent', detail);
+      } catch {
+        // headless/CI: the console line above is the record
+      }
+      return false;
+    }
+
+    const filePath = String(err.lockPath).replace(/\.lock$/, '');
+    if (process.env.CHATAGENT_NO_PROMPT === '1') {
+      // Unattended run (CI, service-style launch): nobody can answer a dialog, so
+      // the lock wins and the background agent stays down rather than hanging.
+      console.error('[chatagent] store lock kept (prompts disabled):', err.lockPath);
+      return false;
+    }
+    const info = await inspectStoreLock(filePath).catch(() => undefined);
+    const holder = info && info.holderPid ? `进程 ${info.holderPid}` : '未知进程';
+    const since = info && info.startedAt ? info.startedAt : '时间未知';
+
+    let choice = 1; // default: do not take over
+    try {
+      const answer = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'ChatAgent',
+        message: '本机任务库被另一个进程占用，后台 Agent 没有启动。',
+        detail:
+          `锁文件：${err.lockPath}\n持有者：${holder}（自 ${since}）\n\n` +
+          '如果那个进程其实已经不在（或它的 pid 被其它程序复用），可以在此接管：' +
+          '旧锁会被改名保留、接管原因会写入审计文件，然后后台 Agent 重新启动。' +
+          '\n\n不确定时请选择“不接管”，先关闭其它 ChatAgent 实例。',
+        buttons: ['不接管（默认）', '接管并重启后台 Agent'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      choice = answer.response;
+    } catch {
+      // No human available (headless): the lock wins.
+      choice = 0;
+    }
+
+    if (choice !== 1) {
+      console.error('[chatagent] store lock kept; the background agent stays down');
+      return false;
+    }
+
+    const takeover = await takeOverStoreLock(filePath, {
+      actor: 'local-user-consent',
+      reason: '用户在启动提示中确认接管残留锁（疑似 pid 复用）',
+    });
+    lastLockTakeover = takeover;
+    console.info('[chatagent] store lock takeover:', JSON.stringify(takeover));
+    if (!takeover.takenOver) {
+      try {
+        dialog.showErrorBox('ChatAgent', `无法接管锁文件：${takeover.reason}`);
+      } catch {
+        // already logged
+      }
+      return false;
+    }
+
+    try {
+      createHost();
+      await host.start();
+      await reportStoreIntegrity();
+      startReceiptSync(serverUrl);
+      return true;
+    } catch (retryError) {
+      console.error('[chatagent] host still failed to start after takeover:', retryError);
+      try {
+        dialog.showErrorBox('ChatAgent', `接管锁文件后仍无法启动后台 Agent：${retryError && retryError.message ? retryError.message : String(retryError)}`);
+      } catch {
+        // already logged
+      }
+      return false;
+    }
+  }
+}
+
 function createHost() {
   const root = hostRoot();
   const executable = resolveHermesExecutable();
@@ -422,6 +527,9 @@ function registerHostIpc(serverUrl) {
           remoteResponses: remoteSessionState.responses,
           cspInjected: remoteSessionState.cspInjected,
           cspFromServer: remoteSessionState.cspKept,
+          lockTakeover: lastLockTakeover
+            ? { takenOver: lastLockTakeover.takenOver, auditPath: lastLockTakeover.auditPath }
+            : null,
         },
       };
     }
@@ -532,22 +640,7 @@ if (!hasSingleInstanceLock) {
 
     deviceToken = randomBytes(32).toString('hex');
     createHost();
-    void host.start()
-      .then(() => reportStoreIntegrity())
-      .then(() => startReceiptSync(serverUrl))
-      .catch((err) => {
-      console.error('[chatagent] host failed to start:', err);
-      const locked = err && err.code === 'agent_host_store_locked';
-      const detail = locked
-        ? '本机任务库已被另一个 ChatAgent 进程占用，为避免两个调度器写同一份任务记录，后台 Agent 未启动。'
-          + `请关闭其它 ChatAgent 实例后重启。若确认没有其它实例在运行（例如上次异常退出），可删除锁文件后重试：${err.lockPath ?? '（任务库同名 .lock 文件）'}`
-        : `后台 Agent 启动失败：${err && err.message ? err.message : String(err)}`;
-      try {
-        dialog.showErrorBox('ChatAgent', detail);
-      } catch {
-        // headless/CI: the console line above is the record
-      }
-    });
+    void startHostWithLockRecovery(serverUrl);
     registerHostIpc(serverUrl);
     createTray(serverUrl);
 
