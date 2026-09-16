@@ -15,6 +15,7 @@
  * Exit code is non-zero when any step fails, so it can gate a release.
  */
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -100,6 +101,23 @@ if (!skipE2e) {
       { capture: true, summary: /\d+\/\d+ UI checks passed/ },
     ),
   );
+  // Gate 7A.2: the on-device agent must work (and stop cleanly) with the
+  // organization server irrelevant to it. These two run under the real Electron
+  // runtime, so they are launched with the desktop app's electron binary.
+  const electronBin = join(root, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'electron.exe');
+  if (existsSync(electronBin)) {
+    for (const [label, script] of [
+      ['local agent workbench (Electron)', 'electron-workbench-check.cjs'],
+      ['local agent quit path (Electron)', 'electron-quit-check.mjs'],
+    ]) {
+      steps.push(() =>
+        run(label, electronBin, [join(root, 'scripts', script)], {
+          capture: true,
+          summary: /\d+\/\d+ checks passed/,
+        }),
+      );
+    }
+  }
 }
 
 const results = [];
