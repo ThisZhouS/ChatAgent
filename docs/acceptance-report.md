@@ -187,7 +187,7 @@ node scripts/ui-e2e.mjs --server http://localhost:8796                          
 
 ## 未验证/受限
 
-- 真实浏览器 UI 验证：**已具备**——`scripts/ui-e2e.mjs` 用 Electron 的 CDP 端口驱动打包客户端完成端到端操作并截图（本会话无外部浏览器 provider，故走客户端内置 Chromium）。CSP 的**拦截效果**仍是静态断言，未构造真实 XSS 载荷。
+- 真实浏览器 UI 验证：**已具备**——`scripts/ui-e2e.mjs` 用 Electron 的 CDP 端口驱动打包客户端完成端到端操作并截图（本会话无外部浏览器 provider，故走客户端内置 Chromium）。CSP 的**拦截效果**已用内联脚本载荷验证（`scripts/electron-csp-check.mjs` 5/5：注入策略拦住内联脚本、同源外链不被误伤、服务端策略不被覆盖），完整 XSS 利用链未构造。
 - 真实模型接入未执行（需用户提供内网模型网关与密钥）。
 - 真实 IM 平台 Webhook 未端到端联调（仅单元测试覆盖规范化器与新增的验签/去重逻辑）。
 
@@ -216,7 +216,7 @@ node scripts/ui-e2e.mjs --server http://localhost:8796                          
 
 ## 未验证/受限
 
-- 真实浏览器 UI 验证：**已具备**——`scripts/ui-e2e.mjs` 用 Electron 的 CDP 端口驱动打包客户端完成端到端操作并截图（本会话无外部浏览器 provider，故走客户端内置 Chromium）。CSP 的**拦截效果**仍是静态断言，未构造真实 XSS 载荷。
+- 真实浏览器 UI 验证：**已具备**——`scripts/ui-e2e.mjs` 用 Electron 的 CDP 端口驱动打包客户端完成端到端操作并截图（本会话无外部浏览器 provider，故走客户端内置 Chromium）。CSP 的**拦截效果**已用内联脚本载荷验证（`scripts/electron-csp-check.mjs` 5/5：注入策略拦住内联脚本、同源外链不被误伤、服务端策略不被覆盖），完整 XSS 利用链未构造。
 - 真实模型接入未执行（需用户提供内网模型网关与密钥）。
 - 真实 IM 平台 Webhook 未端到端联调（仅单元测试覆盖规范化器与新增的验签/去重逻辑）。
 
@@ -230,3 +230,25 @@ node scripts/ui-e2e.mjs --server http://localhost:8796                          
 - 破坏性操作仅有审计记录，无人工审批流。
 
 详见 `docs/tasks.md` 后续方向。
+
+## 2026-09-16 第二时间窗（本机 Agent Gate 7A.1/7A.2 加固，19:00→22:00）
+
+范围：本机 Agent Host 的任务库可信性、回执同步与归属、桌面壳加固、执行器子进程回收、单 writer 锁处置、保留策略、服务端回执单调性。全部结论都来自可重复的本地命令；没有真实模型凭据的部分保持 BLOCKED。
+
+| 命令 | 结果 |
+| --- | --- |
+| `node node_modules/vitest/vitest.mjs run` | **29 文件 / 279 用例通过** |
+| `cd apps/web && node ../../node_modules/vitest/vitest.mjs run` | **6 文件 / 40 用例通过** |
+| `tsc --noEmit -p tsconfig.json` / `vue-tsc --noEmit -p apps/web/tsconfig.json` | 0 错误 |
+| `pnpm --filter @chatagent/server build` + `--filter @chatagent/web build` | 通过（tsup 263 KB；vite 构建 10.5s） |
+| `CHATAGENT_HERMES_EXE=<真实运行时> node scripts/gate7a-verify.mjs` | **22 passed / 0 failed / 0 blocked**（含真实 Hermes 进程契约：无 provider 时明确失败，不伪装成功） |
+| `apps/desktop/node_modules/.bin/electron scripts/electron-workbench-check.cjs` | 11/11（断网工作台，真实 Electron） |
+| `apps/desktop/node_modules/.bin/electron scripts/electron-host-smoke.cjs` | 6/6（关窗常驻、任务继续） |
+| `node scripts/electron-quit-check.cjs` | 10/10（显式退出即停止、锁释放、无残留进程） |
+| `node scripts/electron-receipt-sync-check.mjs` | **19/19**（主进程自动同步、失败重试带 cookie、归属绑定、同版本去重、离线队列跨重启补交、独立分区、缺省 CSP 注入） |
+| `node scripts/electron-lock-check.mjs` | **9/9**（歧义锁不静默接管、残留锁自愈、无人值守不挂起） |
+| `node scripts/electron-csp-check.mjs` | **5/5**（注入策略真的拦住内联脚本、同源外链不被误伤、服务端策略不被覆盖） |
+
+本轮加固要点（细节见 `docs/iteration-2026-09-16-gate7a1-hardening.md` 第四～十轮）：任务库载入即校验并把不可信行隔离为失败；回执持续同步（离线队列 + 按版本去重 + 退避）与 `ownerId` 归属绑定；服务端回执单调写入；远程页面独立持久分区 + 响应头加固；执行器子进程树回收用真实两级进程验证；单 writer 锁的歧义情形交给人并留审计；任务库保留策略只淘汰终态记录。
+
+**Blocked（不得记为通过）**：Gate 7A.3 真实 Hermes + 真实模型的安全办公闭环（缺模型凭据）；Windows Job Object 子进程回收（需原生模块，离线无法验证）；Electron 39→42/43/44 升级（本机无外网，二进制无法下载，已写预研 `docs/electron-upgrade.md`）；打包 exe 重建与打包后 E2E（`electron-builder` 需联网）；完整 XSS 利用链（只验证了内联脚本载荷）。

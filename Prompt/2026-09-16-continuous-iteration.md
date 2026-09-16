@@ -29,7 +29,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 受影响 package/符号 | `@chatagent/agent-host`：`LocalAgentHost.{submit,retry,cancel,stop,close,finish}`、`TrustedAuthorizationRegistry`、`computeActionDigest`、`JsonFileAgentHostStore.{compareAndSet,close,AgentHostStoreLockedError}`、`handleHostCommand`；`apps/desktop` 生命周期与 `workbench.html`；`SettingsView.vue` 本机卡片 |
+| 受影响 package/符号 | `@chatagent/agent-host`：`LocalAgentHost.{submit,retry,cancel,stop,close,finish}`、`TrustedAuthorizationRegistry`、`computeActionDigest`、`JsonFileAgentHostStore.{compareAndSet,close,AgentHostStoreLockedError}`、`handleHostCommand`、`validatePersistedRow`/`StoreLoadReport`、`terminateProcessTree`、`inspectStoreLock`/`takeOverStoreLock`、`selectExpiredRecords`；`apps/desktop`：生命周期、`workbench.html`、`receipt-sync.cjs`（回执持续同步）、会话分区与 CSP 注入；`apps/server`：`LocalTaskReceiptStore.upsert`（单调写入）与 `POST /api/local-tasks`（归属校验）；`SettingsView.vue` 本机卡片与保留策略提示 |
 | 前置权限 | 本机任务默认许可；副作用任务需已登记委托＋已批准审批，且摘要与载荷一致；IPC 无授予命令 |
 | 数据分类 | 任务记录仅存目标/状态/产物哈希与授权引用快照，不含凭据、模型推理或员工文件原文 |
 | 是否外发 | 否；本轮不调用模型、不投递消息、不启动真实 Hermes |
