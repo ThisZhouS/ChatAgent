@@ -131,10 +131,21 @@ node scripts/ui-e2e.mjs         # 真实客户端 E2E：34 项检查 + 截图（
 pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 ```
 
-## 8. 已知缺口（不是回归）
+## 8. 桌面端本机 Agent（Gate 7A.2，可手工复现）
+
+安装/解包后的 ChatAgent 桌面客户端（`apps/desktop/release/win-unpacked/ChatAgent.exe`）或开发态 `pnpm desktop:dev`：
+
+1. **关窗常驻**：登录后关闭窗口 → 进程仍在托盘；此时提交的本机任务继续跑完，重开窗口后状态与产物仍在（自动化：`scripts/electron-host-smoke.cjs` 6/6）。
+2. **离线工作台**：断开/停掉组织服务器，刷新客户端 → 出现“无法连接到 ChatAgent 服务”，点“打开本机工作台”（或托盘菜单“打开本机工作台（不依赖服务器）”）：可看到设备、执行器、任务列表、提交文档任务、取消/重试、暂停/继续，页面不依赖服务器（自动化：`scripts/electron-workbench-check.cjs` 11/11）。
+3. **副作用任务不会被本机批准**：以“副作用任务”提交 → 立即失败并在“说明”列显示 `delegation_missing`，执行次数为 0；只有组织服务下发委托并由用户批准后才可能执行。
+4. **显式退出即停止**：托盘“退出（停止后台 Agent）”或工作台“退出” → 后台 Agent 与自有子进程树被清理，任务库锁释放，再次启动可正常接管；直接关窗不会停止 Agent。
+5. **稳定设备标识**：设置页本机卡片中的设备号为 `desktop-<uuid>`，重启客户端后不变（存放在用户数据目录 `device.json`）。
+
+## 9. 已知缺口（不是回归）
 
 - 真实第三方 IM 凭据未接入（产品不依赖它们，外部通道默认关闭）。
 - 依赖 CVE 未扫描（本机 registry 无 audit 端点）。
 - 任务恢复没有租约/多实例互斥；JSON 存储为单进程写入。
+- 本机 Agent 的 Gate 7A.3（真实 Hermes + 真实模型的安全办公闭环）未验收；打包 exe 需重跑 `pnpm build:desktop`（本机无网络，electron-builder 无法下载依赖）。
 - UI 证据：`pnpm build` + 组件测试（20 例）+ **真实客户端 E2E 34/34**（`scripts/ui-e2e.mjs` 经 CDP 驱动打包 exe，含截图与 WCAG 对比度实测）；CSP 的实际拦截效果未构造 XSS 载荷验证。
 - 详细清单见 `docs/security-checklist.md` 第 7 节与 `docs/tasks.md` 的未完成项。

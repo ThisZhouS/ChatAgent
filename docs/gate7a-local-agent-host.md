@@ -2,6 +2,12 @@
 
 日期：2026-09-14（晚间轮） · 依据：`Prompt/2026-09-14-gate7a-local-agent-host-hermes-poc.md`
 
+> **2026-09-16 状态更正（本文其余部分保留为历史）**：本报告是 09-14 的 PoC 结论，之后 H-01～H-06 已有修复、生命周期按 ADR-0003 收敛，以下内容已过时：
+> - 第 6/7/8/11 条的提交面已改为「只传 `delegationId`/`approvalId` 引用」+ 可信授权注册表 + 提交幂等 + 显式 `retry`；`list` IPC 统一返回 `{ tasks }`。
+> - 第 12 条的数字为历史值；当前基线：根 vitest 24 文件/238 用例、web 6 文件/40 用例、tsc/vue-tsc 0、真实 Electron 工作台 11/11 与关窗常驻 6/6。
+> - 关窗常驻、托盘重开、显式退出即停止已由 ADR-0003 与 `apps/desktop/main.cjs`（单一幂等拆除路径 + 稳定 deviceId + 断网本机工作台 `workbench.html`）实现。
+> - 当前基线与证据：`docs/review-2026-09-15-host-gaps-roadmap.md`、`docs/iteration-2026-09-16-gate7a1-hardening.md`、`docs/review-2026-09-16-adversarial-verification.md`。Gate 7A 整体仍**未完成**：真实 Hermes 安全办公闭环与 Host 侧持续回执同步待做。
+
 ## 一、可行性结论（≤15 行）
 
 1. 真实 Hermes 运行时存在且可调用：`Temp/hermes-runtime/hermes-agent-cn-runtime-win32-x64.exe`（hermes_agent 0.17.0，Nous Research，MIT，sha256 `78cf8734…2721`）。
