@@ -189,7 +189,7 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 证据：`scripts/electron-receipt-sync-check.mjs` 扩到 **19/19**（新增：独立分区、无 CSP 响应被注入 1 次、注入后页面仍正常渲染）；`electron-workbench-check.cjs` 11/11、`electron-host-smoke.cjs` 6/6、`electron-quit-check.cjs` 10/10 全部重跑通过（说明分区化没有破坏离线工作台与退出路径）。
 
-仍未验证：注入 CSP 对真实 XSS 载荷的拦截效果；Electron 升级本身（本机无外网，无法下载二进制）——两者都不得声称完成。
+仍未验证：**完整 XSS 利用链**（第八轮已用内联脚本载荷证明策略被强制执行：同源外链仍可运行、内联脚本被拦）；Electron 升级本身（本机无外网，无法下载二进制）——两者都不得声称完成。
 
 ## 第六轮（2026-09-16 晚）：执行器子进程树回收（可执行证据）
 

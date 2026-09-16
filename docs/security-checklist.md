@@ -88,7 +88,8 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 解析资源上限已具备：上传 20 MiB + 扩展名白名单；**实测** zip 条目真实解压大小与压缩比（条目 2000 / 单条目 64 MiB / 总量 200 MiB / 压缩比 200:1，见 `packages/document/src/zip-guard.ts`；中央目录声明值不作为依据，超限 413）；解析输出限长（文本 20 万字符、段落 2000、表 50、单表 2 万行，见 `packages/document/src/limits.ts`）。
 - 仍未覆盖：嵌套压缩包（zip 内 zip）与 PDF 等非 zip 格式的解析资源上限；任务执行没有 CPU 时间片/内存配额。
 - 任务恢复只有「running → pending 重取」，没有租约与多实例互斥（服务端任务引擎；本机 Agent 主机已有租约 + 单 writer 锁）。
-- 本机 Agent 未验证的边界：真正同时的多进程写、两个安装共享同一 `CHATAGENT_HOST_ROOT`、Windows 上 `taskkill /T /F` 的实际执行效果、主进程被强杀后的子进程回收（需要 Job Object/原生插件）。
+- 本机 Agent 未验证的边界：真正同时的多进程写、两个安装共享同一 `CHATAGENT_HOST_ROOT`、主进程被强杀后的子进程回收（需要 Job Object/原生插件）。
+- 子进程回收已实测（不再列为未验证）：`packages/agent-host/src/process-tree.test.ts` 5 例真实进程——两级子进程全部结束、无关进程存活、无 pid 时回退 `SIGKILL`、`taskkill` 无法启动时回退、win32 分支收到正确 pid。
 - 单 writer 锁是"防两个调度器写同一份任务记录"的互斥，**不是信任边界**：本机任何进程改写 `tasks.json` 都能绕过所有主机不变量（派发时的能力下限会拦下被改写的行，但文件本身没有签名/校验）。
 - 持久化行在 `load()` 时不做迁移/校验（旧版本的 `toolsets` 会被信任）；补偿手段是派发前复核能力下限，并在重放时把不合格的行标记为 `failed`。
 - `interrupted` 语义特殊：它不是终态（可重试），但已计入 `finished` 且不再接受迟到结果覆盖；对副作用任务它不可重试（需要重新授权）。
@@ -97,7 +98,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 陈旧锁若其 pid 被无关进程复用，最长可阻塞启动 30 天（提示里给出锁文件路径，需人工删除）。
 - `close()` 超过 8s 的有界停机到期后仍然退出：极端情况下会留下未清理的执行器与锁文件，下次启动按陈旧锁接管。
 - 桌面设备令牌在现有接线中是纵深防御（主进程同时充当校验方与出示方），真正的控制是 IPC 发送方校验（frame URL + 主进程单实例）；嵌入到其他宿主时需要重新评估。
-- 真实浏览器 E2E 已由 `scripts/ui-e2e.mjs`（Electron/CDP，34/34）覆盖；但 CSP 的**拦截效果**仍是静态断言，未构造真实 XSS 载荷验证。
+- 真实浏览器 E2E 已由 `scripts/ui-e2e.mjs`（Electron/CDP，34/34）覆盖；CSP 的**拦截效果**已用内联脚本载荷验证（`scripts/electron-csp-check.mjs` 5/5），完整 XSS 利用链未构造。
 - 组织管理员可读本组织全部会话（设计如此）；不接受该模型时需改为显式授权。
 - AI 回复逐条写审计（`ai.message_sent`：`assistant_reply` / `artifact_message`，**不含正文**）。
 - 管理员 break-glass：管理员可读本组织**全部会话与文件**（既有设计），读取「未分享给自己」的文件会写 `file.admin_access` 审计，便于事后追溯。
