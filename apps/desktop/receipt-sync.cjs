@@ -23,9 +23,26 @@ const MAX_BACKOFF_MS = 10 * 60_000;
 /** Bounded queue: a device that is offline for days must not grow without limit. */
 const MAX_PENDING = 200;
 
+/**
+ * Reads the queue state.
+ *
+ * A missing file is normal (first run). A file that exists but cannot be parsed
+ * is NOT: it may still hold receipts that were never delivered, so it is renamed
+ * aside (never deleted) and the reason is surfaced through `status().lastError`
+ * instead of silently starting with an empty queue.
+ */
 function readState(statePath) {
+  let raw;
   try {
-    const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    raw = fs.readFileSync(statePath, 'utf8');
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') {
+      return { synced: {}, pending: {}, lastError: `state_unreadable: ${error.code || error.message}` };
+    }
+    return { synced: {}, pending: {} };
+  }
+  try {
+    const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
       return {
         synced: parsed.synced && typeof parsed.synced === 'object' ? parsed.synced : {},
@@ -34,17 +51,37 @@ function readState(statePath) {
         lastError: typeof parsed.lastError === 'string' ? parsed.lastError : undefined,
       };
     }
-  } catch {
-    // missing or unreadable: start clean rather than blocking local work
+    throw new Error('state is not an object');
+  } catch (error) {
+    const reason = error && error.message ? error.message : String(error);
+    let kept = '';
+    try {
+      kept = `${statePath}.corrupt-${Date.now()}`;
+      fs.renameSync(statePath, kept);
+      console.error(`[chatagent] receipt queue was unreadable (${reason}); kept as ${kept}`);
+    } catch {
+      // best effort: the error below is still reported
+    }
+    return {
+      synced: {},
+      pending: {},
+      lastError: `state_corrupt: ${reason}${kept ? ` (kept as ${path.basename(kept)})` : ''}`,
+    };
   }
-  return { synced: {}, pending: {} };
 }
 
+/** Write → flush → rename, the same commit discipline the task store uses. */
 function writeState(statePath, state) {
   try {
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
     const tmp = `${statePath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeFileSync(fd, JSON.stringify(state, null, 2), 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmp, statePath);
   } catch (error) {
     // The queue is an optimization, never the source of truth: report and go on.
@@ -118,6 +155,14 @@ function createReceiptSync(options) {
           if (state.synced[receipt.taskId] === receipt.updatedAt) continue;
           state.pending[receipt.taskId] = receipt;
         }
+        // Growth guard: the host prunes finished records (retention), so the
+        // dedupe map must forget them too or it grows for the lifetime of the
+        // install. Only entries the host no longer knows about are dropped, and
+        // only after a *successful* list (a failed list must not wipe memory).
+        const knownIds = new Set(records.map((record) => record && record.taskId).filter(Boolean));
+        for (const taskId of Object.keys(state.synced)) {
+          if (!knownIds.has(taskId)) delete state.synced[taskId];
+        }
         const pendingIds = Object.keys(state.pending);
         if (pendingIds.length > MAX_PENDING) {
           // Oldest first: keep the most recent work in the mirror.
@@ -150,7 +195,9 @@ function createReceiptSync(options) {
     if (stopped) return { sent: 0, skipped: true };
     const pending = await collect();
     if (pending.length === 0) {
-      state.lastError = undefined;
+      // A state-file problem is a real report (it may mean undelivered receipts
+      // were lost), so it survives until a successful sync replaces it.
+      if (!String(state.lastError || '').startsWith('state_')) state.lastError = undefined;
       writeState(statePath, state);
       return { sent: 0 };
     }
@@ -230,4 +277,4 @@ function createReceiptSync(options) {
   };
 }
 
-module.exports = { createReceiptSync, toReceipt, MAX_PENDING };
+module.exports = { createReceiptSync, toReceipt, MAX_PENDING, readState, writeState };

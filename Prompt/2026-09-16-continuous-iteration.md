@@ -34,7 +34,7 @@
 | 数据分类 | 任务记录仅存目标/状态/产物哈希与授权引用快照，不含凭据、模型推理或员工文件原文 |
 | 是否外发 | 否；本轮不调用模型、不投递消息、不启动真实 Hermes |
 | 幂等/取消语义 | 同 id 同载荷幂等返回；同 id 异载荷 `idempotency_conflict`；取消立即写终态，迟到结果按 version CAS 丢弃 |
-| 测试 profile | 根 vitest 278、web vitest 40、tsc/vue-tsc 0、Electron 校验：工作台 11/11、关窗常驻 6/6、显式退出 10/10、回执同步 19/19、单 writer 锁 9/9、远程页面 CSP 5/5（真实应用）；打包 exe 与打包后 E2E 未重跑 |
+| 测试 profile | 根 vitest 286（30 文件，含桌面 CJS 单测）、web vitest 40、tsc/vue-tsc 0、Electron 校验：工作台 11/11、关窗常驻 6/6、显式退出 10/10、回执同步 19/19、单 writer 锁 9/9、远程页面 CSP 5/5、导航与桥面 7/7（真实应用）；打包 exe 与打包后 E2E 未重跑 |
 | 未验证边界 | 真实 Hermes+模型（Gate 7A.3，BLOCKED）、干净安装、多设备并发、Electron 升级后的回归、完整 XSS 利用链 |
 
 ## 第二时间窗续记：2026-09-16 19:00 → 22:00（第四～九轮）
@@ -51,6 +51,8 @@
 | ⑨ | **CSP 强制执行**用真实载荷证明（内联脚本被拦、同源外链不被误伤、服务端策略不被覆盖）；并修掉检查脚本自身的假通过 | `scripts/electron-csp-check.mjs` 5/5 |
 | ⑩ | **任务库保留策略**（只淘汰终态、进行中永不淘汰、载入只报告、写入时才落盘、写失败回滚不丢历史） | `retention.test.ts` 7 例；顺带修掉 zip 炸弹用例的随机失败 |
 | ⑪ | **服务端回执单调性**（旧副本不覆盖新状态、同版本幂等、返回 `{accepted, stale}` 并在审计写明） | `apps/server/src/local-tasks.test.ts` 10/10 |
+| ⑫ | **远程页面导航/窗口/桥面实测**（窄桥无通用直通、未知命令被拒、window.open 不产生窗口、跨源跳转被阻止、同源跳转仍允许） | `scripts/electron-nav-check.mjs` 7/7；新增 `CHATAGENT_OPEN_EXTERNAL` 部署开关 |
+| ⑬ | **回执队列耐久性与增长收敛**（write→fsync→rename、损坏队列另存并上报、去重表随主机淘汰收缩） | `apps/desktop/receipt-sync.test.mjs` 7 例；真实 Electron 回执同步仍 19/19 |
 
 轮次编号在 `docs/iteration-2026-09-16-gate7a1-hardening.md` 中为第四～九轮（"任务库保留策略"并入第九轮之后的收尾）；以该文档为准。
 

@@ -100,7 +100,7 @@ node scripts/acceptance.mjs        # 7 步，任一步失败即非零退出；--
 
 ```bash
 pnpm typecheck                     # 全仓库类型检查（tsc + vue-tsc）
-pnpm test                          # 单元/集成测试：29 文件 / 278 用例（前端另 6 文件 / 40 用例）
+pnpm test                          # 单元/集成测试：30 文件 / 286 用例（前端另 6 文件 / 40 用例）
 pnpm build                         # 服务端打包 + 前端构建
 node scripts/restart-server.mjs    # 按端口重启并等待 /health（Windows 上可靠）
 node scripts/smoke.mjs             # 27 步端到端冒烟（真实 HTTP）

@@ -285,6 +285,18 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 顺带补上一个真实部署开关：`CHATAGENT_OPEN_EXTERNAL=off|0|false|no` 让外链只记日志、不拉起浏览器（终端服务器/共享机器上不希望点一个链接就弹出浏览器）。默认行为不变。
 
+## 第十二轮（2026-09-16 晚）：回执队列自身的耐久性与增长收敛（并首次给桌面 CJS 加单测）
+
+问题：桌面壳的 `receipt-sync.cjs` 此前只有昂贵的 Electron 端到端检查，没有单测；而它自己的状态文件（离线回执队列）有两个真实缺陷：
+
+1. **写盘缺少 fsync**：任务库走的是 write→fsync→rename，队列文件只有 write→rename；断电时改名可能指向未落盘的内容，队列会空或半截。
+2. **读不出来就静默清空**：状态文件损坏时直接"从零开始"，队列里尚未投递的回执**无声消失**，`status()` 也看不到异常。
+3. **`synced` 去重表无上限**：每个曾出现过的 taskId 永久留一条——任务库已按保留策略淘汰旧记录，去重表却会随安装寿命一直长。
+
+修改：`writeState` 改为 write→fsync→rename；`readState` 区分"文件不存在"（正常首启）与"存在但读不出"（改名保留为 `*.corrupt-<ts>`，错误以 `state_corrupt: …` 出现在 `status().lastError`，且不会被"无待发内容"分支立即抹掉）；`collect()` 在**成功**列出主机任务后，把主机已不认识（被保留策略清掉）的 `synced` 条目一并删除——主机列表失败时绝不动去重表。
+
+证据：新增 `apps/desktop/receipt-sync.test.mjs`（7 例，经 `createRequire` 直接测 Electron 用的 CJS 模块）：映射不臆造字段/只带可信委托归属/截断 payload、损坏队列被另存并上报、状态文件完全不可写时不抛异常、只重发变更且主机淘汰后去重表随之收缩、上传失败保留队列并按最新排布上限、缺文件不算错误。根套件 **30 文件 / 286 用例**；真实 Electron 回执同步检查仍 **19/19**。
+
 ## 未完成 / 不在本轮
 
 - Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。

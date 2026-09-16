@@ -95,6 +95,7 @@ ChatAgent/
 │   ├── electron-lock-check.mjs       单 writer 锁（9/9：歧义锁不静默接管、残留锁自愈）
 │   ├── electron-csp-check.mjs        远程页面 CSP 强制执行（5/5，内联载荷）
 │   └── electron-nav-check.mjs        导航/窗口/桥面收敛（7/7）
+├── apps/desktop/receipt-sync.test.mjs 回执同步模块单测（7 例，经 createRequire 测 Electron 侧 CJS）
 ├── Dockerfile           容器构建（pnpm install + build + start）
 ├── docker-compose.yml   单容器开箱部署（端口 8787 + 数据卷）
 ├── start-server.cmd     Windows 一键启动服务端

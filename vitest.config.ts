@@ -14,6 +14,9 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['packages/*/src/**/*.test.ts', 'apps/server/src/**/*.test.ts'],
+    // apps/desktop is Electron CommonJS; its pure logic (the receipt sync) is
+    // unit-tested here through createRequire instead of only via the slow,
+    // GUI-driven Electron check.
+    include: ['packages/*/src/**/*.test.ts', 'apps/server/src/**/*.test.ts', 'apps/desktop/*.test.mjs'],
   },
 });
