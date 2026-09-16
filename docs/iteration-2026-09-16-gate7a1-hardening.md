@@ -54,6 +54,7 @@
 
 - 新增 `apps/desktop/workbench.html`：随包提供的本机受信工作台，`file://` 加载、严格 CSP（`default-src 'none'`，无网络、无远程资源），只经既有 preload 窄桥与 Host 通信；Host 返回的字符串一律用 `textContent` 渲染，不拼 HTML。
 - 能力：本机状态（设备 / executor / fake 原因 / 排队与执行中计数 / 迟到结果丢弃计数）、任务列表（状态、说明、产物）、提交文档任务、取消与重试、暂停/继续、停止主机、退出（停止后台 Agent）、返回聊天服务。
+- 退出路径实测（`scripts/electron-quit-check.mjs`，真实 Electron + 真实 `main.cjs` + 本机 Hermes 运行时）：应用在组织服务不可达时仍启动本机主机、设备号为稳定 `desktop-<uuid>`、任务库被锁文件保护、明确退出后进程在 15s 内有界结束、锁被释放、任务结局仍留在磁盘、无残留进程（10/10）。
 - `error.html` 增加“打开本机工作台”入口；托盘菜单增加“打开本机工作台（不依赖服务器）”；主进程新增 `chatagent:workbench:open`，不接受页面传入的位置。
 - 服务器不可达时不再只有错误页：文档任务可提交、查看、取消、重试；副作用任务因拿不到委托/审批而被拒绝并显示原因。
 
@@ -68,6 +69,7 @@ node apps/desktop/build-agent-host.mjs                        # 重新生成 age
 node --check apps/desktop/main.cjs
 apps/desktop/node_modules/.bin/electron scripts/electron-workbench-check.cjs   # 11/11，真实 Electron
 apps/desktop/node_modules/.bin/electron scripts/electron-host-smoke.cjs        # 6/6，关窗常驻与重启恢复
+node scripts/electron-quit-check.mjs                                          # 10/10，真实桌面应用：显式退出→进程结束→锁释放→任务库仍可读
 node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.ts   # 11/11 攻击失败，23 项 FIX-HOLDS 仍通过
 ```
 

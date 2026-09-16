@@ -40,6 +40,16 @@
 - [ ] 复核 `data/outbox.json` 中 `unknown` 记录（超时/5xx）：这类记录**不会自动重发**，需要人工对账。
 - [ ] `simulated` 表示没有真实投递通道（不计为送达）；接入真实网关后才会出现 `accepted/delivered`。
 
+## 4.1 本机 Agent 主机（Gate 7A，2026-09-16）
+
+- [ ] 授权只走受信路径：委托/审批由主进程根据组织服务响应或本地明确同意登记（`TrustedAuthorizationRegistry`），IPC 只接受 `delegationId`/`approvalId` 引用；页面/渲染进程传入的任何"审批对象"都会被 `.strict()` schema 拒绝（`invalid_command`）。
+- [ ] 本机不自我审批：注册表默认为空 ⇒ 一切副作用任务 fail-closed（`delegation_missing`），且授权在执行前复核一次（撤权/过期即拒）。
+- [ ] 审批单次使用：副作用任务真正开跑前消耗审批（`consumeApproval`）；摘要绑定 taskId/agentId/kind/goal/toolsets，同 id 异载荷报 `idempotency_conflict`。
+- [ ] 工具集白名单：`document` 任务只允许 `document`/`document.read`，`*`/`terminal`/`code_execution` 等一律 `capability_not_granted`（host 级，不依赖适配器）。
+- [ ] 单 writer：任务库 `tasks.json.lock` 由存活 pid 独占，第二写者被拒（`agent_host_store_locked`）；`close()` 后进程拒绝再写（`agent_host_store_closed`），且只释放自己写的锁。
+- [ ] 桌面端：`app.enableSandbox()`、`contextIsolation` 且无 `nodeIntegration`、外链协议白名单（http/https/mailto）、权限检查默认拒绝、拒绝 webview 附着、断网本机工作台 `workbench.html` 用严格 CSP + `textContent` 渲染且不接受页面传入的加载位置。
+- [ ] 退出路径唯一且幂等：托盘/菜单/IPC/系统注销都汇入 `before-quit` 的 `shutdownHostOnce()`（有界 8s），按 pid 清理自有子进程树（`taskkill /T /F`），不误杀其他 Python/Hermes 进程。
+
 ## 5. 运行与依赖
 
 - [ ] Node ≥ 20.19；使用 `pnpm install --frozen-lockfile` 部署。
@@ -68,7 +78,9 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 依赖 CVE 未扫描（见 5）。
 - 解析资源上限已具备：上传 20 MiB + 扩展名白名单；**实测** zip 条目真实解压大小与压缩比（条目 2000 / 单条目 64 MiB / 总量 200 MiB / 压缩比 200:1，见 `packages/document/src/zip-guard.ts`；中央目录声明值不作为依据，超限 413）；解析输出限长（文本 20 万字符、段落 2000、表 50、单表 2 万行，见 `packages/document/src/limits.ts`）。
 - 仍未覆盖：嵌套压缩包（zip 内 zip）与 PDF 等非 zip 格式的解析资源上限；任务执行没有 CPU 时间片/内存配额。
-- 任务恢复只有「running → pending 重取」，没有租约与多实例互斥。
+- 任务恢复只有「running → pending 重取」，没有租约与多实例互斥（服务端任务引擎；本机 Agent 主机已有租约 + 单 writer 锁）。
+- 本机 Agent 未验证的边界：真正同时的多进程写、两个安装共享同一 `CHATAGENT_HOST_ROOT`、Windows 上 `taskkill /T /F` 的实际执行效果、主进程被强杀后的子进程回收（需要 Job Object/原生插件）。
+- 桌面设备令牌在现有接线中是纵深防御（主进程同时充当校验方与出示方），真正的控制是 IPC 发送方校验（frame URL + 主进程单实例）；嵌入到其他宿主时需要重新评估。
 - 真实浏览器 E2E 已由 `scripts/ui-e2e.mjs`（Electron/CDP，34/34）覆盖；但 CSP 的**拦截效果**仍是静态断言，未构造真实 XSS 载荷验证。
 - 组织管理员可读本组织全部会话（设计如此）；不接受该模型时需改为显式授权。
 - AI 回复逐条写审计（`ai.message_sent`：`assistant_reply` / `artifact_message`，**不含正文**）。
