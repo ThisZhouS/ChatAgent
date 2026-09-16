@@ -23,6 +23,7 @@
       "main.cjs",
       "preload.cjs",
       "error.html",
+      "workbench.html",
       "config.default.json",
       "agent-host.bundle.cjs",
       "build-agent-host.mjs",

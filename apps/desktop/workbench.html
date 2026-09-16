@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Local-only page: no remote content, no network, inline assets only.
+         All host-provided strings are inserted with textContent, never innerHTML. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <title>ChatAgent 本机工作台</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --line: #e4e7ed;
+        --muted: #909399;
+        --primary: #409eff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+        background: #f5f7fa;
+        color: #303133;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        padding: 12px 20px;
+        background: #fff;
+        border-bottom: 1px solid var(--line);
+      }
+      h1 { font-size: 16px; margin: 0 12px 0 0; }
+      .tag {
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: 10px;
+        background: #ecf5ff;
+        color: var(--primary);
+      }
+      .tag.warn { background: #fdf6ec; color: #e6a23c; }
+      .tag.danger { background: #fef0f0; color: #f56c6c; }
+      .tag.ok { background: #f0f9eb; color: #67c23a; }
+      main { padding: 16px 20px 40px; }
+      .card {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 14px;
+      }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      button {
+        padding: 7px 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        cursor: pointer;
+        font: inherit;
+      }
+      button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+      button.warn { color: #e6a23c; border-color: #f3d19e; }
+      button.danger { color: #f56c6c; border-color: #fbc4c4; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      input, select {
+        padding: 7px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        font: inherit;
+      }
+      input { flex: 1 1 320px; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { color: var(--muted); font-weight: 600; }
+      td.mono { font-family: Consolas, monospace; font-size: 12px; }
+      .muted { color: var(--muted); }
+      .error { color: #f56c6c; }
+      .notice { font-size: 12px; color: var(--muted); line-height: 1.7; }
+      .empty { padding: 18px; text-align: center; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>ChatAgent 本机工作台</h1>
+      <span id="status-running" class="tag">状态未知</span>
+      <span id="status-paused" class="tag warn" hidden>已暂停</span>
+      <span id="status-executor" class="tag">executor —</span>
+      <span id="status-device" class="tag">设备 —</span>
+      <span class="muted" id="status-counts"></span>
+    </header>
+
+    <main>
+      <div class="card">
+        <div class="row">
+          <button id="refresh">刷新</button>
+          <button id="pause">暂停后台</button>
+          <button id="stop" class="warn">停止主机</button>
+          <button id="reconnect" class="primary">连接聊天服务</button>
+          <button id="quit" class="danger">退出（停止后台 Agent）</button>
+        </div>
+        <p class="notice" id="executor-note" hidden></p>
+        <p class="notice" id="error-note" hidden></p>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <input id="goal" placeholder="输入任务目标（在本机执行，不依赖聊天服务器）" />
+          <select id="kind">
+            <option value="document">文档任务（本机产物）</option>
+            <option value="side_effect">副作用任务（需委托与审批）</option>
+          </select>
+          <button id="submit" class="primary">提交任务</button>
+        </div>
+        <p class="notice">
+          离线可用：文档任务在本机执行并产出文件。副作用任务必须由组织服务下发的委托与审批授权；
+          本机工作台不能自行批准，因此离线时会被拒绝并记录原因。
+        </p>
+      </div>
+
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 130px">任务</th>
+              <th style="width: 90px">状态</th>
+              <th style="width: 90px">类型</th>
+              <th>目标</th>
+              <th style="width: 22%">说明</th>
+              <th style="width: 130px">产物</th>
+              <th style="width: 130px">操作</th>
+            </tr>
+          </thead>
+          <tbody id="tasks"></tbody>
+        </table>
+        <div class="empty" id="empty">暂无本机任务</div>
+      </div>
+    </main>
+
+    <script>
+      const bridge = window.chatagent && window.chatagent.host;
+      const serverUrl = new URLSearchParams(location.search).get('server') || 'http://localhost:8787';
+      const $ = (id) => document.getElementById(id);
+
+      function setText(node, value) {
+        node.textContent = value === undefined || value === null ? '' : String(value);
+      }
+
+      function show(node, visible) {
+        node.hidden = !visible;
+      }
+
+      async function command(payload) {
+        if (!bridge) return { ok: false, error: 'no_host_bridge' };
+        try {
+          return await bridge.command(payload);
+        } catch (err) {
+          return { ok: false, error: err && err.message ? err.message : String(err) };
+        }
+      }
+
+      function stateTag(state) {
+        if (state === 'succeeded') return 'ok';
+        if (state === 'running' || state === 'queued') return 'warn';
+        if (state === 'failed' || state === 'cancelled' || state === 'interrupted') return 'danger';
+        return '';
+      }
+
+      function renderTasks(tasks) {
+        const body = $('tasks');
+        body.replaceChildren();
+        show($('empty'), tasks.length === 0);
+        for (const task of tasks) {
+          const row = document.createElement('tr');
+
+          const idCell = document.createElement('td');
+          idCell.className = 'mono';
+          setText(idCell, task.taskId);
+
+          const stateCell = document.createElement('td');
+          const tag = document.createElement('span');
+          tag.className = 'tag ' + stateTag(task.state);
+          setText(tag, task.state);
+          stateCell.appendChild(tag);
+
+          const kindCell = document.createElement('td');
+          setText(kindCell, task.kind);
+
+          const goalCell = document.createElement('td');
+          setText(goalCell, task.goal);
+
+          const reasonCell = document.createElement('td');
+          reasonCell.className = 'muted';
+          setText(reasonCell, task.blockedReason || task.error || '—');
+
+          const artifactCell = document.createElement('td');
+          const names = (task.artifacts || []).map((a) => a && a.name).filter(Boolean);
+          setText(artifactCell, names.length ? names.join(', ') : '—');
+
+          const actionCell = document.createElement('td');
+          if (task.state === 'queued' || task.state === 'running') {
+            const button = document.createElement('button');
+            button.className = 'danger';
+            setText(button, '取消');
+            button.addEventListener('click', () => run({ type: 'cancel', taskId: task.taskId }));
+            actionCell.appendChild(button);
+          } else if (task.state === 'failed' || task.state === 'interrupted') {
+            const button = document.createElement('button');
+            setText(button, '重试');
+            button.addEventListener('click', () => run({ type: 'retry', taskId: task.taskId }));
+            actionCell.appendChild(button);
+          } else {
+            setText(actionCell, '—');
+          }
+
+          row.append(idCell, stateCell, kindCell, goalCell, reasonCell, artifactCell, actionCell);
+          body.appendChild(row);
+        }
+      }
+
+      async function load() {
+        const statusRes = await command({ type: 'status' });
+        if (statusRes.ok && statusRes.result) {
+          const status = statusRes.result;
+          const running = $('status-running');
+          setText(running, status.running ? '运行中' : '已停止');
+          running.className = 'tag ' + (status.running ? 'ok' : 'danger');
+          show($('status-paused'), Boolean(status.paused));
+          setText($('status-executor'), 'executor ' + (status.executor || '—'));
+          setText($('status-device'), '设备 ' + (status.deviceId || '—'));
+          setText(
+            $('status-counts'),
+            `排队 ${status.queued ?? 0} · 执行中 ${status.runningTasks ?? 0} · 已完成 ${status.finished ?? 0}` +
+              (status.lateResultsDropped ? ` · 迟到结果已丢弃 ${status.lateResultsDropped}` : ''),
+          );
+          const note = $('executor-note');
+          show(note, Boolean(status.executorReason));
+          setText(note, status.executorReason || '');
+          $('pause').textContent = status.paused ? '继续后台' : '暂停后台';
+        } else {
+          setText($('error-note'), `status: ${statusRes.error || 'unknown'}`);
+          show($('error-note'), true);
+        }
+
+        const listRes = await command({ type: 'list' });
+        if (listRes.ok && listRes.result && Array.isArray(listRes.result.tasks)) {
+          renderTasks(listRes.result.tasks);
+        } else {
+          renderTasks([]);
+          setText($('error-note'), `list: ${listRes.error || 'unknown'}${listRes.detail ? ' — ' + listRes.detail : ''}`);
+          show($('error-note'), true);
+        }
+      }
+
+      async function run(payload) {
+        const res = await command(payload);
+        if (!res.ok) {
+          setText($('error-note'), `${res.error || 'command failed'}${res.detail ? ' — ' + res.detail : ''}`);
+          show($('error-note'), true);
+        } else {
+          show($('error-note'), false);
+        }
+        await load();
+      }
+
+      $('refresh').addEventListener('click', () => load());
+      $('pause').addEventListener('click', async () => {
+        const statusRes = await command({ type: 'status' });
+        const paused = Boolean(statusRes.ok && statusRes.result && statusRes.result.paused);
+        await run({ type: paused ? 'resume' : 'pause' });
+      });
+      $('stop').addEventListener('click', () => run({ type: 'stop' }));
+      $('reconnect').addEventListener('click', () => {
+        location.href = serverUrl;
+      });
+      $('quit').addEventListener('click', () => {
+        if (!bridge) return;
+        void bridge.quitApp();
+      });
+      $('submit').addEventListener('click', async () => {
+        const goal = $('goal').value.trim();
+        if (!goal) {
+          setText($('error-note'), '请填写任务目标');
+          show($('error-note'), true);
+          return;
+        }
+        const taskId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await run({ type: 'submit', taskId, goal, kind: $('kind').value, toolsets: ['document'] });
+        $('goal').value = '';
+      });
+
+      if (!bridge) {
+        setText($('error-note'), '本机 Agent 桥不可用：该页面必须由 ChatAgent 桌面客户端打开。');
+        show($('error-note'), true);
+      }
+      void load();
+      setInterval(() => void load(), 3000);
+    </script>
+  </body>
+</html>

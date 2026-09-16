@@ -274,6 +274,15 @@ function registerHostIpc(serverUrl) {
     app.quit();
     return { ok: true };
   });
+
+  // Open the bundled offline workbench. No target is accepted from the page.
+  ipcMain.handle('chatagent:workbench:open', (event) => {
+    if (!isTrustedSender(event)) {
+      return { ok: false, error: 'untrusted_sender' };
+    }
+    showLocalWorkbench(serverUrl);
+    return { ok: true };
+  });
 }
 
 function createTray(serverUrl) {
@@ -284,6 +293,7 @@ function createTray(serverUrl) {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: '显示主窗口', click: () => showMainWindow(serverUrl) },
+        { label: '打开本机工作台（不依赖服务器）', click: () => showLocalWorkbench(serverUrl) },
         { type: 'separator' },
         {
           // Same single shutdown path as every other quit route.
@@ -310,6 +320,23 @@ function showMainWindow(serverUrl) {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+/**
+ * Gate 7A.2 — the offline workbench: a page shipped inside the app that talks to
+ * the local host through the same narrow bridge as the web workbench. It works
+ * with the organization server unreachable, which is the whole point of the
+ * on-device agent.
+ */
+function showLocalWorkbench(serverUrl) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    showMainWindow(serverUrl);
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    void mainWindow.loadFile('workbench.html', { query: { server: serverUrl } });
+  }
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();

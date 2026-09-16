@@ -50,6 +50,13 @@
 - 外链改造为解析后的协议白名单（`http:`/`https:`/`mailto:`）。
 - `HermesProcessAdapter` 中止/超时时用 `taskkill /PID <child> /T /F` 清理**自有**子进程树（只针对本应用 spawn 的 pid），避免遗留 python/浏览器子进程。
 
+### Gate 7A.2 断网本机工作台（新增交付）
+
+- 新增 `apps/desktop/workbench.html`：随包提供的本机受信工作台，`file://` 加载、严格 CSP（`default-src 'none'`，无网络、无远程资源），只经既有 preload 窄桥与 Host 通信；Host 返回的字符串一律用 `textContent` 渲染，不拼 HTML。
+- 能力：本机状态（设备 / executor / fake 原因 / 排队与执行中计数 / 迟到结果丢弃计数）、任务列表（状态、说明、产物）、提交文档任务、取消与重试、暂停/继续、停止主机、退出（停止后台 Agent）、返回聊天服务。
+- `error.html` 增加“打开本机工作台”入口；托盘菜单增加“打开本机工作台（不依赖服务器）”；主进程新增 `chatagent:workbench:open`，不接受页面传入的位置。
+- 服务器不可达时不再只有错误页：文档任务可提交、查看、取消、重试；副作用任务因拿不到委托/审批而被拒绝并显示原因。
+
 ## 证据
 
 ```text
@@ -59,16 +66,19 @@ node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json      # exit 0
 node apps/web/node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p apps/web/tsconfig.json   # exit 0
 node apps/desktop/build-agent-host.mjs                        # 重新生成 agent-host.bundle.cjs
 node --check apps/desktop/main.cjs
+apps/desktop/node_modules/.bin/electron scripts/electron-workbench-check.cjs   # 11/11，真实 Electron
+apps/desktop/node_modules/.bin/electron scripts/electron-host-smoke.cjs        # 6/6，关窗常驻与重启恢复
 ```
 
 新增回归：`packages/agent-host/src/host-security.test.ts`（37 项，覆盖 H-01～H-06 的安全行为），`packages/agent-host/src/host.test.ts` 的授权用例改为注册表语义，`apps/web/src/views/SettingsView.test.ts` 增加阻塞原因/重试契约用例。
 
 ## 未完成 / 不在本轮
 
-- Gate 7A.2 剩余：组织服务不可达时的**本机受信工作台**（当前断线只看到错误页 + 期望远端页面），断网下的任务提交/产物查看仍待实现；托盘重开、退出清理、稳定 deviceId 已完成。
+- Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。
 - Gate 7A.3：真实 Hermes 上游（固定 tag/commit、uv 管理的 Python 运行时）与真实模型的安全办公闭环仍未验收；本机无 runtime/凭据，保持 BLOCKED，未用 fake 冒充。
-- 调研发现、尚未处理：Electron 39.8.x 已不在官方支持窗口（现行为 42/43/44），升级需重新打包与 E2E；远端工作台未使用独立 session 分区；未做 CSP 注入；任务库仍是 JSON（`node:sqlite` + WAL + 行级 CAS 是后续更稳的方向）；Windows 上“主进程被强杀”仍无法保证子进程全部回收（Job Object 需原生插件）。
+- 安装包未重打包：`workbench.html` 已加入 electron-builder `files`，但本轮未重跑 `electron-builder` 与打包后 exe 的 E2E。
+- 调研发现、尚未处理：Electron 39.8.x 已不在官方支持窗口（现行为 42/43/44），升级需重新打包与 E2E；远端工作台未使用独立 session 分区；未对远端页面注入 CSP；任务库仍是 JSON（`node:sqlite` + WAL + 行级 CAS 是后续更稳的方向）；Windows 上“主进程被强杀”仍无法保证子进程全部回收（Job Object 需原生插件）。
 
 ## 交付判断
 
-H-01～H-06 已按“安全行为”回归并可复现验证；Gate 7A 整体仍是**部分完成**，不得据此宣称本机工作台或真实 Hermes 已可用。
+H-01～H-06 已按“安全行为”回归并可复现验证；断网本机工作台在真实 Electron 下 11/11 通过。Gate 7A 仍**未整体完成**：真实 Hermes 安全办公闭环（7A.3）与 Host 侧持续回执同步未做，不得据此宣称本机 Agent 已可用于真实员工文件。

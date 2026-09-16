@@ -88,7 +88,9 @@ app.whenReady().then(async () => {
     );
 
     // "Reopen" = a fresh host reading the same store (as a relaunch would).
-    await host.stop('smoke_done');
+    // close() (not stop()) releases the single-writer lock so the relaunch can
+    // take the store over — mirroring the app's quit path.
+    await host.close('smoke_done');
     const host2 = makeHost(root);
     await host2.start();
     const recovered = await host2.list().then((tasks) => tasks.find((t) => t.taskId === taskId));
@@ -97,7 +99,7 @@ app.whenReady().then(async () => {
       recovered?.state === 'succeeded',
       `state=${recovered?.state}`,
     );
-    await host2.stop('smoke_done');
+    await host2.close('smoke_done');
   } catch (err) {
     console.log(`FAIL  smoke crashed — ${err.stack}`);
     results.push({ name: 'smoke', ok: false, detail: err.message });

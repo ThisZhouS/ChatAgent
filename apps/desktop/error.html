@@ -54,13 +54,21 @@
     <div class="card">
       <h1>无法连接到 ChatAgent 服务</h1>
       <p>请确认服务端已启动，地址为：<br /><code id="url"></code></p>
+      <p>组织服务不可达时，本机 Agent 仍然可以在本机工作台提交与查看文档任务。</p>
       <button onclick="retry()">重试连接</button>
+      <button onclick="openWorkbench()" style="background: #fff; color: #409eff; border: 1px solid #409eff">
+        打开本机工作台
+      </button>
     </div>
     <script>
       const url = new URLSearchParams(location.search).get('url') || 'http://localhost:8787';
       document.getElementById('url').textContent = url;
       function retry() {
         location.href = url;
+      }
+      function openWorkbench() {
+        // The main process decides what to load; the page passes no location.
+        void window.chatagent?.host?.openWorkbench();
       }
     </script>
   </body>

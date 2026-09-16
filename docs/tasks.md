@@ -174,7 +174,7 @@
 - [x] Gate 7A.1 / H-02：新增 `TrustedAuthorizationRegistry`；IPC 只传 `delegationId`/`approvalId` 引用（`.strict()` 拒绝内联委托/审批对象），校验时间/设备/Agent/能力/所有者/绑定委托/动作摘要，并在派发前复核。
 - [x] Gate 7A.1 / H-01、H-04：提交按 taskId 幂等，同 id 异载荷报 `idempotency_conflict`，重跑仅经显式 `retry`；记录带 `version`，`finish` 丢弃终态后的迟到结果并用 CAS 提交，取消立即写终态。
 - [x] Gate 7A.1 / H-03、H-05：落盘改为 write→fsync→rename 且错误抛给调用方（不再确认假成功）；JSON 任务库加独占锁文件（存活 pid 拒绝第二写者，死 pid/损坏/超 12h 可接管）配合 Electron 单实例锁，不扩展多进程服务。
-- [ ] Gate 7A.2：**剩余**组织服务不可达时的本机受信工作台（断网可提交/查看/取消本地任务）与 Host 侧持续回执同步、账号归属；关窗常驻、托盘重开、明确退出后停止并清理自有进程树、稳定 deviceId 已完成。
+- [x] Gate 7A.2：断网本机受信工作台（`apps/desktop/workbench.html`，严格 CSP、仅用窄桥、真实 Electron 11/11 验证）、关窗常驻、托盘重开、明确退出后停止并清理自有进程树、稳定 deviceId。**剩余**：Host 侧持续回执同步与断网账号归属核对。
 - [ ] Gate 7A.3：固定来源/版本/安装方式的 Hermes、显式模型配置与真实安全工具/文档验证；未达工具隔离前不接真实员工文件。
 - [ ] 技术债（2026-09-16 调研）：Electron 39.8.x 已出官方支持窗口（现行为 42/43/44），升级需重打包+E2E；远端工作台未用独立 session 分区、未注入 CSP；JSON 任务库可评估 `node:sqlite`(WAL)+行级 CAS；Windows 上主进程被强杀后的子进程回收需 Job Object/原生插件。
 

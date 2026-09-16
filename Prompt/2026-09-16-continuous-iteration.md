@@ -20,18 +20,18 @@
 ## 结果
 
 - 新增 `docs/iteration-2026-09-16-gate7a1-hardening.md`（本轮范围、变更、证据、未完成）。
-- 代码：`packages/agent-host/src/{authorization.ts,host.ts,store.ts,ipc.ts,types.ts,adapter.ts,index.ts}`、`apps/desktop/main.cjs`、`apps/web/src/views/SettingsView.vue`；回归 `host-security.test.ts`、`host.test.ts`、`SettingsView.test.ts`。
-- 只改文档与上述源码，未改服务端业务、未改依赖、未提交 Git、未运行真实模型。
-- 未决：Gate 7A.2 断网本机工作台、Gate 7A.3 真实 Hermes 验收；Electron 版本支持窗口、CSP/session 分区、JSON→SQLite 与 Job Object 清理列入后续评估。
+- 代码：`packages/agent-host/src/{authorization.ts,host.ts,store.ts,ipc.ts,types.ts,adapter.ts,index.ts}`、`apps/desktop/{main.cjs,preload.cjs,error.html,workbench.html,package.json}`、`apps/web/src/views/SettingsView.vue`；回归 `host-security.test.ts`、`host.test.ts`、`SettingsView.test.ts`，真实 Electron 校验 `scripts/electron-workbench-check.cjs`（断网工作台 11/11）与 `scripts/electron-host-smoke.cjs`（关窗常驻 6/6）。
+- 只改文档与上述源码；未改服务端业务、未加依赖、未调用真实模型；安装包重打包与 Electron 版本升级未做（记入技术债）。
+- 未决：Gate 7A.2 的 Host 侧持续回执同步与断网账号归属、Gate 7A.3 真实 Hermes 验收；Electron 支持窗口、CSP/session 分区、JSON→SQLite、Job Object 清理列入后续评估。
 
 ## 元数据
 
 | 项 | 值 |
 | --- | --- |
-| 受影响 package/符号 | `@chatagent/agent-host`：`LocalAgentHost.{submit,retry,cancel,stop,close,finish}`、`TrustedAuthorizationRegistry`、`computeActionDigest`、`JsonFileAgentHostStore.{compareAndSet,close,AgentHostStoreLockedError}`、`handleHostCommand`；`apps/desktop/main.cjs` 生命周期；`SettingsView.vue` 本机卡片 |
+| 受影响 package/符号 | `@chatagent/agent-host`：`LocalAgentHost.{submit,retry,cancel,stop,close,finish}`、`TrustedAuthorizationRegistry`、`computeActionDigest`、`JsonFileAgentHostStore.{compareAndSet,close,AgentHostStoreLockedError}`、`handleHostCommand`；`apps/desktop` 生命周期与 `workbench.html`；`SettingsView.vue` 本机卡片 |
 | 前置权限 | 本机任务默认许可；副作用任务需已登记委托＋已批准审批，且摘要与载荷一致；IPC 无授予命令 |
 | 数据分类 | 任务记录仅存目标/状态/产物哈希与授权引用快照，不含凭据、模型推理或员工文件原文 |
 | 是否外发 | 否；本轮不调用模型、不投递消息、不启动真实 Hermes |
 | 幂等/取消语义 | 同 id 同载荷幂等返回；同 id 异载荷 `idempotency_conflict`；取消立即写终态，迟到结果按 version CAS 丢弃 |
-| 测试 profile | 根 vitest 226、web vitest 40、tsc/vue-tsc 0；桌面 exe 打包与 E2E 本轮未重跑 |
-| 未验证边界 | 真实 Hermes+模型、断网本机工作台、干净安装、多设备并发、主进程被强杀后的子进程回收 |
+| 测试 profile | 根 vitest 226、web vitest 40、tsc/vue-tsc 0、Electron 校验 11/11 与 6/6；打包 exe 与 E2E 未重跑 |
+| 未验证边界 | 真实 Hermes+模型、断网账号归属与回执持续同步、干净安装、多设备并发、主进程被强杀后的子进程回收 |

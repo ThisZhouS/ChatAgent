@@ -16,5 +16,10 @@ contextBridge.exposeInMainWorld('chatagent', {
     command: (command) => ipcRenderer.invoke('chatagent:host', command),
     /** Stop the background agent, then quit the app (explicit, not window close). */
     quitApp: () => ipcRenderer.invoke('chatagent:host:quit-app'),
+    /**
+     * Load the bundled offline workbench into this window. Takes no argument: the
+     * page cannot ask the main process to open an arbitrary location.
+     */
+    openWorkbench: () => ipcRenderer.invoke('chatagent:workbench:open'),
   },
 });
