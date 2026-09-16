@@ -24,7 +24,19 @@ function resolveServerUrl() {
   const arg = process.argv.find((item) => item.startsWith('--server='));
   if (arg) return arg.slice('--server='.length);
 
-  if (process.env.CHATAGENT_SERVER_URL) return process.env.CHATAGENT_SERVER_URL;
+  if (process.env.CHATAGENT_SERVER_URL) {
+    // Only http(s) is a real remote workbench. A file:/javascript: URL here would
+    // make local files "the app origin" and hand them the host bridge.
+    try {
+      const parsed = new URL(process.env.CHATAGENT_SERVER_URL);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return process.env.CHATAGENT_SERVER_URL;
+      }
+      console.error(`[chatagent] refusing non-http server url: ${parsed.protocol}`);
+    } catch {
+      console.error('[chatagent] ignoring unparseable CHATAGENT_SERVER_URL');
+    }
+  }
 
   try {
     const config = JSON.parse(
@@ -157,6 +169,7 @@ let host = null;
 let deviceToken = '';
 let tray = null;
 let mainWindow = null;
+let trayUnavailable = false;
 
 // Single idempotent shutdown path shared by every quit route (tray, menu, IPC,
 // OS session end). Teardown is bounded: if the host cannot stop in time the app
@@ -297,7 +310,11 @@ function registerHostIpc(serverUrl) {
 
 function createTray(serverUrl) {
   try {
-    if (!fs.existsSync(TRAY_ICON)) return;
+    if (!fs.existsSync(TRAY_ICON)) {
+      // No tray means no way back to the window and no quit affordance.
+      trayUnavailable = true;
+      return;
+    }
     tray = new Tray(nativeImage.createFromPath(TRAY_ICON));
     tray.setToolTip('ChatAgent — 本机 Agent 后台运行中');
     tray.setContextMenu(
@@ -378,7 +395,8 @@ if (!hasSingleInstanceLock) {
       console.error('[chatagent] host failed to start:', err);
       const locked = err && err.code === 'agent_host_store_locked';
       const detail = locked
-        ? '本机任务库已被另一个 ChatAgent 进程占用，为避免两个调度器写同一份任务记录，后台 Agent 未启动。请关闭其它实例后重启。'
+        ? '本机任务库已被另一个 ChatAgent 进程占用，为避免两个调度器写同一份任务记录，后台 Agent 未启动。'
+          + `请关闭其它 ChatAgent 实例后重启。若确认没有其它实例在运行（例如上次异常退出），可删除锁文件后重试：${err.lockPath ?? '（任务库同名 .lock 文件）'}`
         : `后台 Agent 启动失败：${err && err.message ? err.message : String(err)}`;
       try {
         dialog.showErrorBox('ChatAgent', detail);
@@ -398,7 +416,13 @@ if (!hasSingleInstanceLock) {
   // the process (and in-flight tasks) alive; quitting is explicit and stops the
   // host first (see chatagent:host:quit-app / tray "退出").
   app.on('window-all-closed', () => {
-    // Intentionally not calling app.quit(): the local agent must keep running.
+    // Without a tray icon the user could never get back to the app, so closing
+    // the last window must quit rather than leave an invisible process behind.
+    if (trayUnavailable) {
+      app.quit();
+      return;
+    }
+    // Otherwise intentionally: the local agent keeps running behind the tray.
   });
 
   // Single shutdown path for every quit route: stop dispatching, cancel in-flight

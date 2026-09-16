@@ -145,7 +145,7 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       !TERMINAL_LOCAL_STATES.includes(record.state)
     ) {
       throw new Error(
-        `terminal_state_protected: task ${record.taskId} is ${previous.state} and cannot be re-queued`,
+        `terminal_state_protected: task ${record.taskId} is ${previous.state} and cannot be rewritten as ${record.state}`,
       );
     }
     const stored: LocalTaskRecord = {
@@ -261,8 +261,13 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     try {
       await this.persist();
     } catch (error) {
-      if (previous) this.records.set(taskId, previous);
-      else this.records.delete(taskId);
+      // Only undo OUR failed write. Another write may have landed in between
+      // (e.g. a retry of the same id), and rewinding it would silently lose a
+      // result the caller was already told succeeded.
+      if (this.records.get(taskId) === next) {
+        if (previous) this.records.set(taskId, previous);
+        else this.records.delete(taskId);
+      }
       throw error;
     }
   }
@@ -382,14 +387,15 @@ export class MemoryAgentHostStore implements AgentHostStore {
 
   async put(record: LocalTaskRecord): Promise<LocalTaskRecord> {
     const previous = this.records.get(record.taskId);
-    // Same rule as the file store: a stale snapshot must not resurrect finished work.
+    // Same rule as the file store: a stale snapshot must not resurrect finished
+    // work, nor rewrite one finished outcome as another.
     if (
       previous &&
       TERMINAL_LOCAL_STATES.includes(previous.state) &&
-      !TERMINAL_LOCAL_STATES.includes(record.state)
+      previous.state !== record.state
     ) {
       throw new Error(
-        `terminal_state_protected: task ${record.taskId} is ${previous.state} and cannot be re-queued`,
+        `terminal_state_protected: task ${record.taskId} is ${previous.state} and cannot be rewritten as ${record.state}`,
       );
     }
     const stored: LocalTaskRecord = {

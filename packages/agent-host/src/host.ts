@@ -172,7 +172,9 @@ export class LocalAgentHost {
       workRoot: this.options.workRoot,
       queued: tasks.filter((task) => task.state === 'queued').length,
       runningTasks: tasks.filter((task) => task.state === 'running').length,
-      finished: tasks.filter((task) => isTerminal(task.state)).length,
+      // `interrupted` is not terminal (it can be retried) but it is a finished
+      // outcome: without this it appeared in none of the counters.
+      finished: tasks.filter((task) => isTerminal(task.state) || task.state === 'interrupted').length,
       lateResultsDropped: this.lateResultsDropped,
       lastError: this.lastError,
     };
@@ -200,7 +202,7 @@ export class LocalAgentHost {
   async submit(input: LocalTaskInput): Promise<LocalTaskRecord> {
     this.assertOpen('submit');
     const existing = await this.options.store.get(input.taskId);
-    if (existing) return this.replayOrConflict(existing, input);
+    if (existing) return await this.replayOrConflict(existing, input);
 
     const timestamp = new Date(this.now()).toISOString();
     const toolsets = input.toolsets.length > 0 ? input.toolsets : ['document'];
@@ -292,7 +294,7 @@ export class LocalAgentHost {
       // the idempotency rule against the record that actually won.
       const winner = await this.options.store.get(input.taskId);
       if (!winner) throw new Error(`task store write failed: ${input.taskId} disappeared`);
-      return this.replayOrConflict(winner, input);
+      return await this.replayOrConflict(winner, input);
     }
     void this.tick();
     return stored;
@@ -304,7 +306,10 @@ export class LocalAgentHost {
    * the digest existed are compared by recomputing it from what was stored, so an
    * old row never becomes a permanent free pass.
    */
-  private replayOrConflict(existing: LocalTaskRecord, input: LocalTaskInput): LocalTaskRecord {
+  private async replayOrConflict(
+    existing: LocalTaskRecord,
+    input: LocalTaskInput,
+  ): Promise<LocalTaskRecord> {
     const incomingDigest = computeActionDigest({
       taskId: input.taskId,
       agentId: input.agentId || this.options.agentId,
@@ -326,6 +331,24 @@ export class LocalAgentHost {
         `idempotency_conflict: task ${input.taskId} already exists with a different payload`,
       );
     }
+    // A replay of a stored row that the current capability floor refuses (a row
+    // written by an older version) is reported as blocked, not handed back as
+    // runnable work waiting for a dispatcher that will refuse it anyway.
+    const refused = refuseCapabilities(existing.kind, existing.toolsets);
+    if (refused && !isTerminal(existing.state) && existing.state !== 'interrupted') {
+      const timestamp = new Date(this.now()).toISOString();
+      const blocked = await this.options.store.compareAndSet(existing.taskId, existing.version, {
+        ...existing,
+        state: 'failed',
+        blockedReason: refused,
+        error: refused,
+        summary: `未执行：${describeBlock(refused)}`,
+        finishedAt: timestamp,
+        updatedAt: timestamp,
+        lease: undefined,
+      });
+      return blocked ?? existing;
+    }
     return existing;
   }
 
@@ -340,6 +363,9 @@ export class LocalAgentHost {
     if (record.state !== 'failed' && record.state !== 'interrupted') return undefined;
     if (record.kind === 'side_effect') return undefined;
     if (record.attempts >= record.maxAttempts) return undefined;
+    // Same capability floor as submit/dispatch: never re-queue work the host
+    // would refuse to run.
+    if (refuseCapabilities(record.kind, record.toolsets)) return undefined;
 
     const timestamp = new Date(this.now()).toISOString();
     const stored = await this.options.store.compareAndSet(taskId, record.version, {
@@ -410,7 +436,11 @@ export class LocalAgentHost {
         continue;
       }
       if (!claimed) continue; // somebody else owns it
-      void this.execute(claimed, holder);
+      // Fire and forget, but never unhandled: a store failure inside execute()
+      // (including its terminal write) must land in lastError, not end the process.
+      void this.execute(claimed, holder).catch((error) => {
+        this.lastError = error instanceof Error ? error.message : String(error);
+      });
     }
   }
 
@@ -430,11 +460,15 @@ export class LocalAgentHost {
       },
       { deviceId: this.options.deviceId, agentId: this.options.agentId, now: this.now() },
     );
-    if (!recheck.ok) {
+    // The capability floor runs again here: a row stored by an older version (or
+    // edited on disk) must not reach the executor just because submit() never saw it.
+    const refusedCapability = refuseCapabilities(record.kind, record.toolsets);
+    if (!recheck.ok || refusedCapability) {
+      const reason: BlockReason = refusedCapability ?? (recheck.ok ? 'capability_not_granted' : recheck.reason);
       await this.finish(record, 'failed', {
-        blockedReason: recheck.reason,
-        error: recheck.reason,
-        summary: `执行前复核未通过：${describeBlock(recheck.reason)}`,
+        blockedReason: reason,
+        error: reason,
+        summary: `执行前复核未通过：${describeBlock(reason)}`,
       });
       await this.options.store.release(record.taskId, holder);
       return;
@@ -530,7 +564,9 @@ export class LocalAgentHost {
   ): Promise<void> {
     const current = await this.options.store.get(record.taskId);
     if (!current) return;
-    if (isTerminal(current.state)) {
+    // `interrupted` counts as finished here: its outcome is already reported as
+    // unknown, so a late result must not silently upgrade it to succeeded.
+    if (isTerminal(current.state) || current.state === 'interrupted') {
       this.lateResultsDropped += 1;
       return;
     }
@@ -571,7 +607,7 @@ function delay(ms: number): Promise<void> {
  * else (messaging, web, terminal, code execution, the `*` wildcard) is either a
  * side effect that needs a delegation + approval, or is refused outright.
  */
-const DOCUMENT_TOOLSETS = new Set(['document', 'document.read']);
+const DOCUMENT_TOOLSETS = new Set(['document', 'document.read', 'file']);
 const FORBIDDEN_TOOLSETS = new Set([
   '*',
   'terminal',
@@ -591,6 +627,7 @@ export function refuseCapabilities(
   kind: LocalTaskRecord['kind'],
   toolsets: string[],
 ): BlockReason | undefined {
+  if (!Array.isArray(toolsets)) return 'capability_not_granted';
   const forbidden = toolsets.find((toolset) => FORBIDDEN_TOOLSETS.has(toolset));
   if (forbidden) return 'capability_not_granted';
   if (kind !== 'document') return undefined; // side effects are gated by delegation

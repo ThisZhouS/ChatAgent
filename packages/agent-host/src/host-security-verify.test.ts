@@ -371,3 +371,157 @@ describe('V-06 approvals are single-use', () => {
     await host.stop();
   });
 });
+
+describe('V-07 the capability floor and the write chain hold everywhere', () => {
+  it('refuses a legacy row that reached the store before the floor existed', async () => {
+    const root = await makeRoot();
+    const calls: string[][] = [];
+    const inner = new FakeHermesAdapter({ durationMs: 10 });
+    const spy: HermesAdapter = {
+      kind: inner.kind,
+      async run(input) {
+        calls.push(input.toolsets);
+        return inner.run(input);
+      },
+    };
+    const { host, store } = makeHost({ workRoot: root, adapter: spy });
+    await host.start();
+    // Exactly the row shape the pre-fix version wrote: document kind, external toolset.
+    const legacy = await store.createIfAbsent!.call(store, {
+      taskId: 'legacy_external',
+      deviceId: DEVICE,
+      agentId: AGENT,
+      goal: '旧版本写入的行',
+      kind: 'document',
+      state: 'queued',
+      version: 1,
+      workDir: root,
+      toolsets: ['web'],
+      artifacts: [],
+      attempts: 0,
+      maxAttempts: 2,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    expect(legacy).toBeTruthy();
+    await host.tick();
+    await waitFor(async () => (await host.get('legacy_external'))?.state === 'failed');
+    const record = await host.get('legacy_external');
+    expect(record?.blockedReason).toBe('capability_not_granted');
+    expect(calls).toEqual([]);
+    // Retry must not put it back in the queue either.
+    expect(await host.retry('legacy_external')).toBeUndefined();
+    // A replay of the stored row reports it as blocked instead of handing back
+    // runnable-looking work that the dispatcher would refuse anyway.
+    const replay = await host.submit({
+      taskId: 'legacy_external',
+      agentId: AGENT,
+      goal: '旧版本写入的行',
+      kind: 'document',
+      workDir: root,
+      toolsets: ['web'],
+    });
+    expect(replay.state).toBe('failed');
+    expect(replay.blockedReason).toBe('capability_not_granted');
+    await host.stop();
+  });
+
+  it('does not rewind a later successful write when an older write fails', async () => {
+    const root = await makeRoot();
+    const inner = new JsonFileAgentHostStore(join(root, 'tasks.json'));
+    const flags = { failNext: false };
+    const store: AgentHostStore = {
+      load: () => inner.load(),
+      list: () => inner.list(),
+      get: (taskId) => inner.get(taskId),
+      async put(record) {
+        if (flags.failNext) {
+          flags.failNext = false;
+          throw new Error('EPERM: transient rename failure');
+        }
+        return inner.put(record);
+      },
+      createIfAbsent: (record) => inner.createIfAbsent!(record),
+      compareAndSet: (taskId, expectedVersion, next) => inner.compareAndSet(taskId, expectedVersion, next),
+      claim: (taskId, holder, leaseMs) => inner.claim(taskId, holder, leaseMs),
+      release: (taskId, holder) => inner.release(taskId, holder),
+      recoverInterrupted: () => inner.recoverInterrupted(),
+      flush: () => inner.flush(),
+      close: () => inner.close(),
+    };
+    const base = {
+      taskId: 'rewind_guard',
+      deviceId: DEVICE,
+      agentId: AGENT,
+      goal: '写失败不得回退后续写入',
+      kind: 'document' as const,
+      state: 'queued' as const,
+      version: 1,
+      workDir: root,
+      toolsets: ['document'],
+      artifacts: [],
+      attempts: 0,
+      maxAttempts: 2,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const first = await store.put(base);
+    flags.failNext = true;
+    await expect(store.put({ ...first, goal: '失败的写入' })).rejects.toThrow(/EPERM/);
+    const second = await store.put({ ...first, goal: '成功的写入' });
+    // The failed write must not roll the map back over the successful one.
+    expect((await store.get('rewind_guard'))?.goal).toBe('成功的写入');
+    expect((await store.get('rewind_guard'))?.version).toBe(second.version);
+    await store.close();
+  });
+
+  it('counts interrupted tasks as finished instead of hiding them', async () => {
+    const root = await makeRoot();
+    const { host } = makeHost({ workRoot: root });
+    await host.start();
+    const record = await host.submit(baseTask({ kind: 'side_effect', toolsets: ['messages.send'] }));
+    expect(record.state).toBe('failed');
+    const status = await host.status();
+    expect(status.finished).toBeGreaterThan(0);
+    await host.stop();
+  });
+
+  it('never rejects from the background execution chain', async () => {
+    const root = await makeRoot();
+    const inner = new MemoryAgentHostStore();
+    const flags = { failRunning: true };
+    const store: AgentHostStore = {
+      load: () => inner.load(),
+      list: () => inner.list(),
+      get: (taskId) => inner.get(taskId),
+      put: (record) => inner.put(record),
+      createIfAbsent: (record) => inner.createIfAbsent!(record),
+      async compareAndSet(taskId, expectedVersion, next) {
+        if (flags.failRunning && next.state === 'running') {
+          flags.failRunning = false;
+          throw new Error('EPERM: transient store write failure');
+        }
+        return inner.compareAndSet(taskId, expectedVersion, next);
+      },
+      claim: (taskId, holder, leaseMs) => inner.claim(taskId, holder, leaseMs),
+      release: (taskId, holder) => inner.release(taskId, holder),
+      recoverInterrupted: () => inner.recoverInterrupted(),
+      flush: () => inner.flush(),
+      close: () => inner.close(),
+    };
+    const { host } = makeHost({ workRoot: root, store });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await host.start();
+      await host.submit(baseTask());
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      await host.stop();
+    }
+    expect(unhandled, 'a store failure must not escape as an unhandled rejection').toEqual([]);
+    expect((await host.status()).lastError).toContain('EPERM');
+  });
+});
