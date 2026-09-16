@@ -22,6 +22,7 @@
 - 新增 `docs/iteration-2026-09-16-gate7a1-hardening.md`（本轮范围、变更、证据、未完成）。
 - 代码：`packages/agent-host/src/{authorization.ts,host.ts,store.ts,ipc.ts,types.ts,adapter.ts,index.ts}`、`apps/desktop/{main.cjs,preload.cjs,error.html,workbench.html,package.json}`、`apps/web/src/views/SettingsView.vue`；回归 `host-security.test.ts`、`host.test.ts`、`SettingsView.test.ts`，真实 Electron 校验 `scripts/electron-workbench-check.cjs`（断网工作台 11/11）与 `scripts/electron-host-smoke.cjs`（关窗常驻 6/6）。
 - 只改文档与上述源码；未改服务端业务、未加依赖、未调用真实模型；安装包重打包与 Electron 版本升级未做（记入技术债）。
+- 对抗性复核（独立子代理，34 项探针）：复现 11 项攻击，全部修复并逐条加回归；复跑后 11/11 攻击失败、23 项 FIX-HOLDS 仍通过，报告存档 `docs/review-2026-09-16-adversarial-verification.md`；子代理已结束，无后台任务残留。
 - 未决：Gate 7A.2 的 Host 侧持续回执同步与断网账号归属、Gate 7A.3 真实 Hermes 验收；Electron 支持窗口、CSP/session 分区、JSON→SQLite、Job Object 清理列入后续评估。
 
 ## 元数据
