@@ -34,8 +34,27 @@
 - `@chatagent/document`：纯处理库 + 工具工厂，不感知 IM。
 - `@chatagent/im-gateway`：只做消息规范化与收发抽象，不感知文档/模型；**默认不启用任何第三方通道**（`CHATAGENT_ENABLE_EXTERNAL_CHANNELS=false`）。
 - `@chatagent/task-engine`：只做任务编排与持久化，不感知具体工具。
-- `apps/server`：唯一的组合根（composition root）。
-- `apps/web`：仅通过 `/api` 与 SSE 消费服务端能力。
+- `@chatagent/agent-host`：设备端主机（本机任务生命周期、租约调度、可信授权判定、单 writer 任务库、执行器适配）。只依赖 contracts 与自身，不依赖 server/IM/文档；对模型与 Hermes 的认识封在 `adapter.ts`。
+- `apps/server`：服务端组合根（composition root）：账号/消息/任务/IM/文档/Hermes 运行时。
+- `apps/web`：仅通过 `/api` 与 SSE 消费服务端能力；桌面端额外通过 preload 窄桥访问本机主机（`window.chatagent.host`）。
+- `apps/desktop`：桌面组合根：Electron 主进程创建并持有本机主机，按 ADR-0003 关窗常驻、明确退出即停止；断网时用包内 `workbench.html` 继续管理本机任务。
+
+## 本机 Agent 主机（设备端第二条链路）
+
+```text
+渲染层（服务端工作台 SettingsView / 离线 workbench.html）
+   │  只传 delegationId / approvalId 引用 + 受控命令（status/list/submit/cancel/retry/pause/resume/stop）
+   ▼  preload 窄桥 → ipcMain('chatagent:host')（发送方校验；令牌不出主进程）
+Electron 主进程（唯一组合根，也是唯一授权登记处）
+   ▼
+@chatagent/agent-host
+   ├─ TrustedAuthorizationRegistry：委托/审批只由受信路径登记，执行前复核，审批单次使用
+   ├─ LocalAgentHost：幂等提交（同 id 异载荷 idempotency_conflict）、终态 CAS、显式 retry、有界停止
+   ├─ JsonFileAgentHostStore：write→fsync→rename、版本 CAS、单 writer 锁（存活 pid 独占）
+   └─ HermesAdapter：真实 Hermes 子进程（工具集白名单、超时/中止按 pid 清理自有进程树）或离线 FakeHermesAdapter（status 明示 fake）
+```
+
+服务端 TaskEngine 仍是业务账本；本机主机记录"设备上真实发生的事"。两者靠回执同步衔接：当前由页面触发 best-effort 上传，Host 侧持续同步仍是 Gate 7A.2 的未完成项。
 
 ## 运行时设计
 
