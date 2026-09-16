@@ -156,5 +156,5 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 - 依赖 CVE 未扫描（本机 registry 无 audit 端点）。
 - 任务恢复没有租约/多实例互斥；JSON 存储为单进程写入。
 - 本机 Agent 的 Gate 7A.3（真实 Hermes + 真实模型的安全办公闭环）未验收；打包 exe 需重跑 `pnpm build:desktop`（本机无网络，electron-builder 无法下载依赖）。
-- UI 证据：`pnpm build` + 组件测试（20 例）+ **真实客户端 E2E 34/34**（`scripts/ui-e2e.mjs` 经 CDP 驱动打包 exe，含截图与 WCAG 对比度实测）；CSP 的实际拦截效果未构造 XSS 载荷验证。
+- UI 证据：`pnpm build` + 组件测试（20 例）+ **真实客户端 E2E 34/34**（`scripts/ui-e2e.mjs` 经 CDP 驱动打包 exe，含截图与 WCAG 对比度实测）；CSP 的实际拦截效果已用内联脚本载荷验证（`scripts/electron-csp-check.mjs` 5/5：注入策略下内联脚本不执行、同源外链脚本正常；服务端自带 CSP 不被覆盖），完整 XSS 利用链未构造。
 - 详细清单见 `docs/security-checklist.md` 第 7 节与 `docs/tasks.md` 的未完成项。

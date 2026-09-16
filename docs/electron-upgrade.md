@@ -45,4 +45,4 @@ Electron 39 于 **2026-05-05 结束支持**（来源：[endoflife.date/electron]
 - 该分区上的权限请求与权限检查一律拒绝；
 - `status().shell` 暴露 `partition / remoteResponses / cspInjected / cspFromServer`，便于验收与排障（真实 Electron 检查已断言：stub 服务无 CSP → 注入 1 次、页面仍正常渲染）。
 
-仍未验证：注入的 CSP 对**真实 XSS 载荷**的拦截效果（需要构造攻击页面，属于既有未完成项）。
+拦截效果已验证：`scripts/electron-csp-check.mjs`（真实 Electron，5/5）证明服务端不发 CSP 时注入的策略**真的拦住**页面内联脚本、同时不误伤同源外链脚本；服务端自带 CSP 时桌面不覆盖（内联允许仍按服务端的策略生效）。仍未覆盖的是完整 XSS 利用链（含被信任第三方脚本），不要把它当作"XSS 已全面防护"。

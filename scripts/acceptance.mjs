@@ -111,6 +111,7 @@ if (!skipE2e) {
       ['local agent quit path (Electron)', 'electron-quit-check.mjs'],
       ['local receipt sync (Electron)', 'electron-receipt-sync-check.mjs'],
       ['single-writer lock (Electron)', 'electron-lock-check.mjs'],
+      ['remote page CSP (Electron)', 'electron-csp-check.mjs'],
     ]) {
       steps.push(() =>
         run(label, electronBin, [join(root, 'scripts', script)], {
