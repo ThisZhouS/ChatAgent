@@ -91,11 +91,11 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 本机 Agent 未验证的边界：真正同时的多进程写、两个安装共享同一 `CHATAGENT_HOST_ROOT`、主进程被强杀后的子进程回收（需要 Job Object/原生插件）。
 - 子进程回收已实测（不再列为未验证）：`packages/agent-host/src/process-tree.test.ts` 5 例真实进程——两级子进程全部结束、无关进程存活、无 pid 时回退 `SIGKILL`、`taskkill` 无法启动时回退、win32 分支收到正确 pid。
 - 单 writer 锁是"防两个调度器写同一份任务记录"的互斥，**不是信任边界**：本机任何进程改写 `tasks.json` 都能绕过所有主机不变量（派发时的能力下限会拦下被改写的行，但文件本身没有签名/校验）。
-- 持久化行在 `load()` 时不做迁移/校验（旧版本的 `toolsets` 会被信任）；补偿手段是派发前复核能力下限，并在重放时把不合格的行标记为 `failed`。
-- `interrupted` 语义特殊：它不是终态（可重试），但已计入 `finished` 且不再接受迟到结果覆盖；对副作用任务它不可重试（需要重新授权）。
+- 持久化行在 `load()` 时会校验/隔离（第三轮验证后）：缺 `taskId`/未知 kind/未知 state/空 `workDir`/**非数组 `toolsets`** 的行被隔离为 `failed` + `invalid_persisted_row`，**不可执行也不可 `retry()`**（F1/F7 已修并回归）。
+- `interrupted` 语义特殊：它不是终态（可重试），但已计入 `finished` 且不再接受迟到结果覆盖；对副作用任务它不可重试（需要重新授权）。保留策略**不再**把它当终态淘汰（F4 已修），写入期淘汰数通过 `status().storeIntegrity.pruned` 上报。
 - 授权登记表驻留内存：桌面重启后本机无法自我授权，副作用任务会以 `delegation_missing` fail-closed，必须由组织服务重新下发委托或本地明确同意。
 - 缺少 `createIfAbsent` 原语的自定义 store 仍有同 id 竞态窗口（内置两个 store 都已实现，回退路径新增写后复核以缩小窗口）。
-- 陈旧锁若其 pid 被无关进程复用，最长可阻塞启动 30 天（提示里给出锁文件路径，需人工删除）。
+- 锁只看存活、不再看年龄：存活 pid 的锁永不自动接管（F5 已修），因此 pid 被无关进程复用时**无人值守会一直拒绝启动**，需要人工删除锁文件或使用桌面上的显式接管确认（`lock-takeover.ts`，写 `lock-audit.jsonl`）。
 - `close()` 超过 8s 的有界停机到期后仍然退出：极端情况下会留下未清理的执行器与锁文件，下次启动按陈旧锁接管。
 - 桌面设备令牌在现有接线中是纵深防御（主进程同时充当校验方与出示方），真正的控制是 IPC 发送方校验（frame URL + 主进程单实例）；嵌入到其他宿主时需要重新评估。
 - 真实浏览器 E2E 已由 `scripts/ui-e2e.mjs`（Electron/CDP，34/34）覆盖；CSP 的**拦截效果**已用内联脚本载荷验证（`scripts/electron-csp-check.mjs` 5/5），完整 XSS 利用链未构造。
@@ -104,3 +104,11 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 管理员 break-glass：管理员可读本组织**全部会话与文件**（既有设计），读取「未分享给自己」的文件会写 `file.admin_access` 审计，便于事后追溯。
 - 撤回的边界：撤回解除消息引用与所有读取面（历史/搜索/预览/模型上下文/任务快照），但**不删除**底层上传文件（本人与管理员仍可下载）与 AI 已发出的引用回复；如需彻底删除，应另做保留策略/文件擦除。
 - 没有管理员「踢人」接口：成员移除目前只有自助退出；如需踢人，应实现显式、写审计的移除操作。
+
+### 第三轮对抗性验证（2026-09-16 晚）后的新增结论
+
+- 能力下限 fail-closed：`document` 任务的 `toolsets` 为空列表、含空白项或非数组时**一律拒绝**（`capability_not_granted`），不再“缺省即默认 capability”；可信提交面（IPC）省略 `toolsets` 时仍按契约默认 `['document']`。被种在磁盘上的空能力行按 `capability_not_granted` 拒绝且不可重试。
+- 隔离的坏行是“只读的墓碑”：既不交给执行器，也不能通过 `retry()`/IPC `retry` 复活（否则等于绕过 `invalid_persisted_row`）。
+- 回执同步的三条硬约束：去重键必须是“版本+内容”指纹（`updatedAt` 同毫秒会让最终结果永不镜像）；单次请求必须 ≤ 契约上限（100 条，超出即永久 400）；产物必须符合共享契约（无 `sha256` 的产物丢弃、字段截断、非法 state 跳过），否则一条坏记录会毒死整批。
+- 保留策略只淘汰 `succeeded`/`failed`/`cancelled`；`interrupted`（可重试）与进行中的行永不淘汰，且淘汰数量必须可观测。
+- 锁的接管只看“持有者是否存活”，年龄不是接管理由；歧义情形必须由人确认并留审计。

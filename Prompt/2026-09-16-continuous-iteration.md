@@ -59,3 +59,10 @@
 第二时间窗新增/修改的可执行证据：`scripts/electron-receipt-sync-check.mjs`、`scripts/electron-lock-check.mjs`、`scripts/electron-csp-check.mjs`（均接入 `scripts/acceptance.mjs`），以及 `packages/agent-host/src/{record-integrity.ts,process-tree.ts,lock-takeover.ts,retention.ts}` 与其测试。
 
 仍未完成（不得声称已完成）：Gate 7A.3（真实 Hermes + 真实模型的安全办公闭环）、Windows Job Object 回收、Electron 39→42/43/44 升级（本机无外网，二进制无法下载）、打包 exe 重跑与打包后 E2E、完整 XSS 利用链。
+
+### 补充轮次（第十时间窗收尾：⑭⑮）
+
+| 轮次 | 主题 | 关键证据 |
+| --- | --- | --- |
+| ⑭ | **列表 IPC 有界化与倒序**（`limit` 1..500 默认 200、最新优先、返回 `total`，UI 说明“本机共 N 条、此处显示最近 M 条”） | `host-security.test.ts` H-06 新增断言、`SettingsView.test.ts` 40 通过 |
+| ⑮ | **第三轮对抗性验证的 7 项发现（F1–F7）全部修复**：隔离行不可重试/不可执行、回执按版本指纹去重、回执分块 ≤100、保留策略不淘汰 `interrupted` 并上报淘汰数、锁不再按年龄偷存活进程的锁、回执产物符合契约、能力下限 fail-closed | 复验证据见 `docs/verification-2026-09-16-round3-findings.md`；根套件 30 文件 / 296 用例、web 40、Electron 回执 19/19 与冒烟 6/6 |

@@ -72,6 +72,7 @@ ChatAgent/
 │   ├── review-2026-09-16-adversarial-verification.md 独立对抗性复核：11 项攻击复现→修复→复跑失效
 │   ├── review-2026-09-16-adversarial-verification-round2.md 第二轮复核：12 项发现，7 项已修
 │   ├── iteration-2026-09-16-gate7a1-hardening.md  H-01～H-06 加固、桌面生命周期收敛与第四～九轮（回执同步/分区/进程树/锁接管/CSP/保留策略）
+│   ├── verification-2026-09-16-round3-findings.md  第三轮对抗性验证的 7 项发现（F1–F7）与修复复验证据
 │   ├── electron-upgrade.md                  Electron 支持窗口与升级预研（39 已 EOL，含 node:sqlite 实测结论）
 │   └── acceptance-guide.md                 10 分钟人工验收指南
 ├── Prompt/              原始 Prompt 留痕
