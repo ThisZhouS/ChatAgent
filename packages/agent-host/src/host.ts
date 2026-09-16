@@ -141,6 +141,16 @@ export class LocalAgentHost {
     await this.options.store.close();
   }
 
+  /**
+   * A closed host released the store lock, so it must not accept work any more:
+   * writing after close() would clobber whoever holds the lock now.
+   */
+  private assertOpen(operation: string): void {
+    if (this.closed) {
+      throw new Error(`host_closed: the agent host is closed and refuses ${operation}`);
+    }
+  }
+
   pause(): void {
     this.paused = true;
   }
@@ -188,25 +198,9 @@ export class LocalAgentHost {
    * so the UI can explain why nothing ran.
    */
   async submit(input: LocalTaskInput): Promise<LocalTaskRecord> {
+    this.assertOpen('submit');
     const existing = await this.options.store.get(input.taskId);
-    if (existing) {
-      // Same id + different payload is a caller bug (or an attack): silently
-      // returning the old task would hide both. Reject it, per the idempotency
-      // rule that a key is only reusable for the *same* request.
-      const incomingDigest = computeActionDigest({
-        taskId: input.taskId,
-        agentId: input.agentId || this.options.agentId,
-        kind: input.kind,
-        goal: input.goal,
-        toolsets: input.toolsets.length > 0 ? input.toolsets : ['document'],
-      });
-      if (existing.actionDigest !== undefined && existing.actionDigest !== incomingDigest) {
-        throw new Error(
-          `idempotency_conflict: task ${input.taskId} already exists with a different payload`,
-        );
-      }
-      return existing;
-    }
+    if (existing) return this.replayOrConflict(existing, input);
 
     const timestamp = new Date(this.now()).toISOString();
     const toolsets = input.toolsets.length > 0 ? input.toolsets : ['document'];
@@ -249,8 +243,19 @@ export class LocalAgentHost {
       },
       { deviceId: this.options.deviceId, agentId: this.options.agentId, now: this.now() },
     );
+    // Capability floor: `document` is the no-side-effect kind, so it may only ask
+    // for local document toolsets. Without this a caller could label an
+    // external-effect toolset (web/terminal/… or the `*` wildcard) as a document
+    // task and skip delegation/approval entirely.
+    const refused = refuseCapabilities(input.kind, toolsets);
 
-    if (!decision.ok) {
+    if (refused) {
+      record.state = 'failed';
+      record.blockedReason = refused;
+      record.error = refused;
+      record.summary = `未执行：${describeBlock(refused)}`;
+      record.finishedAt = timestamp;
+    } else if (!decision.ok) {
       record.state = 'failed';
       record.blockedReason = decision.reason;
       record.error = decision.reason;
@@ -269,9 +274,12 @@ export class LocalAgentHost {
       }
     }
 
-    let stored: LocalTaskRecord;
+    let stored: LocalTaskRecord | undefined;
     try {
-      stored = await this.options.store.put(record);
+      // Create-if-absent, so two concurrent submits of one id cannot both win.
+      stored = this.options.store.createIfAbsent
+        ? await this.options.store.createIfAbsent(record)
+        : await this.options.store.put(record);
     } catch (error) {
       // H-03: a task that could not be written to disk is never acknowledged as
       // accepted — the caller must see the failure instead of a phantom task.
@@ -279,8 +287,46 @@ export class LocalAgentHost {
       this.lastError = `store_write_failed: ${message}`;
       throw new Error(`task store write failed: ${message}`);
     }
+    if (!stored) {
+      // Somebody else created this id between the read and the write: fall back to
+      // the idempotency rule against the record that actually won.
+      const winner = await this.options.store.get(input.taskId);
+      if (!winner) throw new Error(`task store write failed: ${input.taskId} disappeared`);
+      return this.replayOrConflict(winner, input);
+    }
     void this.tick();
     return stored;
+  }
+
+  /**
+   * Idempotency rule for a taskId that already exists: the same request is
+   * replayed unchanged, a different payload is rejected. Records written before
+   * the digest existed are compared by recomputing it from what was stored, so an
+   * old row never becomes a permanent free pass.
+   */
+  private replayOrConflict(existing: LocalTaskRecord, input: LocalTaskInput): LocalTaskRecord {
+    const incomingDigest = computeActionDigest({
+      taskId: input.taskId,
+      agentId: input.agentId || this.options.agentId,
+      kind: input.kind,
+      goal: input.goal,
+      toolsets: input.toolsets.length > 0 ? input.toolsets : ['document'],
+    });
+    const storedDigest =
+      existing.actionDigest ??
+      computeActionDigest({
+        taskId: existing.taskId,
+        agentId: existing.agentId,
+        kind: existing.kind,
+        goal: existing.goal,
+        toolsets: existing.toolsets,
+      });
+    if (storedDigest !== incomingDigest) {
+      throw new Error(
+        `idempotency_conflict: task ${input.taskId} already exists with a different payload`,
+      );
+    }
+    return existing;
   }
 
   /**
@@ -288,6 +334,7 @@ export class LocalAgentHost {
    * they need a fresh approval, which means a new submit with a new approval id.
    */
   async retry(taskId: string): Promise<LocalTaskRecord | undefined> {
+    this.assertOpen('retry');
     const record = await this.options.store.get(taskId);
     if (!record) return undefined;
     if (record.state !== 'failed' && record.state !== 'interrupted') return undefined;
@@ -317,6 +364,7 @@ export class LocalAgentHost {
    * die: whatever it reports afterwards is dropped by the compare-and-set guard.
    */
   async cancel(taskId: string): Promise<boolean> {
+    this.assertOpen('cancel');
     const record = await this.options.store.get(taskId);
     if (!record || isTerminal(record.state)) return false;
     const controller = this.active.get(taskId);
@@ -334,6 +382,16 @@ export class LocalAgentHost {
 
   /** One dispatch pass: claim, authorize, run. Exposed for tests. */
   async tick(): Promise<void> {
+    // Every call site is `void this.tick()`: an escaping rejection would be an
+    // unhandled rejection, which on Node ends the process.
+    try {
+      await this.dispatch();
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  private async dispatch(): Promise<void> {
     if (!this.running || this.paused || this.stopped) return;
     const maxConcurrency = this.options.maxConcurrency ?? 1;
     if (this.active.size >= maxConcurrency) return;
@@ -404,6 +462,12 @@ export class LocalAgentHost {
       this.active.delete(record.taskId);
       await this.options.store.release(record.taskId, holder);
       return;
+    }
+
+    // An approval authorizes exactly one execution: consume it as the run really
+    // starts, so a queued duplicate or a manual replay cannot reuse it.
+    if (record.kind === 'side_effect' && record.approvalId) {
+      this.authorizations.consumeApproval(record.approvalId);
     }
 
     try {
@@ -499,6 +563,39 @@ export class LocalAgentHost {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Toolsets a `document` task may use. The kind is the host's own claim that a task
+ * has no external effect, so it only ever gets local document tools — everything
+ * else (messaging, web, terminal, code execution, the `*` wildcard) is either a
+ * side effect that needs a delegation + approval, or is refused outright.
+ */
+const DOCUMENT_TOOLSETS = new Set(['document', 'document.read']);
+const FORBIDDEN_TOOLSETS = new Set([
+  '*',
+  'terminal',
+  'code_execution',
+  'node',
+  'python',
+  'shell',
+  'custom',
+]);
+
+/**
+ * Returns the block reason when the requested capabilities may not run for this
+ * kind, or undefined when they may. Fail closed: an unknown toolset is not a
+ * document toolset.
+ */
+export function refuseCapabilities(
+  kind: LocalTaskRecord['kind'],
+  toolsets: string[],
+): BlockReason | undefined {
+  const forbidden = toolsets.find((toolset) => FORBIDDEN_TOOLSETS.has(toolset));
+  if (forbidden) return 'capability_not_granted';
+  if (kind !== 'document') return undefined; // side effects are gated by delegation
+  const unknown = toolsets.find((toolset) => !DOCUMENT_TOOLSETS.has(toolset));
+  return unknown ? 'capability_not_granted' : undefined;
 }
 
 function describeBlock(reason: BlockReason): string {

@@ -35,6 +35,12 @@ export interface AgentHostStore {
    */
   put(record: LocalTaskRecord): Promise<LocalTaskRecord>;
   /**
+   * Creates `record` only when its taskId is still unknown, returning undefined
+   * otherwise. Atomic within the single writer, which is what makes concurrent
+   * submits of one id deterministic.
+   */
+  createIfAbsent?(record: LocalTaskRecord): Promise<LocalTaskRecord | undefined>;
+  /**
    * Applies `next` only when the stored record still has `expectedVersion`.
    * Returns the stored record on success, or undefined when the state moved on
    * (e.g. the task was cancelled while the executor was still running).
@@ -62,12 +68,14 @@ interface LockPayload {
   startedAt?: string;
 }
 
-/** A lock older than this is treated as abandoned even if the pid looks alive. */
-const LOCK_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+/** A live holder keeps its lock; only a lock this old may be taken over by pid reuse. */
+const LOCK_PID_REUSE_MS = 30 * 24 * 60 * 60 * 1000;
 
 export class JsonFileAgentHostStore implements AgentHostStore {
   private records = new Map<string, LocalTaskRecord>();
+  private loadPromise?: Promise<void>;
   private loaded = false;
+  private closed = false;
   private queue: Promise<void> = Promise.resolve();
   private lockHeld = false;
   private readonly filePath: string;
@@ -81,6 +89,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   }
 
   async load(): Promise<void> {
+    // Concurrent first callers must share one acquisition: without this, four
+    // parallel reads each tried to create the lock file and three of them saw
+    // their own (live) lock and failed.
+    this.loadPromise ??= this.doLoad();
+    return this.loadPromise;
+  }
+
+  private async doLoad(): Promise<void> {
     if (this.loaded) return;
     await this.acquireLock();
     this.loaded = true;
@@ -121,12 +137,22 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   async put(record: LocalTaskRecord): Promise<LocalTaskRecord> {
     await this.load();
     const previous = this.records.get(record.taskId);
+    // Terminal states are only left through an explicit retry (compareAndSet).
+    // A stale writer replaying an old snapshot must not resurrect finished work.
+    if (
+      previous &&
+      TERMINAL_LOCAL_STATES.includes(previous.state) &&
+      !TERMINAL_LOCAL_STATES.includes(record.state)
+    ) {
+      throw new Error(
+        `terminal_state_protected: task ${record.taskId} is ${previous.state} and cannot be re-queued`,
+      );
+    }
     const stored: LocalTaskRecord = {
       ...structuredClone(record),
       version: (previous?.version ?? 0) + 1,
     };
-    this.records.set(stored.taskId, stored);
-    await this.persist();
+    await this.commit(record.taskId, stored, previous);
     return structuredClone(stored);
   }
 
@@ -139,8 +165,15 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     const current = this.records.get(taskId);
     if (!current || current.version !== expectedVersion) return undefined;
     const stored: LocalTaskRecord = { ...structuredClone(next), version: current.version + 1 };
-    this.records.set(taskId, stored);
-    await this.persist();
+    await this.commit(taskId, stored, current);
+    return structuredClone(stored);
+  }
+
+  async createIfAbsent(record: LocalTaskRecord): Promise<LocalTaskRecord | undefined> {
+    await this.load();
+    if (this.records.has(record.taskId)) return undefined;
+    const stored: LocalTaskRecord = { ...structuredClone(record), version: 1 };
+    await this.commit(record.taskId, stored, undefined);
     return structuredClone(stored);
   }
 
@@ -157,45 +190,50 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     if (record.state !== 'queued' && record.state !== 'running') return undefined;
 
     // Compare-and-set: the map write happens without awaiting anything in between.
-    record.lease = { holder, expiresAt: new Date(now + leaseMs).toISOString() };
-    record.version += 1;
-    this.records.set(taskId, record);
-    const claimed = structuredClone(record);
-    await this.persist();
-    return claimed;
+    const claimed: LocalTaskRecord = {
+      ...structuredClone(record),
+      lease: { holder, expiresAt: new Date(now + leaseMs).toISOString() },
+      version: record.version + 1,
+    };
+    await this.commit(taskId, claimed, record);
+    return structuredClone(claimed);
   }
 
   async release(taskId: string, holder: string): Promise<void> {
     await this.load();
     const record = this.records.get(taskId);
     if (!record || record.lease?.holder !== holder) return;
-    delete record.lease;
-    record.version += 1;
-    record.updatedAt = new Date().toISOString();
-    this.records.set(taskId, record);
-    await this.persist();
+    const released: LocalTaskRecord = {
+      ...structuredClone(record),
+      version: record.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    delete released.lease;
+    await this.commit(taskId, released, record);
   }
 
   async recoverInterrupted(): Promise<LocalTaskRecord[]> {
     await this.load();
     const recovered: LocalTaskRecord[] = [];
-    for (const record of this.records.values()) {
+    for (const record of [...this.records.values()]) {
       if (record.state !== 'running') continue;
       const now = new Date().toISOString();
       // Never `succeeded`: the run was killed by a host restart and its outcome is
       // unknown. The task becomes recoverable (queued) or failed, with a reason.
       const canRetry = record.attempts < record.maxAttempts && record.kind === 'document';
-      record.state = canRetry ? 'queued' : 'interrupted';
-      record.error = canRetry ? 'host_restart_retry' : 'host_restart_outcome_unknown';
-      record.summary = '主机重启：本次执行结果未知，未计为完成';
-      record.finishedAt = canRetry ? undefined : now;
-      record.updatedAt = now;
-      record.version += 1;
-      delete record.lease;
-      this.records.set(record.taskId, record);
-      recovered.push(structuredClone(record));
+      const next: LocalTaskRecord = {
+        ...structuredClone(record),
+        state: canRetry ? 'queued' : 'interrupted',
+        error: canRetry ? 'host_restart_retry' : 'host_restart_outcome_unknown',
+        summary: '主机重启：本次执行结果未知，未计为完成',
+        finishedAt: canRetry ? undefined : now,
+        updatedAt: now,
+        version: record.version + 1,
+      };
+      delete next.lease;
+      await this.commit(record.taskId, next, record);
+      recovered.push(structuredClone(next));
     }
-    if (recovered.length > 0) await this.persist();
     return recovered;
   }
 
@@ -204,11 +242,38 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     await this.flush();
     await this.releaseLock();
   }
 
+  /**
+   * Apply an in-memory change and make it durable. If the write fails the change
+   * is rolled back: memory must never report an outcome the disk does not have,
+   * or a "succeeded" task would silently re-run after a restart.
+   */
+  private async commit(
+    taskId: string,
+    next: LocalTaskRecord,
+    previous: LocalTaskRecord | undefined,
+  ): Promise<void> {
+    this.records.set(taskId, next);
+    try {
+      await this.persist();
+    } catch (error) {
+      if (previous) this.records.set(taskId, previous);
+      else this.records.delete(taskId);
+      throw error;
+    }
+  }
+
   private async persist(): Promise<void> {
+    // A closed store has released the lock; writing now would silently clobber
+    // whoever holds it (the lock is the only thing keeping one writer in charge).
+    if (this.closed) throw new Error('agent_host_store_closed: refusing to write after close()');
+    if (this.lockEnabled && !this.lockHeld) {
+      throw new AgentHostStoreLockedError(this.lockPath);
+    }
     const snapshot = JSON.stringify([...this.records.values()], null, 2);
     // The chain keeps writes ordered; a failed write is surfaced to its caller
     // (H-03) without poisoning the writes that follow it.
@@ -250,27 +315,50 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   }
 
   private async isLockStale(): Promise<boolean> {
+    let raw: string;
+    try {
+      raw = await readFile(this.lockPath, 'utf8');
+    } catch {
+      return true; // no lock file left: nothing to take over
+    }
     let payload: LockPayload;
     try {
-      payload = JSON.parse(await readFile(this.lockPath, 'utf8')) as LockPayload;
+      payload = JSON.parse(raw) as LockPayload;
     } catch {
-      return true; // unreadable or truncated lock: treat as abandoned
+      // A truncated lock (crash while writing) may still name a live holder, so
+      // salvage the pid before calling it abandoned.
+      const salvaged = /"pid"\s*:\s*(\d+)/.exec(raw);
+      payload = salvaged ? { pid: Number(salvaged[1]) } : {};
     }
-    const startedAt = payload.startedAt ? Date.parse(payload.startedAt) : Number.NaN;
-    if (!Number.isNaN(startedAt) && Date.now() - startedAt > LOCK_MAX_AGE_MS) return true;
-    if (typeof payload.pid !== 'number' || !Number.isInteger(payload.pid) || payload.pid <= 0) return true;
+    const pid = payload.pid;
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return true; // owner unknown
+    let alive = true;
     try {
-      process.kill(payload.pid, 0);
-      return false; // holder is alive (including another store in this process)
+      process.kill(pid, 0);
     } catch (error) {
       // ESRCH = no such process (safe to steal); EPERM = alive but not ours.
-      return (error as NodeJS.ErrnoException).code === 'ESRCH';
+      alive = (error as NodeJS.ErrnoException).code !== 'ESRCH';
     }
+    if (!alive) return true;
+    // Liveness comes first: the desktop host is designed to stay resident for
+    // days, so age alone must never hand a live holder's lock to a second writer.
+    // The age rule only covers pid reuse on a lock nobody has refreshed for a month.
+    const startedAt = payload.startedAt ? Date.parse(payload.startedAt) : Number.NaN;
+    return !Number.isNaN(startedAt) && Date.now() - startedAt > LOCK_PID_REUSE_MS;
   }
 
   private async releaseLock(): Promise<void> {
     if (!this.lockHeld) return;
     this.lockHeld = false;
+    // Only ever remove a lock this process wrote: deleting somebody else's lock
+    // would let a third writer in behind the current holder.
+    try {
+      const payload = JSON.parse(await readFile(this.lockPath, 'utf8')) as LockPayload;
+      if (payload.pid !== process.pid) return;
+    } catch {
+      // Missing or unreadable: nothing of ours to release.
+      return;
+    }
     await rm(this.lockPath, { force: true }).catch(() => undefined);
   }
 }
@@ -294,6 +382,16 @@ export class MemoryAgentHostStore implements AgentHostStore {
 
   async put(record: LocalTaskRecord): Promise<LocalTaskRecord> {
     const previous = this.records.get(record.taskId);
+    // Same rule as the file store: a stale snapshot must not resurrect finished work.
+    if (
+      previous &&
+      TERMINAL_LOCAL_STATES.includes(previous.state) &&
+      !TERMINAL_LOCAL_STATES.includes(record.state)
+    ) {
+      throw new Error(
+        `terminal_state_protected: task ${record.taskId} is ${previous.state} and cannot be re-queued`,
+      );
+    }
     const stored: LocalTaskRecord = {
       ...structuredClone(record),
       version: (previous?.version ?? 0) + 1,
@@ -311,6 +409,13 @@ export class MemoryAgentHostStore implements AgentHostStore {
     if (!current || current.version !== expectedVersion) return undefined;
     const stored: LocalTaskRecord = { ...structuredClone(next), version: current.version + 1 };
     this.records.set(taskId, stored);
+    return structuredClone(stored);
+  }
+
+  async createIfAbsent(record: LocalTaskRecord): Promise<LocalTaskRecord | undefined> {
+    if (this.records.has(record.taskId)) return undefined;
+    const stored: LocalTaskRecord = { ...structuredClone(record), version: 1 };
+    this.records.set(record.taskId, stored);
     return structuredClone(stored);
   }
 

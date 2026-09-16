@@ -60,7 +60,7 @@
 ## 证据
 
 ```text
-node node_modules/vitest/vitest.mjs run --reporter=dot        # 23 文件 / 226 用例通过
+node node_modules/vitest/vitest.mjs run --reporter=dot        # 24 文件 / 238 用例通过
 cd apps/web && node ../../node_modules/vitest/vitest.mjs run  # 6 文件 / 40 用例通过
 node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json      # exit 0
 node apps/web/node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p apps/web/tsconfig.json   # exit 0
@@ -68,9 +68,33 @@ node apps/desktop/build-agent-host.mjs                        # 重新生成 age
 node --check apps/desktop/main.cjs
 apps/desktop/node_modules/.bin/electron scripts/electron-workbench-check.cjs   # 11/11，真实 Electron
 apps/desktop/node_modules/.bin/electron scripts/electron-host-smoke.cjs        # 6/6，关窗常驻与重启恢复
+node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.ts   # 11/11 攻击失败，23 项 FIX-HOLDS 仍通过
 ```
 
-新增回归：`packages/agent-host/src/host-security.test.ts`（37 项，覆盖 H-01～H-06 的安全行为），`packages/agent-host/src/host.test.ts` 的授权用例改为注册表语义，`apps/web/src/views/SettingsView.test.ts` 增加阻塞原因/重试契约用例。
+新增回归：`packages/agent-host/src/host-security.test.ts`（18 项，覆盖 H-01～H-06 的安全行为）与 `host-security-verify.test.ts`（12 项，封堵对抗性复核复现的攻击），`packages/agent-host/src/host.test.ts` 的授权用例改为注册表语义，`apps/web/src/views/SettingsView.test.ts` 增加阻塞原因/重试契约用例。
+
+## 对抗性验证与复查修复（同日第二轮）
+
+独立子代理（只读仓库）用 34 项自建探针攻击上述修复，**11 项攻击复现**，全部已修并逐条加回归；修复后复跑同一套探针：11/11 攻击失败、23 项 `FIX-HOLDS` 仍通过。原始产物与完整表格见 `docs/review-2026-09-16-adversarial-verification.md`。
+
+| 编号 | 问题 | 修复 |
+| --- | --- | --- |
+| C1 | `close()` 释放锁之后，已关闭的 host 仍能写 `tasks.json`，覆盖当前持锁者的记录 | `LocalAgentHost` 增加关闭判定（`submit/retry/cancel` 一律抛 `host_closed`）；store 关闭后拒绝任何写入（`agent_host_store_closed`） |
+| C2 | 12 小时"过期"规则先于存活判定，常驻超过 12 小时的真持有者被夺锁 | 存活优先：pid 活着就不夺锁；年龄规则只在 pid 复用（>30 天）时兜底 |
+| C3 | `releaseLock()` 无条件删除锁文件，可能删掉别人的锁 | 只有锁文件里的 pid 等于本进程才删除 |
+| C4 | 截断/损坏的锁被当作废弃，实际持有者仍存活 | 解析失败时先用正则抢救 pid，仍存活的锁不夺 |
+| C5 | 并发首次访问同一 store 时自锁（4 个并发读 → 3 个 `AgentHostStoreLockedError`） | `load()` 记忆化，只做一次取锁 |
+| C6/C11 | `kind:'document'` + 外部工具集（`web`/`*`/`terminal`…）完全绕过委托与审批 | host 级工具集白名单：`document` 只允许 `document`/`document.read`，`*`、终端/代码执行等一律 `capability_not_granted` |
+| C7/C13 | 落盘失败时内存已改成 `succeeded`、磁盘仍是 `running`，且失败记录在内存里可见（幽灵任务） | 所有写路径改为「先改内存→写盘→失败即回滚」，失败后内存状态与磁盘一致 |
+| C8 | 同一 taskId 的并发提交（不同载荷）双双成功，且执行的载荷可能与落库记录不一致 | 新增 store 级 `createIfAbsent`，host 用它做原子创建；落败方按幂等规则重判 |
+| C9 | 旧记录没有 `actionDigest` 时"同 id 异载荷"检查永久失效 | 对旧记录用其字段重算摘要后再比对 |
+| C10 | `tick()` 的 `list()` 失败会变成 unhandledRejection（Node 默认终止进程） | `tick()` 整体 try/catch，失败写入 `lastError` |
+| C12 | 陈旧的 `put()` 可把终态记录改回排队并再次执行 | `put()` 拒绝把终态记录改回非终态（`terminal_state_protected`） |
+| C15 | 审批可重复使用 | 副作用任务真正开跑前 `consumeApproval()` 消耗审批，一次授权一次执行 |
+
+保留并记录、未改语义：设备令牌在桌面链路属纵深防御（真正控制是发送方校验）；审批未显式绑定委托时仍可授权（动作摘要已锁定 taskId/agent/kind/goal/toolsets）；真正同时的多进程写、两个安装共享 `CHATAGENT_HOST_ROOT`、Windows 上 `taskkill` 的实际执行未纳入测试。
+
+新增回归 `packages/agent-host/src/host-security-verify.test.ts`（12 项，逐条复现原攻击并断言其失败），工作台“重试”只对非副作用任务显示（host 对副作用任务恒不接受重试）。
 
 ## 未完成 / 不在本轮
 

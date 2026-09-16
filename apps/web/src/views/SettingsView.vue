@@ -460,7 +460,7 @@ CHATAGENT_MODEL_NAME=your-model</pre>
               取消
             </el-button>
             <el-button
-              v-else-if="row.state === 'failed' || row.state === 'interrupted'"
+              v-else-if="row.kind !== 'side_effect' && (row.state === 'failed' || row.state === 'interrupted')"
               size="small"
               text
               type="primary"

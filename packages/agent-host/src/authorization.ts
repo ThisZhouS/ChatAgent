@@ -45,7 +45,11 @@ export class TrustedAuthorizationRegistry {
   private readonly delegations = new Map<string, DelegationGrant>();
   private readonly approvals = new Map<string, ApprovalGrant>();
 
-  /** Registers a verified delegation. Rejects malformed or already-expired grants. */
+  /**
+   * Registers a verified delegation. Malformed grants are rejected outright;
+   * expiry is enforced at authorization time (a grant may be registered while
+   * valid and expire later).
+   */
   grantDelegation(grant: DelegationGrant): void {
     assertNonEmpty(grant.id, 'delegation.id');
     assertNonEmpty(grant.ownerId, 'delegation.ownerId');
@@ -73,6 +77,14 @@ export class TrustedAuthorizationRegistry {
   }
 
   revokeApproval(id: string): boolean {
+    return this.approvals.delete(id);
+  }
+
+  /**
+   * Consumes an approval so it authorizes exactly one execution. Called by the
+   * host immediately before a side-effect run starts.
+   */
+  consumeApproval(id: string): boolean {
     return this.approvals.delete(id);
   }
 

@@ -239,10 +239,12 @@ describe('SettingsView', () => {
     expect(wrapper.text()).toContain('desktop-9f2c4d1e');
 
     const retry = wrapper.findAll('button').filter((node) => node.text().trim() === '重试');
-    expect(retry.length, 'a retry control exists for failed tasks').toBeGreaterThan(0);
+    // Only the retryable document task gets a control: a blocked side effect needs
+    // a fresh organization approval, which the host never grants from a retry.
+    expect(retry.length, 'exactly the document task is retryable').toBe(1);
     await retry[0]?.trigger('click');
     await flushPromises();
-    expect(commands).toContainEqual({ type: 'retry', taskId: 'ui-blocked' });
+    expect(commands).toContainEqual({ type: 'retry', taskId: 'ui-retryable' });
   });
 
   it('filters the admin audit log by action keyword and outcome', async () => {

@@ -2,7 +2,7 @@
 
 ## 2026-09-16 Gate 7A.1 加固验证
 
-同一台 Windows 机器、Node v24.11.0，继续使用已存在的 `node_modules` 本地入口（未安装依赖、未联网）。根 Vitest：23 文件 / 226 用例通过；`apps/web` Vitest：6 文件 / 40 用例通过；`tsc --noEmit` 与 `vue-tsc --noEmit` 退出码均为 0；新回归 `packages/agent-host/src/host-security.test.ts` 37 项全绿。未重跑 Electron 打包/E2E、未调用真实模型或真实 Hermes。详见 `docs/iteration-2026-09-16-gate7a1-hardening.md`。
+同一台 Windows 机器、Node v24.11.0，继续使用已存在的 `node_modules` 本地入口（未安装依赖、未联网）。根 Vitest：24 文件 / 238 用例通过；`apps/web` Vitest：6 文件 / 40 用例通过；`tsc --noEmit` 与 `vue-tsc --noEmit` 退出码均为 0；新回归 `host-security.test.ts` 18 项与 `host-security-verify.test.ts` 12 项全绿（agent-host 共 49 项）。未重跑 Electron 打包/E2E、未调用真实模型或真实 Hermes。详见 `docs/iteration-2026-09-16-gate7a1-hardening.md`。
 
 ## 2026-09-15 审查补测
 

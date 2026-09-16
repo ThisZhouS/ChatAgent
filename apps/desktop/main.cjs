@@ -16,6 +16,10 @@ const {
 const DEFAULT_SERVER_URL = 'http://localhost:8787';
 const TRAY_ICON = path.join(__dirname, 'assets', 'tray.png');
 
+// Force the Chromium sandbox for every renderer in this process, not just the
+// windows we remember to configure (must run before the app is ready).
+app.enableSandbox();
+
 function resolveServerUrl() {
   const arg = process.argv.find((item) => item.startsWith('--server='));
   if (arg) return arg.slice('--server='.length);
@@ -108,6 +112,12 @@ function createWindow(serverUrl) {
   });
   win.on('session-end', () => {
     void shutdownHostOnce('os_session_end');
+  });
+
+  // No embedded webviews exist in this app; refusing attachment outright removes
+  // a whole class of renderer-escape bugs.
+  win.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault();
   });
 
   void win.loadURL(serverUrl);

@@ -146,7 +146,7 @@ SettingsView loadHost 触发 best-effort 上传，关闭页面/窗口后没有�
 | H-05 双 writer | 已修（单实例边界） | 独占锁文件 + 存活 pid 拒绝 + Electron 单实例锁；不做多进程租约系统 |
 | H-06 IPC 契约 | 已修 | `list` 返回 `{ tasks }`，工作台显示原因并可重试，新增契约回归 |
 
-回归与证据见 `docs/iteration-2026-09-16-gate7a1-hardening.md`（根 226 用例、web 40 用例、tsc/vue-tsc 0）。仍未完成：断网本机工作台（B 项）、真实 Hermes 安全办公闭环（C/D 项）、Host 侧持续回执同步（E 项）。
+回归与证据见 `docs/iteration-2026-09-16-gate7a1-hardening.md`（根 238 用例、web 40 用例、tsc/vue-tsc 0、真实 Electron 校验 11/11 与 6/6）。独立子代理同日晚做对抗性复核，又复现 11 项攻击（关店后写库、夺存活锁、`document` 种类绕过授权、并发提交竞态、写失败报假成功、陈旧 `put` 复活终态等），已全部修复并加固回归：`docs/review-2026-09-16-adversarial-verification.md`。断网本机工作台（B 项）已完成；仍未完成：真实 Hermes 安全办公闭环（C/D 项）、Host 侧持续回执同步（E 项）与断网账号归属。
 
 ## 下一阶段：Gate 7A.1（只修可信性与真实跨层契约）
 
