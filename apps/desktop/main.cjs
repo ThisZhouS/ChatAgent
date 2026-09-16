@@ -319,6 +319,13 @@ async function reportStoreIntegrity() {
   if (integrity.quarantined) notes.push(`${integrity.quarantined} 条任务记录无法解析，已隔离为失败`);
   if (integrity.repaired) notes.push(`${integrity.repaired} 条任务记录已按当前格式修复`);
   if (integrity.duplicates) notes.push(`${integrity.duplicates} 条重复 id 已按版本取舍`);
+  // Retention is normal housekeeping, not a repair: it is logged but never
+  // framed as "something was wrong" in the dialog.
+  if (integrity.prunable) {
+    console.info(
+      `[chatagent] retention: ${integrity.prunable} 条超出保留上限的终态记录将在下次写入时清理`,
+    );
+  }
   if (notes.length === 0) return;
   console.warn('[chatagent] task store integrity:', notes.join('；'));
   try {

@@ -50,6 +50,8 @@ type HostStatus = {
     repaired?: number;
     quarantined?: number;
     duplicates?: number;
+    /** Terminal records past the retention cap; the next write drops them. */
+    prunable?: number;
     corruptFile?: string;
   };
   error?: string;
@@ -84,6 +86,14 @@ const hostIntegrityWarning = computed(() => {
   if (integrity.duplicates) parts.push(`${integrity.duplicates} 条重复 id 已按版本取舍`);
   if (integrity.corruptFile) parts.push(`任务库文件无法读取，已另存为 ${integrity.corruptFile}`);
   return parts.join('；');
+});
+
+/** Retention is normal housekeeping: shown as information, not as a warning. */
+const hostRetentionNote = computed(() => {
+  const prunable = hostStatus.value?.storeIntegrity?.prunable ?? 0;
+  return prunable > 0
+    ? `本机任务库已保留最近记录，${prunable} 条更早的终态记录会在下次写入时清理（进行中的任务不受影响）`
+    : '';
 });
 const hostStatus = ref<HostStatus | null>(null);
 const hostTasks = ref<HostTask[]>([]);
@@ -431,6 +441,10 @@ CHATAGENT_MODEL_NAME=your-model</pre>
       <p v-if="hostStatus?.receiptSync?.lastError" class="muted" data-testid="receipt-sync">
         <el-tag size="small" type="info">回执同步</el-tag>
         未上传 {{ hostStatus.receiptSync.pending ?? 0 }} 条（{{ hostStatus.receiptSync.lastError }}），联网后自动重试
+      </p>
+      <p v-if="hostRetentionNote" class="muted" data-testid="host-retention">
+        <el-tag size="small" type="info">保留策略</el-tag>
+        {{ hostRetentionNote }}
       </p>
       <p v-if="hostIntegrityWarning" class="muted" data-testid="host-integrity">
         <el-tag size="small" type="danger">任务库</el-tag>

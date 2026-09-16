@@ -183,6 +183,7 @@ export class LocalAgentHost {
           repaired: report.repaired.length,
           quarantined: report.quarantined.length,
           duplicates: report.duplicates.length,
+          prunable: report.prunable?.length,
           corruptFile: report.corruptFile,
         };
       })(),

@@ -2,6 +2,7 @@ import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { StoreLoadReport } from './record-integrity';
 import { validatePersistedRow } from './record-integrity';
+import { DEFAULT_MAX_RECORDS, selectExpiredRecords } from './retention';
 import type { LocalTaskRecord, LocalTaskState } from './types';
 import { TERMINAL_LOCAL_STATES } from './types';
 
@@ -91,11 +92,18 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private readonly filePath: string;
   private readonly lockPath: string;
   private readonly lockEnabled: boolean;
+  private readonly maxRecords: number;
+  private readonly maxAgeMs?: number;
 
-  constructor(filePath: string, options: { lock?: boolean } = {}) {
+  constructor(
+    filePath: string,
+    options: { lock?: boolean; maxRecords?: number; maxAgeMs?: number } = {},
+  ) {
     this.filePath = filePath;
     this.lockPath = `${filePath}.lock`;
     this.lockEnabled = options.lock !== false;
+    this.maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
+    this.maxAgeMs = options.maxAgeMs;
   }
 
   async load(): Promise<void> {
@@ -179,6 +187,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       }
       this.records.set(verdict.record.taskId, verdict.record);
     });
+
+    // Retention is reported, not applied: a load never rewrites the file. The
+    // first accepted write drops these records (see commit()).
+    const prunable = selectExpiredRecords([...this.records.values()], {
+      maxRecords: this.maxRecords,
+      maxAgeMs: this.maxAgeMs,
+    });
+    if (prunable.length > 0) report.prunable = prunable;
 
     this.loadReport = report;
   }
@@ -341,9 +357,19 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     previous: LocalTaskRecord | undefined,
   ): Promise<void> {
     this.records.set(taskId, next);
+    // Retention applies at write time: the file only ever shrinks on a write we
+    // were going to perform anyway, and never during a load.
+    const prunable = selectExpiredRecords([...this.records.values()], {
+      maxRecords: this.maxRecords,
+      maxAgeMs: this.maxAgeMs,
+    });
+    const pruned = prunable.length > 0 ? prunable.map((id) => this.records.get(id)!) : [];
+    for (const record of pruned) this.records.delete(record.taskId);
     try {
       await this.persist();
     } catch (error) {
+      // Put dropped records back: a failed write must not lose history.
+      for (const record of pruned) this.records.set(record.taskId, record);
       // Only undo OUR failed write. Another write may have landed in between
       // (e.g. a retry of the same id), and rewinding it would silently lose a
       // result the caller was already told succeeded.

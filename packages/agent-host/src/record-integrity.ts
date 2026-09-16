@@ -23,6 +23,12 @@ export interface StoreLoadReport {
   duplicates: { taskId: string; droppedVersion: number; keptVersion: number }[];
   /** Set when the whole file was unreadable and moved aside. */
   corruptFile?: string;
+  /**
+   * Terminal records beyond the retention cap. They are still on disk (a load
+   * never rewrites anything); the next accepted write drops them and the count
+   * is reported so the pruning is never silent.
+   */
+  prunable?: string[];
 }
 
 export interface RowValidation {

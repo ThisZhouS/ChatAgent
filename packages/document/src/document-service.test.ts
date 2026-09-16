@@ -84,7 +84,10 @@ describe('zip bomb guard', () => {
     const centrals: Buffer[] = [];
     let offset = 0;
     for (const entry of entries) {
-      const deflated = zlib.deflateRawSync(entry.payload);
+      // Level 1 keeps bomb fixtures cheap to build (the guard is what is under
+      // test, not zlib); the default level made a 70 MiB fixture slow enough to
+      // flake under a fully parallel suite run.
+      const deflated = zlib.deflateRawSync(entry.payload, { level: 1 });
       const nameBuffer = Buffer.from(entry.name, 'utf8');
       const crc = crc32(entry.payload);
 
@@ -175,10 +178,16 @@ describe('zip bomb guard', () => {
     expect(() => assertSafeArchive(Buffer.from('plain text, not an archive'))).not.toThrow();
   });
 
-  it('refuses to parse a bomb through the document service', async () => {
-    const archive = buildZip('word/document.xml', Buffer.alloc(70 * 1024 * 1024, 0));
-    await expect(parseDocumentBuffer(archive, 'bomb.docx')).rejects.toThrow(DocumentLimitError);
-  });
+  it(
+    'refuses to parse a bomb through the document service',
+    async () => {
+      const archive = buildZip('word/document.xml', Buffer.alloc(70 * 1024 * 1024, 0));
+      await expect(parseDocumentBuffer(archive, 'bomb.docx')).rejects.toThrow(DocumentLimitError);
+    },
+    // Building and measuring a 70 MiB fixture is CPU work: give it room so a busy
+    // machine cannot turn it into a random failure.
+    30_000,
+  );
 });
 
 describe('zip guard does not trust the central directory', () => {

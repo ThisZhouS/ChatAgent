@@ -240,6 +240,8 @@ export interface HostStatus {
    * duplicates. Present only when the store reports it (the file store does).
    */
   storeIntegrity?: {
+    /** Terminal records past the retention cap; dropped by the next write. */
+    prunable?: number;
     repaired: number;
     quarantined: number;
     duplicates: number;
