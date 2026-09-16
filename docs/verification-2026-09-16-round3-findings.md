@@ -30,10 +30,14 @@
 ## 回归证据
 
 - 根套件：**30 文件 / 296 用例通过**（连续两次满跑），`tsc --noEmit` 0 错；web 套件 40 通过、`vue-tsc` 0 错。
-- 真实 Electron：回执同步 19/19、显式退出 10/10、生命周期冒烟 6/6。
+- 真实 Electron：工作台 11/11、回执同步 19/19、显式退出 10/10、生命周期冒烟 6/6。
 - 新增回归用例：`packages/agent-host/src/host-security.test.ts` 的 H-07（隔离行永不执行、隔离行不可重试、空/空白/非数组能力全部拒绝、被种下的空能力行按 `capability_not_granted` 拒绝）、`retention.test.ts`（`interrupted` 不淘汰）、`apps/desktop/receipt-sync.test.mjs`（版本指纹、分块排空、分块失败保留剩余、修正后的 schema 一致性）。
 - 顺带修掉的**不稳定用例**：`host.test.ts` 的“重启后恢复 running 任务”在负载下会先被调度器取走，改为先 `pause()` 再断言恢复证据，然后 `resume()` 等成功。
 
 ## 仍未处理（明确不声称）
 
 F5 的根治（锁心跳/持有者身份而非年龄）与 Gate 7A.2 剩余（Host 侧持续**授权**刷新）仍在 `docs/tasks.md`「下一轮建议」；Gate 7A.3（真实 Hermes + 真实模型凭据）依旧 BLOCKED。
+
+## 收尾可见性（同一时间窗）
+
+`storeIntegrity.pruned`（本次运行已按保留策略清理的条数）已接到设置页，与待清理数量分开提示：设置页显示“本机任务库已保留最近记录：3 条更早的终态记录会在下次写入时清理（进行中的任务不受影响）；本次运行已按保留策略清理 5 条更早的终态记录”。真实 Electron 工作台检查 11/11 通过。
