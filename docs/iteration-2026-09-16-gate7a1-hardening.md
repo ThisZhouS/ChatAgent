@@ -119,6 +119,21 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 桌面侧同轮加固（静态复核发现，已修）：`CHATAGENT_SERVER_URL` 只接受 http/https（否则 `file:` 会成为"应用源"并把窄桥交给本地文件）；`assets/tray.png` 缺失时关闭最后一个窗口改为退出（避免无托盘、无入口的隐形进程）；任务库被占用时的提示补上锁文件路径与自愈办法。保留记录：`close()` 超过 8s 的极端情况下以"停不干净"换取"退得掉"；pid 被无关进程复用的陈旧锁最长阻塞 30 天（需人工删锁）。
 
+### 收口验收快照（2026-09-16 18:40，本机 Node v24.11.0）
+
+| 检查 | 命令 | 结果 |
+| --- | --- | --- |
+| 单元/集成 | `node node_modules/vitest/vitest.mjs run --reporter=dot` | 24 文件 / 243 用例通过 |
+| Web | `cd apps/web && node ../../node_modules/vitest/vitest.mjs run` | 6 文件 / 40 用例通过 |
+| 类型 | `tsc --noEmit` + `vue-tsc --noEmit` | 退出码 0 / 0 |
+| 主机级 8 流程 | `CHATAGENT_HERMES_EXE=Temp/hermes-runtime/hermes-agent-cn-runtime-win32-x64.exe node scripts/gate7a-verify.mjs` | 19 通过 / 0 失败 / 0 阻塞 |
+| 断网本机工作台 | `apps/desktop/node_modules/.bin/electron scripts/electron-workbench-check.cjs` | 11/11 |
+| 显式退出路径 | `node scripts/electron-quit-check.mjs` | 10/10 |
+| 关窗常驻 | `apps/desktop/node_modules/.bin/electron scripts/electron-host-smoke.cjs` | 6/6 |
+| 第二轮对抗性探针 | `node node_modules/vitest/vitest.mjs run -c Temp/verify-round2/vitest.config.ts` | 7 项攻击不再成立、25 项健康探针通过 |
+
+未跑：打包 exe 重建（无网络，electron-builder 无法下载依赖）、打包后客户端 E2E、真实模型推理（无凭据）、Gate 7A.3 的固定版本 Hermes 端到端。
+
 ## 未完成 / 不在本轮
 
 - Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。
