@@ -525,3 +525,44 @@ describe('V-07 the capability floor and the write chain hold everywhere', () => 
     expect((await host.status()).lastError).toContain('EPERM');
   });
 });
+
+describe('V-08 a store without createIfAbsent still cannot lose a race silently', () => {
+  it('resolves a lost create race through the idempotency rule', async () => {
+    const root = await makeRoot();
+    const inner = new MemoryAgentHostStore();
+    let interceptNext = true;
+    const store: AgentHostStore = {
+      load: () => inner.load(),
+      list: () => inner.list(),
+      get: (taskId) => inner.get(taskId),
+      async put(record) {
+        const mine = await inner.put({ ...record, version: 2 });
+        // Simulate a foreign writer that overwrote the very same row right after
+        // our write returned — the re-read must notice and refuse to pretend ours won.
+        if (interceptNext) {
+          interceptNext = false;
+          await inner.put({
+            ...record,
+            goal: '别的写者',
+            version: 3,
+            actionDigest: 'foreign-payload-digest',
+          });
+        }
+        return mine;
+      },
+      compareAndSet: (taskId, expectedVersion, next) => inner.compareAndSet(taskId, expectedVersion, next),
+      claim: (taskId, holder, leaseMs) => inner.claim(taskId, holder, leaseMs),
+      release: (taskId, holder) => inner.release(taskId, holder),
+      recoverInterrupted: () => inner.recoverInterrupted(),
+      flush: () => inner.flush(),
+      close: () => inner.close(),
+    };
+    const { host } = makeHost({ workRoot: root, store });
+    await host.start();
+    await expect(
+      host.submit(baseTask({ goal: '我的任务' })),
+    ).rejects.toThrow(/idempotency_conflict/);
+    expect((await host.list()).length).toBe(1);
+    await host.stop();
+  });
+});

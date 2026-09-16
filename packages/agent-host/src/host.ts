@@ -296,6 +296,15 @@ export class LocalAgentHost {
       if (!winner) throw new Error(`task store write failed: ${input.taskId} disappeared`);
       return await this.replayOrConflict(winner, input);
     }
+    if (!this.options.store.createIfAbsent) {
+      // A custom store without createIfAbsent cannot promise first-writer-wins.
+      // Re-read so a lost race is resolved by the idempotency rule instead of
+      // silently replacing the winner's record.
+      const current = await this.options.store.get(input.taskId);
+      if (current && current.version !== stored.version) {
+        return await this.replayOrConflict(current, input);
+      }
+    }
     void this.tick();
     return stored;
   }
