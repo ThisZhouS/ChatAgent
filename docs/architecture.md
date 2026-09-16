@@ -51,6 +51,7 @@ Electron 主进程（唯一组合根，也是唯一授权登记处）
    ├─ TrustedAuthorizationRegistry：委托/审批只由受信路径登记，执行前复核，审批单次使用
    ├─ LocalAgentHost：幂等提交（同 id 异载荷 idempotency_conflict）、终态 CAS、显式 retry、有界停止
    ├─ JsonFileAgentHostStore：write→fsync→rename、版本 CAS、单 writer 锁（存活 pid 独占）
+   │    └─ record-integrity.ts：载入校验/修复/隔离（未知 kind·state 的行只保留为失败记录）
    └─ HermesAdapter：真实 Hermes 子进程（工具集白名单、超时/中止按 pid 清理自有进程树）或离线 FakeHermesAdapter（status 明示 fake）
 ```
 

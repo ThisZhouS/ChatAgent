@@ -190,6 +190,7 @@ describe('SettingsView', () => {
             paused: false,
             executor: 'fake',
             lateResultsDropped: 1,
+            storeIntegrity: { repaired: 2, quarantined: 1, duplicates: 0 },
           },
         };
       }
@@ -237,6 +238,9 @@ describe('SettingsView', () => {
     expect(wrapper.text()).toContain('approval_digest_mismatch');
     expect(wrapper.text()).toContain('no_provider');
     expect(wrapper.text()).toContain('desktop-9f2c4d1e');
+    // A quarantined/repared task store is surfaced instead of silently absorbed.
+    expect(wrapper.find('[data-testid="host-integrity"]').text()).toContain('1 条记录无法解析');
+    expect(wrapper.find('[data-testid="host-integrity"]').text()).toContain('2 条记录已按当前格式修复');
 
     const retry = wrapper.findAll('button').filter((node) => node.text().trim() === '重试');
     // Only the retryable document task gets a control: a blocked side effect needs

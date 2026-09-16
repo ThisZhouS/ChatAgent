@@ -48,6 +48,7 @@
 - [ ] 工具集白名单：`document` 任务只允许 `document`/`document.read`，`*`/`terminal`/`code_execution` 等一律 `capability_not_granted`（host 级，不依赖适配器）。
 - [ ] 单 writer：任务库 `tasks.json.lock` 由存活 pid 独占，第二写者被拒（`agent_host_store_locked`）；`close()` 后进程拒绝再写（`agent_host_store_closed`），且只释放自己写的锁。
 - [ ] 桌面端：`app.enableSandbox()`、`contextIsolation` 且无 `nodeIntegration`、外链协议白名单（http/https/mailto）、权限检查默认拒绝、拒绝 webview 附着、断网本机工作台 `workbench.html` 用严格 CSP + `textContent` 渲染且不接受页面传入的加载位置。
+- [ ] 任务库载入即校验：字段缺失按安全默认值修复（并计入 status().storeIntegrity），无法信任的行（未知 kind/state、缺 taskId/workDir）保留为 failed + blockedReason=invalid_persisted_row，永不执行；重复 id 按版本取舍，未知字段丢弃。损坏文件另存为 tasks.json.corrupt-<时间戳>（不删除）并空库启动；载入阶段不回写文件，首次成功写入才落盘规范形态。
 - [ ] 退出路径唯一且幂等：托盘/菜单/IPC/系统注销都汇入 `before-quit` 的 `shutdownHostOnce()`（有界 8s），按 pid 清理自有子进程树（`taskkill /T /F`），不误杀其他 Python/Hermes 进程。
 
 ## 5. 运行与依赖

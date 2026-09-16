@@ -235,6 +235,42 @@ function resolveDeviceId() {
   return deviceId;
 }
 
+/**
+ * The task store is a file that outlives upgrades: rows that could not be
+ * trusted are kept as failed records and rows are repaired in memory. Both are
+ * reported once at startup — a silent repair would be indistinguishable from
+ * data loss, and a quarantined row has to be visible in the UI.
+ */
+async function reportStoreIntegrity() {
+  let status;
+  try {
+    status = await host.status();
+  } catch (error) {
+    console.error('[chatagent] could not read store integrity:', error && error.message);
+    return;
+  }
+  const integrity = status && status.storeIntegrity;
+  if (!integrity) return;
+  const notes = [];
+  if (integrity.corruptFile) notes.push(`任务库文件无法读取，已另存为 ${integrity.corruptFile}`);
+  if (integrity.quarantined) notes.push(`${integrity.quarantined} 条任务记录无法解析，已隔离为失败`);
+  if (integrity.repaired) notes.push(`${integrity.repaired} 条任务记录已按当前格式修复`);
+  if (integrity.duplicates) notes.push(`${integrity.duplicates} 条重复 id 已按版本取舍`);
+  if (notes.length === 0) return;
+  console.warn('[chatagent] task store integrity:', notes.join('；'));
+  try {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'ChatAgent',
+      message: '本机任务库已自动处理',
+      detail: `${notes.join('；')}。\n原始文件未被删除，可在任务库目录中查看。`,
+      buttons: ['知道了'],
+    });
+  } catch {
+    // headless/CI: the console line above is the record
+  }
+}
+
 function createHost() {
   const root = hostRoot();
   const executable = resolveHermesExecutable();
@@ -391,7 +427,7 @@ if (!hasSingleInstanceLock) {
 
     deviceToken = randomBytes(32).toString('hex');
     createHost();
-    void host.start().catch((err) => {
+    void host.start().then(() => reportStoreIntegrity()).catch((err) => {
       console.error('[chatagent] host failed to start:', err);
       const locked = err && err.code === 'agent_host_store_locked';
       const detail = locked

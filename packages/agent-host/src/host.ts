@@ -176,6 +176,16 @@ export class LocalAgentHost {
       // outcome: without this it appeared in none of the counters.
       finished: tasks.filter((task) => isTerminal(task.state) || task.state === 'interrupted').length,
       lateResultsDropped: this.lateResultsDropped,
+      storeIntegrity: (() => {
+        const report = this.options.store.getLoadReport?.();
+        if (!report) return undefined;
+        return {
+          repaired: report.repaired.length,
+          quarantined: report.quarantined.length,
+          duplicates: report.duplicates.length,
+          corruptFile: report.corruptFile,
+        };
+      })(),
       lastError: this.lastError,
     };
   }

@@ -79,6 +79,7 @@
       .muted { color: var(--muted); }
       .error { color: #f56c6c; }
       .notice { font-size: 12px; color: var(--muted); line-height: 1.7; }
+      .warn-note { color: #e6a23c; }
       .empty { padding: 18px; text-align: center; color: var(--muted); }
     </style>
   </head>
@@ -102,6 +103,7 @@
           <button id="quit" class="danger">退出（停止后台 Agent）</button>
         </div>
         <p class="notice" id="executor-note" hidden></p>
+        <p class="notice warn-note" id="integrity-note" hidden></p>
         <p class="notice" id="error-note" hidden></p>
       </div>
 
@@ -251,6 +253,17 @@
           const note = $('executor-note');
           show(note, Boolean(status.executorReason));
           setText(note, status.executorReason || '');
+          // The task store is a file that survives upgrades: rows it could not
+          // trust are kept as failed records and must be visible here.
+          const integrity = status.storeIntegrity || {};
+          const integrityParts = [];
+          if (integrity.quarantined) integrityParts.push(`${integrity.quarantined} 条记录无法解析，已隔离为失败`);
+          if (integrity.repaired) integrityParts.push(`${integrity.repaired} 条记录已按当前格式修复`);
+          if (integrity.duplicates) integrityParts.push(`${integrity.duplicates} 条重复 id 已按版本取舍`);
+          if (integrity.corruptFile) integrityParts.push(`任务库文件无法读取，已另存为 ${integrity.corruptFile}`);
+          const integrityNote = $('integrity-note');
+          show(integrityNote, integrityParts.length > 0);
+          setText(integrityNote, integrityParts.join('；'));
           $('pause').textContent = status.paused ? '继续后台' : '暂停后台';
         } else {
           setText($('error-note'), `status: ${statusRes.error || 'unknown'}`);

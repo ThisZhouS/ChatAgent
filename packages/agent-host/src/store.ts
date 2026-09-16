@@ -1,5 +1,7 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { StoreLoadReport } from './record-integrity';
+import { validatePersistedRow } from './record-integrity';
 import type { LocalTaskRecord, LocalTaskState } from './types';
 import { TERMINAL_LOCAL_STATES } from './types';
 
@@ -61,6 +63,12 @@ export interface AgentHostStore {
   flush(): Promise<void>;
   /** Releases the OS-level write lock (no-op for the in-memory store). */
   close(): Promise<void>;
+  /**
+   * What the store found while loading: repaired rows, quarantined rows,
+   * duplicate ids, and a file that had to be moved aside. Optional: a store that
+   * has nothing to report (the in-memory one) simply omits it.
+   */
+  getLoadReport?(): StoreLoadReport | undefined;
 }
 
 interface LockPayload {
@@ -78,6 +86,8 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private closed = false;
   private queue: Promise<void> = Promise.resolve();
   private lockHeld = false;
+  private loadReport?: StoreLoadReport;
+  private lastLoadError?: string;
   private readonly filePath: string;
   private readonly lockPath: string;
   private readonly lockEnabled: boolean;
@@ -100,25 +110,98 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     if (this.loaded) return;
     await this.acquireLock();
     this.loaded = true;
+
+    const report: StoreLoadReport = {
+      loadedAt: new Date().toISOString(),
+      rows: 0,
+      repaired: [],
+      quarantined: [],
+      duplicates: [],
+    };
+
+    let raw: string;
     try {
-      const raw = await readFile(this.filePath, 'utf8');
-      const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        for (const record of parsed as LocalTaskRecord[]) {
-          if (record && typeof record.taskId === 'string') {
-            this.records.set(record.taskId, normalizeRecord(record));
-          }
-        }
-      }
+      raw = await readFile(this.filePath, 'utf8');
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        // A corrupt store must not be silently treated as empty: releasing the
-        // lock keeps the app startable while the caller reports the failure.
-        await this.releaseLock();
-        throw error;
+      if (code === 'ENOENT') {
+        // First run: an empty store is a normal outcome, not a repair.
+        this.loadReport = report;
+        return;
       }
+      // Unreadable for any other reason (permissions, locked by antivirus): the
+      // lock must not stay behind, and the caller has to see the real error.
+      await this.releaseLock();
+      throw error;
     }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      // A corrupt file used to make the whole app unstartable. Keep the evidence
+      // (renamed aside, never deleted), start clean, and report it.
+      const reason = error instanceof Error ? error.message : String(error);
+      report.corruptFile = await this.quarantineFile(`store file is not valid JSON: ${reason}`);
+      report.quarantined.push({ taskId: '(file)', reason: `store file is not valid JSON: ${reason}` });
+      this.loadReport = report;
+      return;
+    }
+
+    if (!Array.isArray(parsed)) {
+      const reason = `store file is not an array (${typeof parsed})`;
+      report.corruptFile = await this.quarantineFile(reason);
+      report.quarantined.push({ taskId: '(file)', reason });
+      this.loadReport = report;
+      return;
+    }
+
+    const now = new Date().toISOString();
+    parsed.forEach((row, index) => {
+      report.rows += 1;
+      const verdict = validatePersistedRow(row, index, now);
+      if (verdict.repairs.length > 0) {
+        report.repaired.push({ taskId: verdict.record.taskId, repairs: verdict.repairs });
+      }
+      if (verdict.quarantined) {
+        report.quarantined.push({ taskId: verdict.record.taskId, reason: verdict.quarantined });
+      }
+      const existing = this.records.get(verdict.record.taskId);
+      if (existing) {
+        // Two rows with one id: the newer version wins, the other is reported.
+        const keepNew = verdict.record.version >= existing.version;
+        report.duplicates.push({
+          taskId: verdict.record.taskId,
+          droppedVersion: keepNew ? existing.version : verdict.record.version,
+          keptVersion: keepNew ? verdict.record.version : existing.version,
+        });
+        if (!keepNew) return;
+      }
+      this.records.set(verdict.record.taskId, verdict.record);
+    });
+
+    this.loadReport = report;
+  }
+
+  /**
+   * Moves an unreadable store file aside instead of deleting it, so a reviewer
+   * can still see what was there. Returns the path it was moved to.
+   */
+  private async quarantineFile(reason: string): Promise<string | undefined> {
+    const target = `${this.filePath}.corrupt-${Date.now()}`;
+    try {
+      await rename(this.filePath, target);
+      return target;
+    } catch {
+      // Best effort: the report still carries the reason.
+      this.lastLoadError = reason;
+      return undefined;
+    }
+  }
+
+  /** Integrity report from the last load; undefined before the store is loaded. */
+  getLoadReport(): StoreLoadReport | undefined {
+    return this.loadReport;
   }
 
   async list(): Promise<LocalTaskRecord[]> {
@@ -472,10 +555,9 @@ export class MemoryAgentHostStore implements AgentHostStore {
   }
 }
 
-/** Records persisted before CAS existed start at version 1 instead of undefined. */
-function normalizeRecord(record: LocalTaskRecord): LocalTaskRecord {
-  return { ...record, version: typeof record.version === 'number' ? record.version : 1 };
-}
+// Persisted rows are normalized by `validatePersistedRow` (record-integrity.ts)
+// while loading, which also reports every repair and quarantines what it cannot
+// trust — a helper hidden in the store was too easy to bypass.
 
 export function isTerminal(state: LocalTaskState): boolean {
   return TERMINAL_LOCAL_STATES.includes(state);

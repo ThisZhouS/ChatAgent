@@ -43,6 +43,13 @@ type HostStatus = {
   paused?: boolean;
   executor?: string;
   executorReason?: string;
+  /** What the task store found while loading (repaired/quarantined/duplicate rows). */
+  storeIntegrity?: {
+    repaired?: number;
+    quarantined?: number;
+    duplicates?: number;
+    corruptFile?: string;
+  };
   error?: string;
 };
 type HostTask = {
@@ -58,6 +65,22 @@ type HostTask = {
 };
 
 const hasHost = computed(() => Boolean(window.chatagent?.host));
+
+/**
+ * The task store is a file that outlives upgrades: rows it could not trust are
+ * kept as failed records, so the operator has to be able to see that this
+ * happened instead of wondering why a task never ran.
+ */
+const hostIntegrityWarning = computed(() => {
+  const integrity = hostStatus.value?.storeIntegrity;
+  if (!integrity) return '';
+  const parts: string[] = [];
+  if (integrity.quarantined) parts.push(`${integrity.quarantined} 条记录无法解析，已隔离为失败（不会执行）`);
+  if (integrity.repaired) parts.push(`${integrity.repaired} 条记录已按当前格式修复`);
+  if (integrity.duplicates) parts.push(`${integrity.duplicates} 条重复 id 已按版本取舍`);
+  if (integrity.corruptFile) parts.push(`任务库文件无法读取，已另存为 ${integrity.corruptFile}`);
+  return parts.join('；');
+});
 const hostStatus = ref<HostStatus | null>(null);
 const hostTasks = ref<HostTask[]>([]);
 const hostError = ref('');
@@ -396,6 +419,10 @@ CHATAGENT_MODEL_NAME=your-model</pre>
       <p v-if="hostStatus?.executorReason" class="muted">
         <el-tag size="small" type="warning">注意</el-tag>
         {{ hostStatus.executorReason }}
+      </p>
+      <p v-if="hostIntegrityWarning" class="muted" data-testid="host-integrity">
+        <el-tag size="small" type="danger">任务库</el-tag>
+        {{ hostIntegrityWarning }}
       </p>
       <el-alert v-if="hostError" :title="hostError" type="error" show-icon class="card" :closable="false" />
 

@@ -165,7 +165,7 @@
 1. **Gate 7A.3（唯一被阻塞的门）**：固定版本 Hermes 的端到端办公闭环——锁定 tag + SHA、uv 管理的 Python 3.11、运行时放在 ASAR 外、显式模型配置、合成数据的 Word/Excel 闭环、工具隔离验证。需要真实运行时与模型凭据，当前环境不具备（**不得以 fake 结果冒充**）。
 2. **Host 侧持续回执同步**：现在由页面触发 best-effort 上传；应改为主机在任务终态后自行同步（含离线队列与重试），并补断网账号归属绑定。
 3. **缺口收敛**：陈旧单 writer 锁的自愈（需本地明确同意 + 审计）、Windows Job Object 子进程回收、`node:sqlite` WAL 任务库、Electron 升级（39.8.x 已 EOL，目标 42/43/44）。
-4. **持久化行治理**：任务库载入时做迁移/校验（旧版本写下的 `toolsets` 目前靠派发前复核兜底）。
+4. ~~**持久化行治理**~~ **已完成**：`packages/agent-host/src/record-integrity.ts` 载入时校验/修复/隔离（未知 kind/state、缺 taskId/workDir 的行保留为 `failed`+`invalid_persisted_row`，永不执行），损坏文件另存为 `.corrupt-<时间戳>` 不删除，`status().storeIntegrity` 在服务端工作台与离线工作台均可见。
 5. **远程页面加固**：远程工作台使用独立 session partition + 注入 CSP（当前依赖发送方校验 + 单实例）。
 
 ## 后续方向

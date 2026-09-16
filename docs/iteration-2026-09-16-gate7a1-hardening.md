@@ -134,6 +134,27 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 
 未跑：打包 exe 重建（无网络，electron-builder 无法下载依赖）、打包后客户端 E2E、真实模型推理（无凭据）、Gate 7A.3 的固定版本 Hermes 端到端。
 
+## 第三轮（2026-09-16 晚）：任务库载入校验与隔离
+
+问题：`tasks.json` 跨版本存活，而载入时只补了 `version`——未知 `kind`/`state`、缺失 `workDir` 的行会被当成可运行任务，损坏的 JSON 则让主机启动失败（弹窗后没有主机）。
+
+改动（新增 `packages/agent-host/src/record-integrity.ts`，接线到 `store.ts` / `types.ts` / `host.ts`）：
+
+| 规则 | 行为 |
+| --- | --- |
+| 决定"能否运行"的字段（`taskId`/`kind`/`state`/`workDir`）不可信 | 该行**保留但隔离**为 `failed` + `blockedReason=invalid_persisted_row`，派发器与 `retry()` 都不碰 |
+| 其余字段值非法（version/attempts/artifacts/时间戳/lease…） | 用安全默认值修复，并逐条记录修复字段名 |
+| 可选字段缺失 | 静默补默认值（缺失本身在记录里可见，如空 `deviceId`），不计入修复计数 |
+| 同一 taskId 多行 | 保留版本号较大的一行，另一行计入 `duplicates` |
+| 未知多余字段 | 丢弃，不进入内存 |
+| 文件不是合法 JSON / 不是数组 | 另存为 `tasks.json.corrupt-<时间戳>`（**不删除**），空库启动，报告 `corruptFile` |
+
+对外可见性：`status().storeIntegrity = { repaired, quarantined, duplicates, corruptFile? }`；服务端工作台"本机 Agent"卡片与离线工作台各显示一行警示；桌面主进程启动时写日志并按需弹一次非致命提示。
+
+证据：新增 `packages/agent-host/src/store-integrity.test.ts`（9 项：修复与计数、隔离且不派发、重复 id 取舍、未知字段丢弃、损坏文件另存不删除、非数组视为损坏、空库干净载入、载入不回写原文件）；根套件 25 文件 / 252 用例、web 6 文件 / 40 用例、tsc/vue-tsc 0；真实 Electron 工作台 11/11、显式退出 10/10、主机级 22/22。
+
+刻意保留：载入时**不**回写规范化结果（避免销毁原始证据），首次成功写入才把规范形态落盘。
+
 ## 未完成 / 不在本轮
 
 - Gate 7A.2 剩余：Host 侧**持续**回执同步（当前仍由页面触发 best-effort 上传）、断网时的账号归属与设备绑定核对；关窗常驻、托盘重开、断网本机工作台、退出清理、稳定 deviceId 已完成。

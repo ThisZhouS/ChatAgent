@@ -36,7 +36,9 @@ export type BlockReason =
   | 'approval_digest_mismatch'
   | 'host_stopped'
   | 'host_paused'
-  | 'work_root_missing';
+  | 'work_root_missing'
+  /** The persisted row could not be trusted when the store was loaded. */
+  | 'invalid_persisted_row';
 
 export const TERMINAL_LOCAL_STATES: LocalTaskState[] = ['succeeded', 'failed', 'cancelled'];
 
@@ -233,5 +235,16 @@ export interface HostStatus {
    * were therefore discarded. A non-zero value means the CAS guard did its job.
    */
   lateResultsDropped: number;
+  /**
+   * What the store found while loading: repaired rows, quarantined rows and
+   * duplicates. Present only when the store reports it (the file store does).
+   */
+  storeIntegrity?: {
+    repaired: number;
+    quarantined: number;
+    duplicates: number;
+    /** Set when the whole store file was unreadable and moved aside. */
+    corruptFile?: string;
+  };
   lastError?: string;
 }
