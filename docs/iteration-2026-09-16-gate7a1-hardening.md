@@ -113,9 +113,9 @@ node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.
 | R2-05 | 非数组 `toolsets` 触发原始 `TypeError`（IPC 有 schema 拦住，进程内调用没有） | 已修：下限对非数组 fail-closed 返回 `capability_not_granted` |
 | R2-06 | `interrupted` 既非终态也不可认领：三个计数都不含它，且迟到结果仍能覆盖它 | 已修：`status().finished` 计入 `interrupted`；`finish()` 同样把 `interrupted` 视为已定论 |
 | R2-07 | `put()` 仍可用一个终态覆盖另一个终态（陈旧写者把 `succeeded` 改成 `failed`） | 已修：终态只能保持不变，变更一律走 `compareAndSet` |
-| R2-08 | 没有 `createIfAbsent` 的自定义 store 会让并发同 id 提交双双成功（内置两个 store 都已实现） | 保留：内置 store 无此路径，已在代码注释与安全清单标注为嵌入边界 |
+| R2-08 | 没有 `createIfAbsent` 的自定义 store 会让并发同 id 提交双双成功（内置两个 store 都已实现） | 部分修复：`submit()` 在回退路径写入后复核版本，发现被他人覆盖即转入幂等规则（同 id 异载荷 → `idempotency_conflict`）；新增回归 V-08。缺少首次写入必胜原语的 store 仍无法彻底封死竞态窗口，标注为嵌入边界 |
 
-复跑同一套探针：修复前 3 项不变量断言失败（R2-01/02/03），修复后这 3 项通过，7 项攻击型探针失败（即攻击不再成立），其余 25 项仍通过。新增回归 4 项（`host-security-verify.test.ts` 的 V-07：旧行拒绝执行与重放、写失败不回退后续写入、`interrupted` 计数、后台链无未捕获拒绝）。
+复跑同一套探针：修复前 3 项不变量断言失败（R2-01/02/03），修复后这 3 项通过，7 项攻击型探针失败（即攻击不再成立），其余 25 项仍通过。新增回归 5 项（`host-security-verify.test.ts`：V-07 旧行拒绝执行与重放、写失败不回退后续写入、`interrupted` 计数、后台链无未捕获拒绝；V-08 回退路径写入后复核版本并转入幂等冲突）。
 
 桌面侧同轮加固（静态复核发现，已修）：`CHATAGENT_SERVER_URL` 只接受 http/https（否则 `file:` 会成为"应用源"并把窄桥交给本地文件）；`assets/tray.png` 缺失时关闭最后一个窗口改为退出（避免无托盘、无入口的隐形进程）；任务库被占用时的提示补上锁文件路径与自愈办法。保留记录：`close()` 超过 8s 的极端情况下以"停不干净"换取"退得掉"；pid 被无关进程复用的陈旧锁最长阻塞 30 天（需人工删锁）。
 
