@@ -70,6 +70,8 @@ node --check apps/desktop/main.cjs
 apps/desktop/node_modules/.bin/electron scripts/electron-workbench-check.cjs   # 11/11，真实 Electron
 apps/desktop/node_modules/.bin/electron scripts/electron-host-smoke.cjs        # 6/6，关窗常驻与重启恢复
 node scripts/electron-quit-check.mjs                                          # 10/10，真实桌面应用：显式退出→进程结束→锁释放→任务库仍可读
+node scripts/gate7a-verify.mjs                                                # 18 passed / 0 failed / 1 blocked（未设 CHATAGENT_HERMES_EXE）
+CHATAGENT_HERMES_EXE=Temp/hermes-runtime/hermes-agent-cn-runtime-win32-x64.exe node scripts/gate7a-verify.mjs   # 19/19，含真实 Hermes 契约（无 provider → 明确失败）
 node node_modules/vitest/vitest.mjs run -c Temp/verify-2026-09-16/vitest.config.ts   # 11/11 攻击失败，23 项 FIX-HOLDS 仍通过
 ```
 

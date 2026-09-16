@@ -128,6 +128,9 @@ pnpm build          # tsup + vite
 node scripts/restart-server.mjs # 按端口重启服务端并等待 /health
 node scripts/smoke.mjs          # 27 项端到端自检（本机开发档位）
 node scripts/ui-e2e.mjs         # 真实客户端 E2E：34 项检查 + 截图（Temp/ui-shots）
+node scripts/gate7a-verify.mjs  # 本机 Agent 主机级 8 流程（设 CHATAGENT_HERMES_EXE 可含真实 Hermes 契约，19/19）
+node scripts/electron-workbench-check.cjs   # 断网本机工作台 11/11（真实 Electron）
+node scripts/electron-quit-check.mjs        # 显式退出路径 10/10（真实 Electron）
 pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 ```
 

@@ -220,7 +220,20 @@
         }
       }
 
+      let loading = false;
       async function load() {
+        // No overlapping polls, and no polling while the window is hidden: the
+        // workbench is a local page and must stay cheap in the background.
+        if (loading) return;
+        loading = true;
+        try {
+          await refresh();
+        } finally {
+          loading = false;
+        }
+      }
+
+      async function refresh() {
         const statusRes = await command({ type: 'status' });
         if (statusRes.ok && statusRes.result) {
           const status = statusRes.result;
@@ -296,7 +309,12 @@
         show($('error-note'), true);
       }
       void load();
-      setInterval(() => void load(), 3000);
+      setInterval(() => {
+        if (!document.hidden) void load();
+      }, 3000);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) void load();
+      });
     </script>
   </body>
 </html>

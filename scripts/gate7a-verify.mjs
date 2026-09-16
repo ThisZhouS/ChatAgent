@@ -80,7 +80,7 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
     const onDisk = await fileSha256(join(host.workRoot, 'f1', artifact.name));
     check('Flow1 产物哈希与磁盘一致', onDisk === artifact.sha256);
   }
-  await host.stop('done');
+  await host.close('done');
 }
 
 // ---- Flow 2+3: UI 与 Agent 并行；关闭 UI 任务继续 ---------------------------
@@ -102,7 +102,7 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
   // Simulate the host going away mid-run: the record must be interrupted/
   // cancelled — never "succeeded" (a window close in the real app keeps the
   // host alive — proven by the electron smoke).
-  await host.stop('ui_closed_simulation');
+  await host.close('ui_closed_simulation'); // release the lock: host2 reopens this store
   const afterStop = await waitState(host, 'f23', ['interrupted', 'cancelled', 'failed', 'succeeded'], 2000);
   check('Flow3 中断不写 completed', afterStop?.state === 'interrupted' || afterStop?.state === 'cancelled',
     `state=${afterStop?.state}`);
@@ -113,7 +113,7 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
   check('Flow3 重新打开后状态/结果仍在（已记录中断）',
     reopened?.state === 'interrupted' || reopened?.state === 'cancelled',
     `state=${reopened?.state}`);
-  await host2.stop('done');
+  await host2.close('done');
 }
 
 // ---- Flow 4: 主机故障绝不写 completed ---------------------------------------
@@ -128,14 +128,14 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
   await waitState(host, 'f4', ['running', 'succeeded', 'failed']);
   // crash: stop() without letting the adapter finish. recoverInterrupted() on
   // the next start does the same job for a hard process kill.
-  await host.stop('host_crash');
+  await host.close('host_crash'); // release the lock: host2 reopens this store
   const host2 = makeHost(new FakeHermesAdapter({ durationMs: 100 }), { store: storePath });
   await host2.start();
   const rec = await host2.list().then((t) => t.find((x) => x.taskId === 'f4'));
   check('Flow4 主机故障后状态为 interrupted/cancelled（绝不 completed）',
     rec?.state === 'interrupted' || rec?.state === 'cancelled',
     `state=${rec?.state}`);
-  await host2.stop('done');
+  await host2.close('done');
 }
 
 // ---- Flow 5: 暂停 / 继续 / 取消 ----------------------------------------------
@@ -156,7 +156,7 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
   const cancelRes = await handleHostCommand(host, { type: 'cancel', taskId: 'f5' }, ctx, TOKEN);
   const rec = await waitState(host, 'f5', ['cancelled', 'succeeded', 'failed', 'interrupted']);
   check('Flow5 cancel：任务进入 cancelled', cancelRes.ok === true && rec?.state === 'cancelled', `state=${rec?.state}`);
-  await host.stop('done');
+  await host.close('done');
 }
 
 // ---- Flow 6: 工作目录与哈希安全 ----------------------------------------------
@@ -206,7 +206,7 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
   await sleep(200); // give a rogue second run time to appear
   check('Flow7 同一任务提交两次仅执行一次', done?.state === 'succeeded' && runs === 1,
     `state=${done?.state} runs=${runs}`);
-  await host.stop('done');
+  await host.close('done');
 }
 
 // ---- Flow 8: 独立第三方（Hermes 契约）----------------------------------------
@@ -237,7 +237,7 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
     workRefused = true;
   }
   check('Flow8 主机拒绝外部工作目录', workRefused);
-  await host.stop('done');
+  await host.close('done');
 
   // 真实 Hermes 运行时契约（若提供 exe）
   if (HERMES_EXE) {
@@ -251,7 +251,7 @@ async function waitState(host, taskId, states, timeoutMs = 6000) {
     check('Flow8 真实 Hermes 进程契约（无 provider → 明确失败，不伪装成功）',
       rec?.state === 'failed' && (rec?.error === 'no_provider' || String(rec?.error).includes('provider')),
       `state=${rec?.state} error=${rec?.error ?? ''}`);
-    await realHost.stop('done');
+    await realHost.close('done');
   } else {
     blocked('Flow8 真实 Hermes 运行时契约', 'CHATAGENT_HERMES_EXE 未设置（PoC 运行时可经 env 指定）');
   }
