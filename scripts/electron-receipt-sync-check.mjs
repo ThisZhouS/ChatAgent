@@ -46,8 +46,33 @@ const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise,
 
 // ---- stub organization server ------------------------------------------------
 const posts = [];
+const authorizationAsks = [];
 let failNext = 1; // the first sync attempt gets a 500 on purpose
 const stub = createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/api/agent-authorizations/verify') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      let payload;
+      try {
+        payload = JSON.parse(body);
+      } catch {
+        payload = undefined;
+      }
+      authorizationAsks.push({ cookie: req.headers.cookie ?? '', payload, at: Date.now() });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      // The stub keeps no ledger for delegations, exactly like the real server.
+      res.end(
+        JSON.stringify({
+          supportedKinds: ['approval'],
+          results: (payload?.grants ?? [])
+            .filter((grant) => grant.kind === 'approval')
+            .map((grant) => ({ id: grant.id, kind: 'approval', status: 'active' })),
+        }),
+      );
+    });
+    return;
+  }
   if (req.method === 'POST' && req.url === '/api/local-tasks') {
     let body = '';
     req.on('data', (chunk) => (body += chunk));
@@ -274,6 +299,21 @@ async function main() {
       syncState?.ok === true && syncState.result?.receiptSync !== undefined,
       JSON.stringify(syncState?.result?.receiptSync ?? null),
     );
+    // Continuous authorization refresh is wired into the real app: the host only
+    // reports this block when a verifier is configured, and with no grants held
+    // the loop must stay quiet instead of polling the organization service.
+    const authorization = syncState?.result?.authorization ?? null;
+    check(
+      'status reports the continuous authorization refresh state',
+      authorization !== null && authorization.state === 'idle' && authorization.checks === 0,
+      JSON.stringify(authorization),
+    );
+    check(
+      'no authorization question is asked while the device holds no grants',
+      authorizationAsks.length === 0,
+      `asks=${authorizationAsks.length}`,
+    );
+
     // Shell hardening travels with the same status payload: the remote page runs
     // in its own persistent partition and the desktop supplies the security
     // headers when the server does not.

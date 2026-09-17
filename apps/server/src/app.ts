@@ -1075,6 +1075,45 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     );
   });
 
+  /**
+   * Continuous authorization refresh for the on-device host (Gate 7A.2). The host
+   * asks about the grants it holds; the answer is ids + status only, never the
+   * approval payload. Unknown ids answer `unknown`, which the host treats as
+   * "cannot vouch" (hold new work) rather than "revoked" (drop the grant).
+   */
+  app.post('/api/agent-authorizations/verify', async (request, reply) => {
+    if (!isAuthenticated(request.principal)) {
+      return reply.code(401).send({ error: 'authentication required' });
+    }
+    const body = (request.body ?? {}) as { deviceId?: unknown; grants?: unknown };
+    if (!Array.isArray(body.grants) || body.grants.length > 200) {
+      return reply.code(400).send({ error: 'grants must be an array of at most 200 entries' });
+    }
+    const grants: { id: string; kind: string }[] = [];
+    for (const entry of body.grants) {
+      const candidate = entry as { id?: unknown; kind?: unknown };
+      if (
+        typeof candidate?.id !== 'string' ||
+        candidate.id.trim() === '' ||
+        candidate.id.length > 128 ||
+        (candidate.kind !== 'approval' && candidate.kind !== 'delegation')
+      ) {
+        return reply.code(400).send({ error: 'each grant needs an id and a known kind' });
+      }
+      grants.push({ id: candidate.id, kind: candidate.kind });
+    }
+    const answer = await service.verifyAgentAuthorizations(request.principal, grants);
+    audit.record({
+      action: 'agent_authorizations.verify',
+      outcome: 'ok',
+      actorId: request.principal.id,
+      target: typeof body.deviceId === 'string' ? `device:${body.deviceId.slice(0, 64)}` : 'device:unknown',
+      detail: `asked=${grants.length} active=${answer.results.filter((item) => item.status === 'active').length}`,
+      ip: request.ip,
+    });
+    return answer;
+  });
+
   // Approvals ---------------------------------------------------------------
   app.get('/api/approvals', async (request) => service.listApprovals(request.principal));
 

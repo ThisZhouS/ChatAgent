@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import type { HermesAdapter } from './adapter';
-import { computeActionDigest, TrustedAuthorizationRegistry } from './authorization';
+import {
+  computeActionDigest,
+  TrustedAuthorizationRegistry,
+  type AuthorizationVerification,
+  type GrantKind,
+} from './authorization';
 import { INVALID_ROW_REASON } from './record-integrity';
 import { assertInsideWorkRoot, ensureTaskWorkDir } from './sandbox';
 import type { AgentHostStore } from './store';
@@ -27,6 +32,24 @@ export interface LocalAgentHostOptions {
    * grant — fail closed, never "trust the caller".
    */
   authorizations?: TrustedAuthorizationRegistry;
+  /**
+   * Continuous authorization refresh (Gate 7A.2). The host holds grants in
+   * memory; a long-resident host must ask the organization service whether they
+   * are still valid. `verify` is supplied by trusted code (the desktop main
+   * process talks to the organization server); the host only decides what to do
+   * with the answer. Omitted = no refresh loop (grants keep their own expiry).
+   */
+  authorizationRefresh?: {
+    verify: (question: {
+      deviceId: string;
+      agentId: string;
+      grants: { id: string; kind: GrantKind }[];
+    }) => Promise<AuthorizationVerification[]>;
+    /** How often to ask. Default 60 s; the loop only runs while grants are held. */
+    intervalMs?: number;
+    /** A check that does not answer in time counts as a failure (fail closed). */
+    timeoutMs?: number;
+  };
   /** Why a fake executor is in use; surfaced in status so it is never passed off as real. */
   executorReason?: string;
   maxConcurrency?: number;
@@ -65,6 +88,9 @@ export class LocalAgentHost {
   private readonly active = new Map<string, AbortController>();
   private readonly authorizations: TrustedAuthorizationRegistry;
   private dispatcher?: NodeJS.Timeout;
+  private authorizationTimer?: NodeJS.Timeout;
+  private authorizationCheck?: Promise<void>;
+  private heldSince?: number;
   private readonly now: () => number;
 
   constructor(private readonly options: LocalAgentHostOptions) {
@@ -98,6 +124,7 @@ export class LocalAgentHost {
     this.running = true;
     this.stopped = false;
     this.paused = false;
+    this.startAuthorizationRefresh();
     this.dispatcher = setInterval(() => {
       void this.tick();
     }, 50);
@@ -114,6 +141,7 @@ export class LocalAgentHost {
     this.running = false;
     if (this.dispatcher) clearInterval(this.dispatcher);
     this.dispatcher = undefined;
+    this.stopAuthorizationRefresh();
 
     for (const controller of this.active.values()) controller.abort();
 
@@ -177,6 +205,21 @@ export class LocalAgentHost {
       // outcome: without this it appeared in none of the counters.
       finished: tasks.filter((task) => isTerminal(task.state) || task.state === 'interrupted').length,
       lateResultsDropped: this.lateResultsDropped,
+      authorization: (() => {
+        const refresh = this.options.authorizationRefresh;
+        if (!refresh) return undefined;
+        const state = this.authorizations.refreshStatus();
+        return {
+          state: state.state,
+          lastCheckAt: state.lastCheckAt,
+          lastError: state.lastError,
+          checks: state.checks,
+          failures: state.failures,
+          revoked: state.revoked,
+          unverifiable: state.unverifiable,
+          ...this.heldReport(tasks),
+        };
+      })(),
       storeIntegrity: (() => {
         const report = this.options.store.getLoadReport?.();
         if (!report) return undefined;
@@ -192,6 +235,21 @@ export class LocalAgentHost {
         };
       })(),
       lastError: this.lastError,
+    };
+  }
+
+  /** How many queued tasks are waiting for a successful authorization check. */
+  private heldReport(tasks: LocalTaskRecord[]): { heldTasks: number; heldSince?: string } {
+    const held = tasks.filter(
+      (task) => task.state === 'queued' && this.options.authorizationRefresh !== undefined && this.heldForAuthorization(task),
+    ).length;
+    if (held === 0) {
+      this.heldSince = undefined;
+      return { heldTasks: 0 };
+    }
+    return {
+      heldTasks: held,
+      heldSince: new Date(this.heldSince ?? this.now()).toISOString(),
     };
   }
 
@@ -442,6 +500,87 @@ export class LocalAgentHost {
     return true;
   }
 
+  /**
+   * Runs one authorization refresh now. Used by the interval, and by tests and the
+   * desktop app when they want an answer before a dispatch decision. Never throws:
+   * a failed check leaves the host in the fail-closed `unverified` state.
+   */
+  async refreshAuthorization(): Promise<void> {
+    const refresh = this.options.authorizationRefresh;
+    if (!refresh) return;
+    if (this.authorizationCheck) return this.authorizationCheck;
+    const run = this.runAuthorizationCheck(refresh).finally(() => {
+      this.authorizationCheck = undefined;
+    });
+    this.authorizationCheck = run;
+    return run;
+  }
+
+  private startAuthorizationRefresh(): void {
+    const refresh = this.options.authorizationRefresh;
+    if (!refresh || this.authorizationTimer) return;
+    const intervalMs = refresh.intervalMs ?? 60_000;
+    // Nothing to refresh until trusted code has handed us a grant; a check with an
+    // empty question would only teach the service our device id for nothing.
+    const tick = () => {
+      if (this.authorizations.summary().delegations.length === 0 && this.authorizations.summary().approvals.length === 0) {
+        return;
+      }
+      void this.refreshAuthorization();
+    };
+    this.authorizationTimer = setInterval(tick, intervalMs);
+    this.authorizationTimer.unref?.();
+    tick();
+  }
+
+  private stopAuthorizationRefresh(): void {
+    if (!this.authorizationTimer) return;
+    clearInterval(this.authorizationTimer);
+    this.authorizationTimer = undefined;
+  }
+
+  private async runAuthorizationCheck(refresh: NonNullable<LocalAgentHostOptions['authorizationRefresh']>): Promise<void> {
+    const grants = this.authorizations.outstanding();
+    if (grants.length === 0) {
+      // Nothing to ask about: this is still a healthy state, not an unverified one.
+      this.authorizations.markChecked(this.now());
+      return;
+    }
+    const timeoutMs = refresh.timeoutMs ?? 10_000;
+    try {
+      const answer = await withTimeout(
+        refresh.verify({ deviceId: this.options.deviceId, agentId: this.options.agentId, grants }),
+        timeoutMs,
+      );
+      if (!Array.isArray(answer)) throw new Error('authorization refresh returned no list');
+      const applied = this.authorizations.applyVerification(answer, this.now());
+      this.authorizations.markChecked(this.now());
+      // A revocation can make queued work unrunnable; a recovery can make held work
+      // runnable again. Either way the dispatcher should look at the queue now.
+      if (applied.revoked > 0 || this.heldSince !== undefined) void this.tick();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.authorizations.markCheckFailed(message, this.now());
+      this.heldSince ??= this.now();
+      this.lastError = `authorization_refresh_failed: ${message}`;
+    }
+  }
+
+  /**
+   * Fail-closed gate for new work. A side-effect task whose grants could not be
+   * re-verified is *held*, not failed: it stays queued and runs once a check
+   * succeeds. Work that is already running is never disturbed, and local document
+   * work (which needs no grant) keeps working offline — that is the whole point of
+   * the on-device host.
+   */
+  private heldForAuthorization(record: LocalTaskRecord): boolean {
+    return !this.authorizations.grantsAreUsable({
+      kind: record.kind,
+      delegationId: record.delegationId,
+      approvalId: record.approvalId,
+    });
+  }
+
   /** One dispatch pass: claim, authorize, run. Exposed for tests. */
   async tick(): Promise<void> {
     // Every call site is `void this.tick()`: an escaping rejection would be an
@@ -462,6 +601,11 @@ export class LocalAgentHost {
     for (const candidate of tasks) {
       if (candidate.state !== 'queued') continue;
       if (this.active.size >= maxConcurrency) return;
+      if (this.heldForAuthorization(candidate)) {
+        // Hold it: no claim, no lease, no failure — just no start.
+        this.heldSince ??= this.now();
+        continue;
+      }
       const holder = `${this.options.deviceId}:${process.pid}`;
       let claimed: LocalTaskRecord | undefined;
       try {
@@ -499,6 +643,13 @@ export class LocalAgentHost {
     // The capability floor runs again here: a row stored by an older version (or
     // edited on disk) must not reach the executor just because submit() never saw it.
     const refusedCapability = refuseCapabilities(record.kind, record.toolsets);
+    // Authorization refresh may have failed between the claim and this point; the
+    // task goes back to the queue instead of running on unverified grants.
+    if (!refusedCapability && recheck.ok && this.heldForAuthorization(record)) {
+      this.heldSince ??= this.now();
+      await this.options.store.release(record.taskId, holder);
+      return;
+    }
     if (!recheck.ok || refusedCapability) {
       const reason: BlockReason = refusedCapability ?? (recheck.ok ? 'capability_not_granted' : recheck.reason);
       await this.finish(record, 'failed', {
@@ -707,6 +858,8 @@ function describeBlock(reason: BlockReason): string {
       return '后台 Agent 已停止';
     case 'work_root_missing':
       return '授权工作目录不存在';
+    case 'authorization_unverified':
+      return '授权暂时无法向组织服务复核，已暂缓执行（不会失败，复核恢复后继续）';
     default:
       return String(reason);
   }
@@ -717,4 +870,26 @@ function summarize(result: { artifacts: Array<{ name: string }>; output: string 
     return `产出 ${result.artifacts.map((artifact) => artifact.name).join('、')}`;
   }
   return result.output.slice(0, 200);
+}
+
+/**
+ * Bounds a trusted-callback promise. A verification call that never answers must
+ * not leave authorization in limbo: the timeout turns into a failed check, which
+ * is the fail-closed state.
+ */
+function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer.unref?.();
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }

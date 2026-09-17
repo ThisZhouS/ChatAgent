@@ -509,7 +509,7 @@ async function startHostWithLockRecovery(serverUrl) {
     }
 
     try {
-      createHost();
+      createHost(serverUrl);
       await host.start();
       await reportStoreIntegrity();
       startReceiptSync(serverUrl);
@@ -526,7 +526,50 @@ async function startHostWithLockRecovery(serverUrl) {
   }
 }
 
-function createHost() {
+/**
+ * Continuous authorization refresh (Gate 7A.2).
+ *
+ * The host holds delegations/approvals in memory; a long-resident host has to ask
+ * the organization service whether they are still valid. The question carries ids
+ * and kinds only — never the payload — and the answer is applied by the host:
+ * `active` refreshes the expiry, `revoked`/`expired` removes the grant, `unknown`
+ * holds new work that needs it (without destroying the grant).
+ *
+ * The server reports which kinds it keeps a ledger for (`supportedKinds`); kinds
+ * it does not are not asked about, so "no ledger here" is never mistaken for
+ * "revoked". A failed call throws, which is what makes the host fail closed.
+ */
+function createAuthorizationVerifier(serverUrl) {
+  let supportedKinds = new Set(['approval']);
+  return async ({ deviceId, agentId, grants }) => {
+    const asked = grants.filter((grant) => supportedKinds.has(grant.kind));
+    if (asked.length === 0) return [];
+    let cookies = '';
+    try {
+      // The workbench runs in its own partition: its session is the signed-in one.
+      const found = await session.fromPartition(WORKBENCH_PARTITION).cookies.get({ url: serverUrl });
+      cookies = found.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+    } catch {
+      cookies = '';
+    }
+    const headers = { 'content-type': 'application/json' };
+    if (cookies) headers.cookie = cookies;
+    const response = await fetch(`${serverUrl}/api/agent-authorizations/verify`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ deviceId, agentId, grants: asked }),
+    });
+    if (!response.ok) throw new Error(`http_${response.status}`);
+    const body = await response.json();
+    if (Array.isArray(body && body.supportedKinds)) {
+      supportedKinds = new Set(body.supportedKinds.filter((kind) => typeof kind === 'string'));
+    }
+    if (!Array.isArray(body && body.results)) throw new Error('malformed verification response');
+    return body.results;
+  };
+}
+
+function createHost(serverUrl) {
   const root = hostRoot();
   const executable = resolveHermesExecutable();
   const adapter = executable
@@ -547,8 +590,25 @@ function createHost() {
     }),
     adapter,
     executorReason,
+    authorizationRefresh: {
+      verify: createAuthorizationVerifier(serverUrl),
+      // Twice the receipt-sync cadence: authorization changes are rarer than task
+      // completions, and every check is a network round trip.
+      intervalMs: readAuthorizationRefreshMs(),
+    },
   });
   return host;
+}
+
+/**
+ * Authorization refresh interval. The default (60 s) is what ships; the env
+ * override exists so an end-to-end check can watch a refresh happen, and is
+ * clamped to a sane range.
+ */
+function readAuthorizationRefreshMs() {
+  const raw = Number(process.env.CHATAGENT_AUTHORIZATION_REFRESH_MS);
+  if (!Number.isInteger(raw) || raw < 200 || raw > 3600000) return undefined;
+  return raw;
 }
 
 function registerHostIpc(serverUrl) {
@@ -705,7 +765,7 @@ if (!hasSingleInstanceLock) {
     );
 
     deviceToken = randomBytes(32).toString('hex');
-    createHost();
+    createHost(serverUrl);
     void startHostWithLockRecovery(serverUrl);
     registerHostIpc(serverUrl);
     createTray(serverUrl);

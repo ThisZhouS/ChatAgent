@@ -56,6 +56,21 @@ type HostStatus = {
     pruned?: number;
     corruptFile?: string;
   };
+  /**
+   * Continuous authorization refresh (Gate 7A.2): what the last check against the
+   * organization service said. `unverified` means new external actions are held.
+   */
+  authorization?: {
+    state?: 'ok' | 'unverified' | 'idle';
+    lastCheckAt?: string;
+    lastError?: string;
+    checks?: number;
+    failures?: number;
+    revoked?: number;
+    unverifiable?: number;
+    heldTasks?: number;
+    heldSince?: string;
+  };
   error?: string;
 };
 type HostTask = {
@@ -104,6 +119,30 @@ const hostRetentionNote = computed(() => {
   }
   return parts.length > 0 ? `本机任务库已保留最近记录：${parts.join('；')}` : '';
 });
+/**
+ * An unverified authorization is not a failure the employee caused: the host
+ * simply refuses to start *new* external actions until the organization service
+ * answers again. Work already running is untouched, so the wording must not
+ * suggest that something was rolled back.
+ */
+const hostAuthorizationWarning = computed(() => {
+  const authorization = hostStatus.value?.authorization;
+  if (!authorization) return '';
+  const parts: string[] = [];
+  if (authorization.state === 'unverified') {
+    parts.push(
+      `授权暂时无法向组织服务复核（${authorization.lastError ?? '原因未知'}）：` +
+        '新的外部操作已暂缓，已开始的执行不受影响，复核恢复后会自动继续',
+    );
+  }
+  if (authorization.heldTasks) {
+    parts.push(`${authorization.heldTasks} 条等待复核的任务仍在队列中（未失败、未被丢弃）`);
+  }
+  if (authorization.revoked) parts.push(`组织服务已撤销 ${authorization.revoked} 项授权`);
+  if (authorization.unverifiable) parts.push(`${authorization.unverifiable} 项授权无法确认，相关新任务已暂缓`);
+  return parts.join('；');
+});
+
 const hostStatus = ref<HostStatus | null>(null);
 const hostTasks = ref<HostTask[]>([]);
 /** Total records on the device; `hostTasks` is the newest page of them. */
@@ -456,6 +495,10 @@ CHATAGENT_MODEL_NAME=your-model</pre>
       <p v-if="hostStatus?.receiptSync?.lastError" class="muted" data-testid="receipt-sync">
         <el-tag size="small" type="info">回执同步</el-tag>
         未上传 {{ hostStatus.receiptSync.pending ?? 0 }} 条（{{ hostStatus.receiptSync.lastError }}），联网后自动重试
+      </p>
+      <p v-if="hostAuthorizationWarning" class="muted" data-testid="host-authorization">
+        <el-tag size="small" type="warning">授权复核</el-tag>
+        {{ hostAuthorizationWarning }}
       </p>
       <p v-if="hostRetentionNote" class="muted" data-testid="host-retention">
         <el-tag size="small" type="info">保留策略</el-tag>

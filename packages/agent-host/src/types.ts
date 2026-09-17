@@ -37,6 +37,12 @@ export type BlockReason =
   | 'host_stopped'
   | 'host_paused'
   | 'work_root_missing'
+  /**
+   * The grants this task needs could not be re-verified with the organization
+   * service (or a grant the service no longer vouches for). New side-effect work
+   * is held until a check succeeds; running work is never rolled back.
+   */
+  | 'authorization_unverified'
   /** The persisted row could not be trusted when the store was loaded. */
   | 'invalid_persisted_row';
 
@@ -239,6 +245,26 @@ export interface HostStatus {
    * What the store found while loading: repaired rows, quarantined rows and
    * duplicates. Present only when the store reports it (the file store does).
    */
+  /**
+   * Continuous authorization refresh (Gate 7A.2): what the last check against the
+   * organization service said. `unverified` means new side-effect work is held.
+   */
+  authorization?: {
+    state: 'ok' | 'unverified' | 'idle';
+    lastCheckAt?: string;
+    lastError?: string;
+    /** Checks that succeeded / failed since the host started. */
+    checks: number;
+    failures: number;
+    /** Grants the service invalidated (revoked or expired) since startup. */
+    revoked: number;
+    /** Grants the service could not vouch for; work needing them is held. */
+    unverifiable: number;
+    /** Queued tasks waiting for a successful check (not failed, not dropped). */
+    heldTasks?: number;
+    /** When work first started being held; absent when nothing is held. */
+    heldSince?: string;
+  };
   storeIntegrity?: {
     /** Terminal records past the retention cap; dropped by the next write. */
     prunable?: number;

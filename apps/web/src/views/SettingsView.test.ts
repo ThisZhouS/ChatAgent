@@ -175,6 +175,58 @@ describe('SettingsView', () => {
     expect(submitted?.taskId).toMatch(/^ui-/);
   });
 
+  it('surfaces an unverified authorization without implying a rollback', async () => {
+    const command = vi.fn(async (cmd: unknown) => {
+      if ((cmd as { type?: string }).type === 'status') {
+        return {
+          ok: true,
+          result: {
+            deviceId: 'desktop-9f2c4d1e',
+            agentId: 'hermes',
+            running: true,
+            runningTasks: 1,
+            paused: false,
+            executor: 'hermes',
+            // The organization service could not be reached: new external actions
+            // are held, work already running is untouched.
+            authorization: {
+              state: 'unverified',
+              lastError: 'http_503',
+              checks: 1,
+              failures: 1,
+              revoked: 1,
+              unverifiable: 2,
+              heldTasks: 2,
+            },
+          },
+        };
+      }
+      if ((cmd as { type?: string }).type === 'list') return { ok: true, result: { tasks: [], total: 0 } };
+      return { ok: true, result: {} };
+    });
+    (window as { chatagent?: unknown }).chatagent = {
+      platform: 'win32',
+      versions: { electron: '39.8.10', chrome: '142', node: '22' },
+      host: { command, quitApp: vi.fn(async () => ({ ok: true })) },
+    };
+
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+
+    const note = wrapper.find('[data-testid="host-authorization"]').text();
+    expect(note).toContain('http_503');
+    // Fail closed, but nothing is thrown away or rolled back.
+    expect(note).toContain('新的外部操作已暂缓');
+    expect(note).toContain('已开始的执行不受影响');
+    expect(note).toContain('2 条等待复核的任务仍在队列中');
+    expect(note).toContain('未失败、未被丢弃');
+    expect(note).toContain('已撤销 1 项授权');
+    expect(note).toContain('2 项授权无法确认');
+  });
+
   it('surfaces the block reason and offers a retry for a failed local task', async () => {
     const commands: unknown[] = [];
     const command = vi.fn(async (cmd: unknown) => {

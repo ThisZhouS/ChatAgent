@@ -1479,6 +1479,58 @@ export class ChatAgentService {
     return { ...approval, action: { ...approval.action, text: scrubbed } };
   }
 
+  /**
+   * Answers the on-device host's continuous-authorization question (Gate 7A.2):
+   * are the grants this device holds still valid?
+   *
+   * Only this member's own approvals are answered; another member's id, an
+   * unknown id, or a kind this service keeps no ledger for is reported as
+   * `unknown`. `unknown` is deliberately *not* the same as revoked: the host holds
+   * new work that depends on it instead of destroying the local grant, so a
+   * transient outage never forces the employee to re-authorize from scratch.
+   * Nothing from the approval payload is echoed back — ids and status only.
+   */
+  async verifyAgentAuthorizations(
+    principal: Principal,
+    grants: { id: string; kind: string }[],
+  ): Promise<{
+    supportedKinds: string[];
+    results: { id: string; kind: string; status: 'active' | 'revoked' | 'expired' | 'unknown'; expiresAt?: string }[];
+  }> {
+    this.requireMember(principal);
+    const supportedKinds = ['approval'];
+    const now = Date.now();
+    const results: {
+      id: string;
+      kind: string;
+      status: 'active' | 'revoked' | 'expired' | 'unknown';
+      expiresAt?: string;
+    }[] = [];
+    for (const grant of grants) {
+      if (grant.kind !== 'approval') continue; // no ledger for this kind yet: say so, do not guess
+      const approval = await this.approvals.get(grant.id);
+      if (
+        !approval ||
+        !sameOrganization(principal, approval.organizationId) ||
+        approval.requesterId !== principal.id
+      ) {
+        results.push({ id: grant.id, kind: grant.kind, status: 'unknown' });
+        continue;
+      }
+      if (Date.parse(approval.expiresAt) <= now) {
+        results.push({ id: grant.id, kind: grant.kind, status: 'expired', expiresAt: approval.expiresAt });
+        continue;
+      }
+      results.push({
+        id: grant.id,
+        kind: grant.kind,
+        status: approval.status === 'approved' ? 'active' : 'revoked',
+        expiresAt: approval.expiresAt,
+      });
+    }
+    return { supportedKinds, results };
+  }
+
   /** Records an approve/reject decision; the requester can never self-approve. */
   async decideApproval(
     principal: Principal,

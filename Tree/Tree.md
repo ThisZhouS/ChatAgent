@@ -56,7 +56,7 @@ ChatAgent/
 │   ├── hermes/          Agent 运行时（工具循环/提供商/记忆/事件）
 │   ├── document/        Word/Excel 解析与生成 + 工具封装
 │   ├── im-gateway/      IM 网关抽象 + 钉钉/飞书/企微/QQ 规范化
-│   ├── agent-host/      本机 Agent Host（任务库/租约/停止/Hermes 适配/IPC/载入校验/保留策略/进程树/锁接管）
+│   ├── agent-host/      本机 Agent Host（任务库/租约/停止/Hermes 适配/IPC/载入校验/保留策略/进程树/锁心跳与持有者身份/持续授权刷新）
 │   └── task-engine/     任务状态机、队列、重试、取消、持久化
 ├── docs/                项目简报、调研、需求、任务、架构、环境、验收、Gate 记录
 │   ├── gate1-2-identity-task-integrity.md  认证/状态机/迁移策略

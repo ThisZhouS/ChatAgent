@@ -119,11 +119,12 @@ describe('local agent host lifecycle', () => {
   it('recovers a task that was running when the host died, and never calls it succeeded', async () => {
     const root = await makeRoot();
     const store = new MemoryAgentHostStore();
-    // A slow executor makes the "running" window observable before the crash.
-    const first = makeHost({ workRoot: root, store, adapter: new FakeHermesAdapter({ durationMs: 800 }) });
+    // A deliberately slow executor keeps the "running" window open long enough to
+    // observe even when the whole suite runs in parallel on a loaded machine.
+    const first = makeHost({ workRoot: root, store, adapter: new FakeHermesAdapter({ durationMs: 5_000 }) });
     await first.host.start();
     const submitted = await first.host.submit(baseTask());
-    await waitFor(async () => (await first.host.get(submitted.taskId))?.state === 'running');
+    await waitFor(async () => (await first.host.get(submitted.taskId))?.state === 'running', 20_000);
 
     // Simulate a crash: a new store instance read from disk sees `running`.
     const persistedRoot = await makeRoot();

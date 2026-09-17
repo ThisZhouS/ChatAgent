@@ -169,7 +169,7 @@
 5. ~~**远程页面加固**~~ **已完成**：`persist:chatagent-workbench` 独立持久分区 + 缺省 CSP 注入（服务端已有 CSP 则不削弱）+ 分区内权限全拒；`status().shell` 可核对；`electron-csp-check.mjs` 用内联脚本载荷证明策略被浏览器强制执行（5/5），`electron-receipt-sync-check.mjs` 19/19 覆盖同步与分区。
 6. ~~**任务库保留策略**~~ **已完成**：`selectExpiredRecords` 只淘汰终态记录、进行中的任务永不淘汰、载入只报告不改写文件、淘汰发生在下一次被接受的写入、写入失败时把记录放回内存；`status().storeIntegrity.prunable` 与设置页「保留策略」提示可见（`retention.test.ts` 7 例）。
 7. ~~**服务端回执单调性**~~ **已完成**：离线队列乱序/重发时，比已存版本更旧的收据一律忽略并计入 `stale`，不会把已完成任务打回进行中；接口返回 `{accepted, stale}` 并在审计写明忽略条数（`local-tasks.test.ts` 10/10）。
-8. **下一轮候选（未开始）**：打包 exe 重建与打包后 E2E（需联网）；Windows Job Object 子进程回收（需原生模块）；Electron 升级到受支持版本（需联网下载二进制）；真实 IM/模型凭据下的端到端联调；SSE 断线补发与持久游标（Gate 7）。
+8. **下一轮候选（未开始）**：服务端委托台账与授权签发路径（把 `supportedKinds` 扩到 `delegation`）；打包 exe 重建与打包后 E2E（需联网）；Windows Job Object 子进程回收（需原生模块）；Electron 升级到受支持版本（需联网下载二进制）；真实 IM/模型凭据下的端到端联调；SSE 断线补发与持久游标（Gate 7）。
 
 ## 后续方向
 
@@ -185,7 +185,7 @@
 - [x] Gate 7A.1 / H-02：新增 `TrustedAuthorizationRegistry`；IPC 只传 `delegationId`/`approvalId` 引用（`.strict()` 拒绝内联委托/审批对象），校验时间/设备/Agent/能力/所有者/绑定委托/动作摘要，并在派发前复核。
 - [x] Gate 7A.1 / H-01、H-04：提交按 taskId 幂等，同 id 异载荷报 `idempotency_conflict`，重跑仅经显式 `retry`；记录带 `version`，`finish` 丢弃终态后的迟到结果并用 CAS 提交，取消立即写终态。
 - [x] Gate 7A.1 / H-03、H-05：落盘改为 write→fsync→rename 且错误抛给调用方（不再确认假成功）；JSON 任务库加独占锁文件（存活 pid 拒绝第二写者，死 pid/损坏/超 12h 可接管）配合 Electron 单实例锁，不扩展多进程服务。
-- [x] Gate 7A.2：断网本机受信工作台（`apps/desktop/workbench.html`，严格 CSP、仅用窄桥、真实 Electron 11/11 验证）、关窗常驻（6/6）、明确退出后停止并清理自有进程树（`scripts/electron-quit-check.mjs` 10/10：进程结束、锁释放、任务库可读、无残留）、稳定 deviceId。**剩余**：Host 侧持续回执同步与断网账号归属核对。
+- [x] Gate 7A.2：断网本机受信工作台（`apps/desktop/workbench.html`，严格 CSP、仅用窄桥、真实 Electron 11/11 验证）、关窗常驻（6/6）、明确退出后停止并清理自有进程树（`scripts/electron-quit-check.mjs` 10/10：进程结束、锁释放、任务库可读、无残留）、稳定 deviceId。**剩余**：断网账号归属核对（回执 `ownerId` 已由服务端校验并通过 403 拒绝越权）。
 - [ ] Gate 7A.3：固定来源/版本/安装方式的 Hermes、显式模型配置与真实安全工具/文档验证；未达工具隔离前不接真实员工文件。
 - [ ] 技术债（2026-09-16 调研）：Electron 39.8.x 已出官方支持窗口（现行为 42/43/44），升级需重打包+E2E；远端工作台未用独立 session 分区、未注入 CSP；JSON 任务库可评估 `node:sqlite`(WAL)+行级 CAS；Windows 上主进程被强杀后的子进程回收需 Job Object/原生插件。
 
@@ -228,7 +228,7 @@ pnpm dev
 ## 下一轮建议（2026-09-16 第三轮验证之后）
 
 1. **锁的持有者身份而非年龄**（F5 根治）：锁文件记录进程启动时间/boot id 或周期性心跳，让“pid 复用”的判断不再依赖 30 天年龄；心跳方案需同时给出断网/挂起的退化行为与审计。
-2. **Host 侧持续授权刷新**（Gate 7A.2 剩余）：委托/审批目前只在内存中，宿主长期驻留时需要定期向组织服务核对撤销/过期，且核对失败必须 fail-closed（保持已跑任务不回滚、未跑任务不启动）。
+2. ~~**Host 侧持续授权刷新**~~ **已完成**：`POST /api/agent-authorizations/verify`（只回 id+状态，不回传审批内容；他人/未知/无台账一律 `unknown`，并用 `supportedKinds` 声明只管 `approval`）+ 宿主 `authorizationRefresh`（默认 60 s，仅在有授权时提问；`active` 刷新过期时间、`revoked|expired` 本地撤销、`unknown` 只标记不销毁、调用失败/超时 → `unverified`）；`unverified` 时新外部副作用任务**暂缓**（不失败、不占租约、留队列，恢复后自动继续），在跑任务不回滚，本地文档任务不受影响；`status().authorization` 与设置页「授权复核」可见。证据：`docs/iteration-2026-09-16-gate7a1-hardening.md` 第十五轮、`authorization-refresh.test.ts` 10 例、`agent-authorizations.test.ts` 4 例、真实 Electron 21/21。**仍缺**：服务端的委托台账（目前 `supportedKinds` 只有 `approval`）与从服务端取授权的签发路径。
 3. **回执失败的可见性**：分块后仍需在 `status()` 里区分“服务端拒收（400/403）”与“网络失败”，并让设置页显式提示“有 N 条本机记录未能上传”，避免长期静默。
 4. **保留策略的可见性收尾**：`storeIntegrity.pruned` 已上报，下一步在设置页展示“已按保留策略清理 N 条”，并允许用户查看被清理的 id（当前只在内存计数）。
 5. **打包与升级**：重跑 `electron-builder` 并对打包后 exe 做一次端到端（含回执同步与锁接管）；Electron 版本升级仍需外网下载，保持 BLOCKED 记录。

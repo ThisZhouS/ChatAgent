@@ -74,3 +74,11 @@
 - 同时让心跳自己做归属校验（发现锁易主就停心跳、拒绝写入），释放锁校验 pid+token 并清掉 `.beat`。
 - 结果：锁检查 18/18（新增“心跳停止不抢锁”“心跳在推进”“退出后无残留”），根套件 31 文件 / 307 用例，`tsc`/`vue-tsc` 0 错。
 - 教训：这一轮自己引入过一个缺陷（`resolveDeviceId` 被误改成 `async` → `status()` 返回 Promise → IPC“无法克隆”），是端到端 Electron 检查抓到的；单元测试全绿并不能替代真机检查。
+
+## ⑰ 2026-09-17 中午：Host 侧持续授权刷新（Gate 7A.2 剩余）
+
+- 问题：委托/审批只在宿主内存里，关窗常驻的宿主从不向组织服务复核撤销/过期；一次网络抖动也不该逼员工重新授权。
+- 做法：服务端新增 `POST /api/agent-authorizations/verify`（只回 id+状态+到期时间，`supportedKinds` 声明只管 `approval`，他人/未知/无台账一律 `unknown`，不回传审批内容）；宿主新增 `authorizationRefresh`（默认 60 s，仅在有授权时提问，超时按失败处理），`active` 刷新到期时间、`revoked|expired` 本地撤销、`unknown` 只标记不销毁、失败/超时 → `unverified`。
+- fail-closed 的边界：`unverified` 时新的外部副作用任务**暂缓**（不失败、不占租约、留队列，恢复后自动继续），在跑任务不回滚，本地文档任务不受影响；`status().authorization` 与设置页「授权复核」可见。
+- 结果：新增 `authorization-refresh.test.ts` 10 例与 `agent-authorizations.test.ts` 4 例；真实 Electron 回执检查新增两项授权断言后 21/21；根套件 33 文件 / 321 用例（连续两次）、web 41、`tsc`/`vue-tsc` 0 错。
+- 顺带修掉两个负载下的不稳定用例（改用带截止时间的 `waitFor`，并把崩溃模拟的执行时长从 0.8 s 放到 5 s）。
