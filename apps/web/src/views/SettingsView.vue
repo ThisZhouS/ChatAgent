@@ -44,7 +44,17 @@ type HostStatus = {
   executor?: string;
   executorReason?: string;
   /** Main-process upload state for local task receipts (offline queue). */
-  receiptSync?: { pending?: number; synced?: number; lastSuccessAt?: string; lastError?: string };
+  receiptSync?: {
+    pending?: number;
+    synced?: number;
+    lastSuccessAt?: string;
+    lastError?: string;
+    /**
+     * Why the last upload failed. A batch the server refused (4xx) is not fixed by
+     * waiting for the network, so the UI must not promise an automatic retry.
+     */
+    lastFailure?: { kind?: 'server_rejected' | 'server_error' | 'network'; status?: number; detail?: string; at?: string };
+  };
   /** What the task store found while loading (repaired/quarantined/duplicate rows). */
   storeIntegrity?: {
     repaired?: number;
@@ -119,6 +129,38 @@ const hostRetentionNote = computed(() => {
   }
   return parts.length > 0 ? `本机任务库已保留最近记录：${parts.join('；')}` : '';
 });
+/**
+ * Upload failures are not all the same problem: "the server refused these
+ * receipts" (session expired, ownership mismatch, payload rejected) needs a human,
+ * while "we could not reach the server" resolves itself. Promising the wrong one
+ * is how an employee waits forever for something that will never happen.
+ */
+const receiptSyncNote = computed(() => {
+  const sync = hostStatus.value?.receiptSync;
+  if (!sync) return '';
+  const pending = sync.pending ?? 0;
+  const failure = sync.lastFailure;
+  if (pending === 0) {
+    if (failure?.kind === 'server_rejected') {
+      return `回执上传被服务端拒绝（${failure.detail ?? ''}），当前没有待上传记录`;
+    }
+    return '';
+  }
+  if (failure?.kind === 'server_rejected') {
+    return (
+      `有 ${pending} 条回执被服务端拒收（${failure.detail ?? '原因未知'}）：` +
+      '已停止自动重试，请重新登录或确认设备归属后再试（记录仍在本机，不会丢失）'
+    );
+  }
+  if (failure?.kind === 'server_error') {
+    return `有 ${pending} 条回执未上传（服务端错误 ${failure.detail ?? ''}），稍后自动重试`;
+  }
+  if (failure?.kind === 'network') {
+    return `有 ${pending} 条回执未上传（网络不可达），联网后自动重试`;
+  }
+  return `有 ${pending} 条回执未上传，稍后自动重试`;
+});
+
 /**
  * An unverified authorization is not a failure the employee caused: the host
  * simply refuses to start *new* external actions until the organization service
@@ -492,9 +534,11 @@ CHATAGENT_MODEL_NAME=your-model</pre>
         <el-tag size="small" type="warning">注意</el-tag>
         {{ hostStatus.executorReason }}
       </p>
-      <p v-if="hostStatus?.receiptSync?.lastError" class="muted" data-testid="receipt-sync">
-        <el-tag size="small" type="info">回执同步</el-tag>
-        未上传 {{ hostStatus.receiptSync.pending ?? 0 }} 条（{{ hostStatus.receiptSync.lastError }}），联网后自动重试
+      <p v-if="receiptSyncNote" class="muted" data-testid="receipt-sync">
+        <el-tag size="small" :type="hostStatus?.receiptSync?.lastFailure?.kind === 'server_rejected' ? 'warning' : 'info'">
+          回执同步
+        </el-tag>
+        {{ receiptSyncNote }}
       </p>
       <p v-if="hostAuthorizationWarning" class="muted" data-testid="host-authorization">
         <el-tag size="small" type="warning">授权复核</el-tag>

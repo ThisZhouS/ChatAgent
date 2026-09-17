@@ -175,6 +175,56 @@ describe('SettingsView', () => {
     expect(submitted?.taskId).toMatch(/^ui-/);
   });
 
+  it('distinguishes a refused receipt upload from a network failure', async () => {
+    const mountWith = async (receiptSync: Record<string, unknown>) => {
+      const command = vi.fn(async (cmd: unknown) => {
+        if ((cmd as { type?: string }).type === 'status') {
+          return {
+            ok: true,
+            result: { deviceId: 'desktop-1', agentId: 'hermes', running: true, executor: 'hermes', receiptSync },
+          };
+        }
+        if ((cmd as { type?: string }).type === 'list') return { ok: true, result: { tasks: [], total: 0 } };
+        return { ok: true, result: {} };
+      });
+      (window as { chatagent?: unknown }).chatagent = {
+        platform: 'win32',
+        versions: { electron: '39.8.10', chrome: '142', node: '22' },
+        host: { command, quitApp: vi.fn(async () => ({ ok: true })) },
+      };
+      const wrapper = mount(SettingsView, { props: { me }, global: { plugins: [ElementPlus] } });
+      await flushPromises();
+      return wrapper;
+    };
+
+    // The server refused the batch: waiting for the network will not help, and the
+    // records are still on this machine.
+    const refused = await mountWith({
+      pending: 3,
+      synced: 1,
+      lastError: 'http_403',
+      lastFailure: { kind: 'server_rejected', status: 403, detail: 'http_403' },
+    });
+    const refusedNote = refused.find('[data-testid="receipt-sync"]').text();
+    expect(refusedNote).toContain('3 条回执被服务端拒收');
+    expect(refusedNote).toContain('http_403');
+    expect(refusedNote).toContain('已停止自动重试');
+    expect(refusedNote).not.toContain('联网后自动重试');
+
+    // The network is down: this one does resolve itself.
+    const offline = await mountWith({
+      pending: 2,
+      synced: 0,
+      lastError: 'network: ENOTFOUND',
+      lastFailure: { kind: 'network', detail: 'network: ENOTFOUND' },
+    });
+    expect(offline.find('[data-testid="receipt-sync"]').text()).toContain('联网后自动重试');
+
+    // Nothing queued and nothing wrong: no note at all.
+    const quiet = await mountWith({ pending: 0, synced: 5 });
+    expect(quiet.find('[data-testid="receipt-sync"]').exists()).toBe(false);
+  });
+
   it('surfaces an unverified authorization without implying a rollback', async () => {
     const command = vi.fn(async (cmd: unknown) => {
       if ((cmd as { type?: string }).type === 'status') {

@@ -7,7 +7,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // The desktop shell is plain CommonJS (it runs inside Electron), so the module
 // under test is loaded through createRequire rather than rewritten as ESM.
 const require = createRequire(import.meta.url);
-const { createReceiptSync, toReceipt, MAX_PENDING, MAX_RECEIPTS_PER_REQUEST, readState } = require('./receipt-sync.cjs');
+const {
+  createReceiptSync,
+  toReceipt,
+  MAX_PENDING,
+  MAX_RECEIPTS_PER_REQUEST,
+  REJECT_BACKOFF_MS,
+  readState,
+} = require('./receipt-sync.cjs');
 
 const dirs = [];
 afterEach(() => {
@@ -354,5 +361,96 @@ describe('queue state file', () => {
     const missing = readState(join(dir, 'nope.json'));
     expect(missing.lastError).toBeUndefined();
     expect(missing.pending).toEqual({});
+  });
+});
+
+describe('receipt upload failure classification', () => {
+  it('treats a server rejection as work for a human, not for the network', async () => {
+    const dir = scratch();
+    const statePath = join(dir, 'receipts-sync.json');
+    let clock = Date.parse('2026-09-17T10:00:00.000Z');
+    let status = 403;
+    const fetchImpl = vi.fn(async () => ({ ok: status >= 200 && status < 300, status }));
+    const sync = createReceiptSync({
+      host: fakeHost([hostRecord('t1', '2026-09-17T09:00:00.000Z')]),
+      serverUrl: 'http://127.0.0.1:1',
+      statePath,
+      cookieProvider: async () => 'session=abc',
+      fetchImpl,
+      intervalMs: 60_000,
+      now: () => clock,
+      logger: { info() {}, error() {} },
+    });
+    const first = await sync.kick('test');
+    expect(first).toMatchObject({ sent: 0, status: 403, failure: 'server_rejected' });
+    // Nothing is dropped: the receipt is still queued, and the state says why.
+    expect(sync.status().pending).toBe(1);
+    expect(sync.status().lastFailure).toMatchObject({ kind: 'server_rejected', status: 403 });
+    expect(sync.status().lastError).toBe('http_403');
+
+    // Retrying the same rejected batch right away would be refused again.
+    const second = await sync.kick('test');
+    expect(second).toMatchObject({ skipped: true, reason: 'rejected_backoff' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // After the backoff the queue is offered again, and it drains.
+    clock += REJECT_BACKOFF_MS + 1;
+    status = 200;
+    const third = await sync.kick('test');
+    expect(third.sent).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sync.status().pending).toBe(0);
+    expect(sync.status().lastFailure).toBeUndefined();
+    expect(sync.status().lastError).toBeUndefined();
+    sync.stop();
+  });
+
+  it('classifies transport and 5xx failures as retryable', async () => {
+    const dir = scratch();
+    const statePath = join(dir, 'receipts-sync.json');
+    let mode = 'throw';
+    const fetchImpl = vi.fn(async () => {
+      if (mode === 'throw') throw new Error('getaddrinfo ENOTFOUND');
+      return { ok: false, status: 503 };
+    });
+    const sync = createReceiptSync({
+      host: fakeHost([hostRecord('t1', '2026-09-17T09:00:00.000Z')]),
+      serverUrl: 'http://127.0.0.1:1',
+      statePath,
+      cookieProvider: async () => '',
+      fetchImpl,
+      intervalMs: 60_000,
+      logger: { info() {}, error() {} },
+    });
+    const offline = await sync.kick('test');
+    expect(offline).toMatchObject({ sent: 0, failure: 'network' });
+    expect(sync.status().lastFailure).toMatchObject({ kind: 'network' });
+    expect(sync.status().lastFailure.detail).toContain('ENOTFOUND');
+
+    // A transport failure keeps the normal retry path: the very next kick tries.
+    mode = 'server';
+    const five = await sync.kick('test');
+    expect(five).toMatchObject({ sent: 0, status: 503, failure: 'server_error' });
+    expect(sync.status().lastFailure).toMatchObject({ kind: 'server_error', status: 503 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sync.status().pending).toBe(1);
+    sync.stop();
+  });
+
+  it('remembers the classification across a restart instead of promising a retry', () => {
+    const dir = scratch();
+    const statePath = join(dir, 'receipts-sync.json');
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        pending: { t1: 'v1' },
+        synced: {},
+        lastError: 'http_403',
+        lastFailure: { kind: 'server_rejected', status: 403, detail: 'http_403', at: '2026-09-17T10:00:00.000Z' },
+      }),
+      'utf8',
+    );
+    const state = readState(statePath);
+    expect(state.lastFailure).toMatchObject({ kind: 'server_rejected', status: 403 });
   });
 });

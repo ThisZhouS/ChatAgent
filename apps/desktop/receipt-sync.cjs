@@ -20,6 +20,12 @@ const path = require('node:path');
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const MAX_BACKOFF_MS = 10 * 60_000;
+/**
+ * A batch the server rejected (4xx) is not retried on the normal cadence: the
+ * same request would be refused again. It waits this long, and the UI says the
+ * failure needs a human rather than a network.
+ */
+const REJECT_BACKOFF_MS = 15 * 60_000;
 /** Bounded queue: a device that is offline for days must not grow without limit. */
 const MAX_PENDING = 200;
 /**
@@ -81,6 +87,12 @@ function readState(statePath) {
         pending: parsed.pending && typeof parsed.pending === 'object' ? parsed.pending : {},
         lastSuccessAt: typeof parsed.lastSuccessAt === 'string' ? parsed.lastSuccessAt : undefined,
         lastError: typeof parsed.lastError === 'string' ? parsed.lastError : undefined,
+        // Failure classification survives a restart: the UI must not promise an
+        // automatic retry for a batch the server already refused.
+        lastFailure:
+          parsed.lastFailure && typeof parsed.lastFailure === 'object'
+            ? parsed.lastFailure
+            : undefined,
       };
     }
     throw new Error('state is not an object');
@@ -198,6 +210,8 @@ function createReceiptSync(options) {
   let inFlight = null;
   let stopped = false;
   let backoffMs = intervalMs;
+  /** When a rejected batch may be retried; 0 = not waiting. */
+  let rejectedUntil = 0;
 
   /** Collects changed records into the pending queue. */
   function collect() {
@@ -244,6 +258,28 @@ function createReceiptSync(options) {
       });
   }
 
+  /**
+   * Records *why* the upload failed, not just that it did. "The server refused
+   * these receipts" (a 4xx: the session expired, or the payload is not acceptable)
+   * and "the network is down" need different answers: the first must not be
+   * promised as "it will retry once you are online", and hammering it forever only
+   * fills the log. 5xx and transport errors are transient and keep backing off.
+   */
+  function recordFailure(kind, detail, status) {
+    state.lastError = detail;
+    state.lastFailure = { kind, status, detail, at: new Date(now()).toISOString() };
+    if (kind === 'server_rejected') {
+      // Do not spin: a rejected batch stays queued, but the next attempt waits.
+      rejectedUntil = now() + REJECT_BACKOFF_MS;
+    }
+  }
+
+  function clearFailure() {
+    state.lastError = undefined;
+    state.lastFailure = undefined;
+    rejectedUntil = 0;
+  }
+
   async function push(receipts) {
     const cookies = await cookieProvider();
     const headers = { 'content-type': 'application/json' };
@@ -259,6 +295,12 @@ function createReceiptSync(options) {
   /** One request per chunk of at most MAX_RECEIPTS_PER_REQUEST receipts. */
   async function flush() {
     if (stopped) return { sent: 0, skipped: true };
+    if (rejectedUntil > now()) {
+      // The server refused this batch a moment ago. Retrying the identical request
+      // would be refused again, so the queue waits out the backoff (a 4xx is not a
+      // connectivity problem).
+      return { sent: 0, skipped: true, reason: 'rejected_backoff' };
+    }
     const pending = await collect();
     if (pending.length === 0) {
       // A state-file problem is a real report (it may mean undelivered receipts
@@ -275,10 +317,17 @@ function createReceiptSync(options) {
         const chunk = pending.slice(offset, offset + MAX_RECEIPTS_PER_REQUEST);
         const response = await push(chunk);
         if (!response.ok) {
-          // 401 means "not signed in yet": keep the queue, retry quietly later.
-          state.lastError = `http_${response.status}`;
+          // 4xx is the server refusing this batch (expired session, bad payload,
+          // ownership mismatch): keep every receipt queued and say so, but do not
+          // pretend a network retry will fix it.
+          const rejected = response.status >= 400 && response.status < 500;
+          recordFailure(
+            rejected ? 'server_rejected' : 'server_error',
+            `http_${response.status}`,
+            response.status,
+          );
           writeState(statePath, state);
-          return { sent, status: response.status };
+          return { sent, status: response.status, failure: state.lastFailure.kind };
         }
         const syncedAt = new Date(now()).toISOString();
         for (const receipt of chunk) {
@@ -287,7 +336,7 @@ function createReceiptSync(options) {
           delete state.pending[receipt.taskId];
         }
         state.lastSuccessAt = syncedAt;
-        state.lastError = undefined;
+        clearFailure();
         sent += chunk.length;
         // Persist per chunk: a crash halfway loses no already-delivered work.
         writeState(statePath, state);
@@ -295,14 +344,27 @@ function createReceiptSync(options) {
       logger.info && logger.info(`[chatagent] synced ${sent} local task receipt(s)`);
       return { sent };
     } catch (error) {
-      state.lastError = `network: ${error && error.message ? error.message : String(error)}`;
+      const detail = `network: ${error && error.message ? error.message : String(error)}`;
+      recordFailure('network', detail);
       writeState(statePath, state);
-      return { sent: 0, error: state.lastError };
+      return { sent: 0, error: detail, failure: 'network' };
     }
   }
 
   function schedule() {
     if (stopped) return;
+    const nowMs = now();
+    if (rejectedUntil > nowMs) {
+      // The server refused the batch: wait out the long backoff instead of
+      // retrying a request it has already rejected.
+      backoffMs = intervalMs;
+      timer = setTimeout(() => {
+        rejectedUntil = 0;
+        void kick('rejected_backoff');
+      }, rejectedUntil - nowMs);
+      timer.unref && timer.unref();
+      return;
+    }
     const delay = state.lastError ? Math.min(backoffMs, MAX_BACKOFF_MS) : intervalMs;
     backoffMs = state.lastError ? Math.min(backoffMs * 2, MAX_BACKOFF_MS) : intervalMs;
     timer = setTimeout(() => {
@@ -347,6 +409,9 @@ function createReceiptSync(options) {
         synced: Object.keys(state.synced).length,
         lastSuccessAt: state.lastSuccessAt,
         lastError: state.lastError,
+        // Enough for the UI to say the right thing: a rejected batch needs a human
+        // (sign in again / fix ownership), a network or 5xx failure needs patience.
+        lastFailure: state.lastFailure,
       };
     },
   };
@@ -358,6 +423,7 @@ module.exports = {
   receiptFingerprint,
   MAX_PENDING,
   MAX_RECEIPTS_PER_REQUEST,
+  REJECT_BACKOFF_MS,
   readState,
   writeState,
 };

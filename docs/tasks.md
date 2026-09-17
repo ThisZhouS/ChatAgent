@@ -229,6 +229,8 @@ pnpm dev
 
 1. **锁的持有者身份而非年龄**（F5 根治）：锁文件记录进程启动时间/boot id 或周期性心跳，让“pid 复用”的判断不再依赖 30 天年龄；心跳方案需同时给出断网/挂起的退化行为与审计。
 2. ~~**Host 侧持续授权刷新**~~ **已完成**：`POST /api/agent-authorizations/verify`（只回 id+状态，不回传审批内容；他人/未知/无台账一律 `unknown`，并用 `supportedKinds` 声明只管 `approval`）+ 宿主 `authorizationRefresh`（默认 60 s，仅在有授权时提问；`active` 刷新过期时间、`revoked|expired` 本地撤销、`unknown` 只标记不销毁、调用失败/超时 → `unverified`）；`unverified` 时新外部副作用任务**暂缓**（不失败、不占租约、留队列，恢复后自动继续），在跑任务不回滚，本地文档任务不受影响；`status().authorization` 与设置页「授权复核」可见。证据：`docs/iteration-2026-09-16-gate7a1-hardening.md` 第十五轮、`authorization-refresh.test.ts` 10 例、`agent-authorizations.test.ts` 4 例、真实 Electron 21/21。**仍缺**：服务端的委托台账（目前 `supportedKinds` 只有 `approval`）与从服务端取授权的签发路径。
+
+3. ~~**回执失败分级可见性**~~ **已完成**：`receipt-sync.cjs` 把失败分为 `server_rejected`(4xx)/`server_error`(5xx)/`network` 并持久化；服务端拒收后停止自动重试（15 分钟退避，手动触发也跳过），5xx 与网络失败仍走指数退避；回执在任何情况下都不丢；设置页按分级给出「被服务端拒收（需重新登录/确认归属）」或「联网后自动重试」，全部同步完成时不再显示提示。证据：`receipt-sync.test.mjs` 16 例、`SettingsView.test.ts` 文案分级一例。
 3. **回执失败的可见性**：分块后仍需在 `status()` 里区分“服务端拒收（400/403）”与“网络失败”，并让设置页显式提示“有 N 条本机记录未能上传”，避免长期静默。
 4. **保留策略的可见性收尾**：`storeIntegrity.pruned` 已上报，下一步在设置页展示“已按保留策略清理 N 条”，并允许用户查看被清理的 id（当前只在内存计数）。
 5. **打包与升级**：重跑 `electron-builder` 并对打包后 exe 做一次端到端（含回执同步与锁接管）；Electron 版本升级仍需外网下载，保持 BLOCKED 记录。
