@@ -127,7 +127,9 @@ pnpm test           # 服务端/包 18 文件 173 用例 + 前端 3 文件 26 �
 pnpm build          # tsup + vite
 node scripts/restart-server.mjs # 按端口重启服务端并等待 /health
 node scripts/smoke.mjs          # 27 项端到端自检（本机开发档位）
-node scripts/ui-e2e.mjs         # 真实客户端 E2E：34 项检查 + 截图（Temp/ui-shots）
+node scripts/ui-e2e.mjs         # 真实客户端 E2E：38 项检查 + 截图（Temp/ui-shots）
+# 登录凭据：--member/--token 或 SMOKE_MEMBER/SMOKE_TOKEN；都没有时用 Temp/e2e-member.json
+# （由 node scripts/ensure-e2e-member.mjs 自动签发的本机专用成员 e2e_local，仓库不含任何令牌）
 node scripts/gate7a-verify.mjs  # 本机 Agent 主机级流程（设 CHATAGENT_HERMES_EXE 含真实 Hermes 契约，22/22）
 node scripts/electron-workbench-check.cjs   # 断网本机工作台 11/11（真实 Electron）
 node scripts/electron-quit-check.mjs        # 显式退出路径 10/10（真实 Electron）

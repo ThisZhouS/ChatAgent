@@ -89,11 +89,12 @@ ChatAgent/
 │   ├── smoke.mjs             端到端冒烟（健康→登录→会话→任务→审批→投递→搜索→群聊）
 │   ├── ui-e2e.mjs            真实客户端 E2E（Electron/CDP 驱动打包 exe，含截图与对比度检查）
 │   ├── gate7a-verify.mjs     本机 Agent 主机级流程（22/22；含真实 Hermes 进程契约）
-│   ├── electron-workbench-check.cjs  断网本机工作台（11/11，真实 Electron）
+│   ├── ensure-e2e-member.mjs  为 E2E 签发本机专用成员（token 只落 Temp/e2e-member.json）
 │   ├── electron-host-smoke.cjs       关窗常驻与任务继续（6/6）
 │   ├── electron-quit-check.cjs       显式退出路径（10/10）
-│   ├── electron-receipt-sync-check.mjs 回执持续同步（19/19，含分区与 CSP 注入断言）
-│   ├── electron-lock-check.mjs       单 writer 锁（9/9：歧义锁不静默接管、残留锁自愈）
+│   ├── electron-receipt-sync-check.mjs 回执持续同步（21/21，含分区、CSP 注入与授权刷新断言）
+│   ├── electron-lock-check.mjs       单 writer 锁（18/18：持有者身份/心跳、冻结心跳需人工确认）
+│   ├── electron-workbench-check.cjs  断网本机工作台（13/13，含保留策略/授权/回执可见性）
 │   ├── electron-csp-check.mjs        远程页面 CSP 强制执行（5/5，内联载荷）
 │   └── electron-nav-check.mjs        导航/窗口/桥面收敛（7/7）
 ├── apps/desktop/receipt-sync.test.mjs 回执同步模块单测（7 例，经 createRequire 测 Electron 侧 CJS）

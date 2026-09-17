@@ -15,8 +15,8 @@
  * Prerequisites: a running ChatAgent server (node scripts/restart-server.mjs)
  * and a built web bundle (pnpm build), because the client loads the server URL.
  */
-import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request } from 'node:http';
@@ -30,8 +30,37 @@ const argValue = (name, fallback) => {
 
 const serverUrl = (argValue('--server', process.env.CHATAGENT_SERVER_URL ?? 'http://localhost:8787')).replace(/\/+$/, '');
 const debugPort = Number(argValue('--debug-port', '9333'));
-const memberId = argValue('--member', process.env.SMOKE_MEMBER ?? 'u_alice');
-const memberToken = argValue('--token', process.env.SMOKE_TOKEN ?? 'alice-dev-token');
+/**
+ * Credentials for the run, in order: --member/--token, SMOKE_MEMBER/SMOKE_TOKEN, then
+ * the gitignored Temp/e2e-member.json that scripts/ensure-e2e-member.mjs writes. A
+ * committed default token would be a live credential in the repository, so the
+ * fallback provisions a dedicated local member instead of shipping one.
+ */
+function localE2eCredentials() {
+  try {
+    const parsed = JSON.parse(readFileSync(join(root, 'Temp', 'e2e-member.json'), 'utf8'));
+    if (parsed && typeof parsed.memberId === 'string' && typeof parsed.token === 'string') return parsed;
+  } catch {
+    // not provisioned yet
+  }
+  return undefined;
+}
+
+function ensureLocalE2eMember() {
+  const result = spawnSync(process.execPath, [join(root, 'scripts', 'ensure-e2e-member.mjs'), '--server', serverUrl], {
+    stdio: 'inherit',
+  });
+  return result.status === 0 ? localE2eCredentials() : undefined;
+}
+
+const explicitMember = argValue('--member', process.env.SMOKE_MEMBER);
+const explicitToken = argValue('--token', process.env.SMOKE_TOKEN);
+const resolvedCredentials =
+  explicitMember && explicitToken
+    ? { memberId: explicitMember, token: explicitToken }
+    : (localE2eCredentials() ?? ensureLocalE2eMember());
+const memberId = explicitMember ?? resolvedCredentials?.memberId ?? 'e2e_local';
+const memberToken = explicitToken ?? resolvedCredentials?.token ?? '';
 const shotDir = resolve(argValue('--shots', join(root, 'Temp', 'ui-shots')));
 const keepOpen = args.includes('--keep-open');
 // Defaults to the packaged build, but any client binary may be pointed at (an

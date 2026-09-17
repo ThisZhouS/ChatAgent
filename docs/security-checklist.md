@@ -68,6 +68,7 @@
 - [ ] 单主体 SSE 并发上限 8 条（原生流另有 5 条上限），超出返回 503。
 - [ ] 流式响应同样带安全头（`STREAM_SECURITY_HEADERS`，G6-6）：核对 `curl -i /api/events/stream` 有 `nosniff`/`DENY`/CSP。
 - [ ] `POST /api/auth/token/rotate` 必须拒绝「未出示凭据」的调用者，包括 `development` 档位的回环 dev 身份（G6-8）。
+- [x] **仓库不含任何可用登录令牌**（2026-09-17）：`scripts/ui-e2e.mjs` 曾把 `alice-dev-token` 作为默认值写进仓库（与 G6-5 的处理口径不一致），现改为按 `--member/--token` → `SMOKE_MEMBER/SMOKE_TOKEN` → `Temp/e2e-member.json` 解析，缺失时由 `scripts/ensure-e2e-member.mjs` 用本机 owner 身份签发**专用成员 `e2e_local`**（只写 sha256 到 `data/members.json`，令牌留在被 gitignore 的 `Temp/`），不触碰 `u_alice` 等既有账号。**注意**：旧令牌仍在 git 历史中，若仓库对外公开，请用 `node scripts/add-member.mjs u_alice u_alice <新令牌>` + 重启服务端轮换。
 - [ ] 确认工作目录内没有长期凭据：smoke 审批人令牌缓存于 `os.tmpdir()`（按服务端地址分文件、使用前先登录校验，G6-5），可用 `SMOKE_APPROVER_TOKEN` 注入；该缓存仍是 owner 凭据，用完请删除。
 - [ ] 成员 id 只允许 `[A-Za-z0-9._-]`（防止逗号等分隔符构造群键碰撞，G6-N6）。
 - [ ] 优雅停机：`SIGINT/SIGTERM` 会停止任务引擎、断开网关并 flush 合并写入与审计。
