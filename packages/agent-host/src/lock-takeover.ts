@@ -1,24 +1,31 @@
 /**
  * Stale single-writer lock: inspection and *consented* takeover.
  *
- * The store heals the unambiguous case by itself (the holder pid is gone). What
- * it cannot decide alone is the ambiguous one: the lock names a pid that is
- * alive but may be an unrelated process that reused the number, or a payload
- * that cannot be parsed at all. Silently stealing a live process's lock would
- * create a second writer over one task file — the exact thing the lock exists to
- * prevent.
+ * The store heals the unambiguous cases by itself (no lock file, no pid in the
+ * payload, or a pid that is gone). What it cannot decide alone is the ambiguous
+ * one: the lock names a pid that is alive but has stopped refreshing its
+ * heartbeat, which usually means the number was reused by an unrelated process.
+ * Silently stealing a live process's lock would create a second writer over one
+ * task file — the exact thing the lock exists to prevent.
  *
  * So the ambiguous case is handed to the local human: the desktop asks, and only
  * an explicit "yes" calls `takeOverStoreLock`. That call never deletes evidence —
  * the old lock is renamed aside and every takeover is appended to an audit file
  * next to the store.
+ *
+ * The classification itself lives in `store.ts` (`classifyLock`) so the rule that
+ * decides "may a second writer start" has exactly one implementation.
  */
-import { mkdir, open, readFile, rename } from 'node:fs/promises';
+import { mkdir, open, rename, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { classifyLock, LOCK_HEARTBEAT_GRACE_MS } from './store';
+import type { LockState } from './store';
 
 export interface LockPayloadShape {
   pid?: number;
   startedAt?: string;
+  heartbeatAt?: string;
+  token?: string;
 }
 
 export interface LockInspection {
@@ -26,11 +33,15 @@ export interface LockInspection {
   exists: boolean;
   holderPid?: number;
   startedAt?: string;
+  heartbeatAt?: string;
+  /** Seconds since the holder last refreshed the lock (undefined when it never did). */
+  heartbeatAgeMs?: number;
   /** The holder answered a liveness probe (may still be an unrelated process). */
   holderAlive?: boolean;
   ageMs?: number;
   /** True when the lock exists and only a human decision can settle its owner. */
   ambiguous: boolean;
+  state: LockState;
   reason: string;
 }
 
@@ -52,16 +63,6 @@ export interface LockTakeoverOptions {
   now?: () => Date;
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // ESRCH = no such process; EPERM = alive but owned by somebody else.
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-}
-
 /** Salvages a pid from a truncated lock payload (crash while writing). */
 export function parseLockPayload(raw: string): LockPayloadShape {
   try {
@@ -74,41 +75,52 @@ export function parseLockPayload(raw: string): LockPayloadShape {
   return {};
 }
 
-export async function inspectStoreLock(filePath: string, now = () => new Date()): Promise<LockInspection> {
+export async function inspectStoreLock(
+  filePath: string,
+  now = () => new Date(),
+  readLock?: (lockPath: string) => Promise<string | undefined>,
+): Promise<LockInspection> {
   const lockPath = `${filePath}.lock`;
-  let raw: string;
-  try {
-    raw = await readFile(lockPath, 'utf8');
-  } catch {
-    return { lockPath, exists: false, ambiguous: false, reason: 'no lock file' };
+  let raw: string | undefined;
+  let fileAgeMs: number | undefined;
+  if (readLock) {
+    raw = await readLock(lockPath);
+  } else {
+    try {
+      const { readFile } = await import('node:fs/promises');
+      raw = await readFile(lockPath, 'utf8');
+    } catch {
+      raw = undefined;
+    }
   }
+  if (raw === undefined) {
+    return { lockPath, exists: false, ambiguous: false, state: 'no_lock', reason: 'no lock file' };
+  }
+  try {
+    fileAgeMs = now().getTime() - (await stat(lockPath)).mtimeMs;
+  } catch {
+    fileAgeMs = undefined;
+  }
+  const classification = classifyLock(raw, {
+    lockPath,
+    now: now().getTime(),
+    graceMs: LOCK_HEARTBEAT_GRACE_MS,
+    fileAgeMs,
+  });
   const payload = parseLockPayload(raw);
   const startedAt = payload.startedAt ? Date.parse(payload.startedAt) : Number.NaN;
-  const ageMs = Number.isNaN(startedAt) ? undefined : now().getTime() - startedAt;
-  const pid = payload.pid;
-  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
-    return {
-      lockPath,
-      exists: true,
-      startedAt: payload.startedAt,
-      ageMs,
-      ambiguous: true,
-      reason: 'the lock does not name a pid, so its owner cannot be checked',
-    };
-  }
-  const alive = isAlive(pid);
   return {
     lockPath,
     exists: true,
-    holderPid: pid,
+    holderPid: classification.holderPid,
     startedAt: payload.startedAt,
-    holderAlive: alive,
-    ageMs,
-    // A live pid that is not this process cannot be proven to be a leftover.
-    ambiguous: alive,
-    reason: alive
-      ? `pid ${pid} is alive, so this lock may belong to a running host (or to a process that reused the pid)`
-      : `pid ${pid} is gone, so the lock is a leftover`,
+    heartbeatAt: classification.heartbeatAt,
+    heartbeatAgeMs: classification.heartbeatAgeMs,
+    holderAlive: classification.holderPid !== undefined && classification.stale === false,
+    ageMs: Number.isNaN(startedAt) ? undefined : now().getTime() - startedAt,
+    ambiguous: classification.ambiguous,
+    state: classification.state,
+    reason: classification.reason,
   };
 }
 
@@ -146,6 +158,10 @@ export async function takeOverStoreLock(
     replaced: replacedPath,
     previousHolder: { pid: inspection.holderPid, startedAt: inspection.startedAt },
     holderAlive: inspection.holderAlive,
+    // Evidence for the audit: a takeover of a *freshly* heartbeating holder is a
+    // different (and much more suspicious) act than one of a frozen pid.
+    lockState: inspection.state,
+    heartbeatAgeMs: inspection.heartbeatAgeMs,
   };
   await mkdir(dirname(auditPath), { recursive: true });
   const handle = await open(auditPath, 'a');

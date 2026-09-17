@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { StoreLoadReport } from './record-integrity';
 import { validatePersistedRow } from './record-integrity';
@@ -78,13 +79,199 @@ export interface AgentHostStore {
   retentionStats?(): { pruned: number };
 }
 
-interface LockPayload {
+export interface LockPayload {
   pid?: number;
+  /** When the current holder took the lock. */
   startedAt?: string;
+  /** Refreshed by the holder while it runs; a frozen value means nobody owns it. */
+  heartbeatAt?: string;
+  /** Random per acquisition: releasing never removes somebody else's lock. */
+  token?: string;
 }
 
-/** A live holder keeps its lock; only a lock this old may be taken over by pid reuse. */
-// Liveness decides staleness; see isLockStale().
+/**
+ * How often a running holder refreshes its lock, and how long a frozen heartbeat
+ * may be believed. The grace spans several intervals so a busy or briefly
+ * suspended process is not declared dead, while pid reuse is noticed in a minute
+ * instead of a month (round-3 finding F5: the age-only rule was measured in days,
+ * so a *live* holder could be stolen from while a reused pid blocked startup).
+ */
+export const LOCK_HEARTBEAT_MS = 15_000;
+export const LOCK_HEARTBEAT_GRACE_MS = 60_000;
+
+export type LockState =
+  /** No lock file: nothing to take over. */
+  | 'no_lock'
+  /** The payload cannot name a process: a crashed writer, safe to replace. */
+  | 'owner_unknown'
+  /** The named pid is gone: a crashed holder, safe to replace. */
+  | 'dead_pid'
+  /** The holder refreshed the lock recently: it is really running. */
+  | 'heartbeat_fresh'
+  /** The owner is alive but stopped refreshing: probably a reused pid. */
+  | 'heartbeat_stale'
+  /** Written by a build without heartbeats: only the age of `startedAt` is left. */
+  | 'no_heartbeat';
+
+export interface LockStatus {
+  state: LockState;
+  /** True when the store may replace the lock without asking anybody. */
+  stale: boolean;
+  /** True when only a human decision (see lock-takeover.ts) can settle the owner. */
+  ambiguous: boolean;
+  lockPath: string;
+  holderPid?: number;
+  startedAt?: string;
+  heartbeatAt?: string;
+  heartbeatAgeMs?: number;
+  reason: string;
+}
+
+/**
+ * Reads what a torn/truncated lock payload still says. The lock is written once
+ * with a single small write, so this is rare, but a reader that finds garbage
+ * must not conclude "no owner" while the holder is alive and refreshing.
+ */
+export function parseLockText(raw: string): LockPayload {
+  try {
+    const parsed = JSON.parse(raw) as LockPayload;
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {
+    // fall through to salvage
+  }
+  return salvageLockPayload(raw);
+}
+
+export function salvageLockPayload(raw: string): LockPayload {
+  const pid = /"pid"\s*:\s*(\d+)/.exec(raw);
+  const heartbeat = /"heartbeatAt"\s*:\s*"([^"]+)"/.exec(raw);
+  const started = /"startedAt"\s*:\s*"([^"]+)"/.exec(raw);
+  const token = /"token"\s*:\s*"([^"]+)"/.exec(raw);
+  const payload: LockPayload = {};
+  if (pid) payload.pid = Number(pid[1]);
+  if (heartbeat) payload.heartbeatAt = heartbeat[1];
+  if (started) payload.startedAt = started[1];
+  if (token) payload.token = token[1];
+  return payload;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // ESRCH = no such process; EPERM = alive but owned by somebody else.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * Classifies one lock file. Pure on purpose: the rule that decides whether a
+ * second writer may start is the most safety-critical decision in the store, so it
+ * is unit-tested directly instead of only through a live process.
+ */
+export function classifyLock(
+  raw: string | undefined,
+  options: {
+    lockPath: string;
+    now?: number;
+    alive?: (pid: number) => boolean;
+    graceMs?: number;
+    /** How long ago the lock file was last written (checked for unreadable locks). */
+    fileAgeMs?: number;
+  },
+): LockStatus {
+  const now = options.now ?? Date.now();
+  const alive = options.alive ?? isProcessAlive;
+  const grace = options.graceMs ?? LOCK_HEARTBEAT_GRACE_MS;
+  const lockPath = options.lockPath;
+  if (raw === undefined) {
+    return { state: 'no_lock', stale: true, ambiguous: false, lockPath, reason: 'no lock file' };
+  }
+  let payload: LockPayload;
+  try {
+    const parsed = JSON.parse(raw) as LockPayload;
+    payload = parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    // A truncated lock (crash while writing) may still name a live holder, so
+    // salvage what the text does contain — the pid *and* its heartbeat — before
+    // calling the lock abandoned.
+    payload = salvageLockPayload(raw);
+  }
+  const pid = payload.pid;
+  const base = { lockPath, startedAt: payload.startedAt, heartbeatAt: payload.heartbeatAt };
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
+    // A just-written payload that cannot be parsed may be a holder mid-write
+    // (the file is created empty first), so a *fresh* unreadable lock is left to
+    // a human; only an old one is a leftover nobody can still be holding.
+    const fileAgeMs = options.fileAgeMs;
+    if (fileAgeMs !== undefined && fileAgeMs <= grace) {
+      return {
+        ...base,
+        state: 'owner_unknown',
+        stale: false,
+        ambiguous: true,
+        reason: `the lock is unreadable but was written ${Math.max(0, Math.round(fileAgeMs / 1000))}s ago, so a holder may be mid-write`,
+      };
+    }
+    return {
+      ...base,
+      state: 'owner_unknown',
+      stale: true,
+      ambiguous: false,
+      reason: 'the lock does not name a pid, so nothing can still be running under it',
+    };
+  }
+  if (!alive(pid)) {
+    return {
+      ...base,
+      state: 'dead_pid',
+      stale: true,
+      ambiguous: false,
+      holderPid: pid,
+      reason: `pid ${pid} is gone, so the lock is a leftover`,
+    };
+  }
+  const heartbeatMs = payload.heartbeatAt ? Date.parse(payload.heartbeatAt) : Number.NaN;
+  const heartbeatAgeMs = Number.isNaN(heartbeatMs) ? undefined : now - heartbeatMs;
+  if (heartbeatAgeMs !== undefined && heartbeatAgeMs <= grace) {
+    return {
+      ...base,
+      state: 'heartbeat_fresh',
+      stale: false,
+      ambiguous: false,
+      holderPid: pid,
+      heartbeatAgeMs,
+      reason: `pid ${pid} refreshed the lock ${Math.max(0, Math.round(heartbeatAgeMs / 1000))}s ago, so it is still running`,
+    };
+  }
+  if (heartbeatAgeMs !== undefined) {
+    return {
+      ...base,
+      state: 'heartbeat_stale',
+      stale: false,
+      ambiguous: true,
+      holderPid: pid,
+      heartbeatAgeMs,
+      reason: `pid ${pid} is alive but has not refreshed the lock for ${Math.round(heartbeatAgeMs / 1000)}s, which usually means the pid was reused`,
+    };
+  }
+  // No heartbeat in the payload (a lock written by an older build, or by hand):
+  // age is the only evidence left, and only a human may act on it.
+  const startedMs = payload.startedAt ? Date.parse(payload.startedAt) : Number.NaN;
+  const ageMs = Number.isNaN(startedMs) ? undefined : now - startedMs;
+  return {
+    ...base,
+    state: 'no_heartbeat',
+    stale: false,
+    ambiguous: ageMs === undefined || ageMs > grace,
+    holderPid: pid,
+    reason:
+      ageMs === undefined
+        ? `pid ${pid} is alive and the lock carries no heartbeat or usable timestamp`
+        : `pid ${pid} is alive and the lock was written ${Math.round(ageMs / 1000)}s ago without a heartbeat`,
+  };
+}
 
 export class JsonFileAgentHostStore implements AgentHostStore {
   private records = new Map<string, LocalTaskRecord>();
@@ -93,6 +280,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private closed = false;
   private queue: Promise<void> = Promise.resolve();
   private lockHeld = false;
+  private lockHeartbeat?: NodeJS.Timeout;
+  private lockBeatInFlight: Promise<void> = Promise.resolve();
+  private lockHeartbeatFailures = 0;
+  private lockLostReason?: string;
+  private lockBeatTicks?: number;
+  private lockBeatOnce?: () => Promise<void>;
+  private lockStartedAt?: string;
+  private lockToken?: string;
   private loadReport?: StoreLoadReport;
   private lastLoadError?: string;
   private readonly filePath: string;
@@ -100,17 +295,25 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private readonly lockEnabled: boolean;
   private readonly maxRecords: number;
   private readonly maxAgeMs?: number;
+  private readonly heartbeatMs: number;
   private prunedRecords = 0;
 
   constructor(
     filePath: string,
-    options: { lock?: boolean; maxRecords?: number; maxAgeMs?: number } = {},
+    options: {
+      lock?: boolean;
+      maxRecords?: number;
+      maxAgeMs?: number;
+      /** Overridable for tests: how often the holder refreshes its lock. */
+      heartbeatMs?: number;
+    } = {},
   ) {
     this.filePath = filePath;
     this.lockPath = `${filePath}.lock`;
     this.lockEnabled = options.lock !== false;
     this.maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
     this.maxAgeMs = options.maxAgeMs;
+    this.heartbeatMs = options.heartbeatMs ?? LOCK_HEARTBEAT_MS;
   }
 
   async load(): Promise<void> {
@@ -425,11 +628,19 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private async acquireLock(): Promise<void> {
     if (!this.lockEnabled || this.lockHeld) return;
     await mkdir(dirname(this.filePath), { recursive: true });
-    const payload = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+    this.lockToken = randomUUID();
+    this.lockStartedAt = new Date().toISOString();
+    const payload = JSON.stringify({
+      pid: process.pid,
+      startedAt: this.lockStartedAt,
+      heartbeatAt: this.lockStartedAt,
+      token: this.lockToken,
+    });
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await writeFile(this.lockPath, payload, { encoding: 'utf8', flag: 'wx' });
         this.lockHeld = true;
+        this.startLockHeartbeat();
         return;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -441,50 +652,156 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     throw new AgentHostStoreLockedError(this.lockPath);
   }
 
-  private async isLockStale(): Promise<boolean> {
-    let raw: string;
+  /**
+   * Refresh the heartbeat right now instead of waiting for the interval. A long
+   * task write can push the next scheduled beat past the grace window, and a
+   * holder that looks frozen invites a human to take its lock away.
+   */
+  async refreshLock(): Promise<void> {
+    await this.lockBeatOnce?.();
+  }
+
+  /** Reads and classifies the current lock file (no side effects). */
+  async inspectLock(): Promise<LockStatus> {
+    let raw: string | undefined;
+    let fileAgeMs: number | undefined;
     try {
       raw = await readFile(this.lockPath, 'utf8');
     } catch {
-      return true; // no lock file left: nothing to take over
+      raw = undefined;
     }
-    let payload: LockPayload;
-    try {
-      payload = JSON.parse(raw) as LockPayload;
-    } catch {
-      // A truncated lock (crash while writing) may still name a live holder, so
-      // salvage the pid before calling it abandoned.
-      const salvaged = /"pid"\s*:\s*(\d+)/.exec(raw);
-      payload = salvaged ? { pid: Number(salvaged[1]) } : {};
+    if (raw !== undefined) {
+      try {
+        fileAgeMs = Date.now() - (await stat(this.lockPath)).mtimeMs;
+      } catch {
+        fileAgeMs = undefined;
+      }
     }
-    const pid = payload.pid;
-    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return true; // owner unknown
-    let alive = true;
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      // ESRCH = no such process (safe to steal); EPERM = alive but not ours.
-      alive = (error as NodeJS.ErrnoException).code !== 'ESRCH';
-    }
-    if (!alive) return true;
-    // A live holder keeps its lock, full stop. The host is designed to stay
-    // resident for weeks, and the lock payload is written once at acquisition, so
-    // an age rule ("older than a month ⇒ probably a reused pid") ended up handing
-    // a running instance's lock to a second writer (round-3 finding F5). A live
-    // pid that may have been reused is exactly the ambiguous case the desktop
-    // resolves with an explicit, audited local consent (see lock-takeover.ts);
-    // unattended runs keep the lock and refuse to start instead.
-    return false;
+    return classifyLock(raw, { lockPath: this.lockPath, fileAgeMs });
+  }
+
+  /** What the store knows about its own lock, for status reporting. */
+  lockStatus(): {
+    held: boolean;
+    heartbeatFailures: number;
+    lostReason?: string;
+    /** Heartbeats this holder has made — a frozen count explains a stale lock. */
+    beats?: number;
+    path: string;
+  } {
+    return {
+      held: this.lockHeld,
+      heartbeatFailures: this.lockHeartbeatFailures,
+      lostReason: this.lockLostReason,
+      beats: this.lockBeatTicks,
+      path: this.lockPath,
+    };
+  }
+
+  private async isLockStale(): Promise<boolean> {
+    return (await this.inspectLock()).stale;
+  }
+
+  /**
+   * Refreshes `heartbeatAt` while the lock is held: that timestamp is what tells a
+   * second instance "this holder is really running", and a reused pid cannot
+   * refresh it. Failures are counted, not thrown — losing a heartbeat must never
+   * crash a running host, but it must also be visible through `lockStatus()`.
+   */
+  private startLockHeartbeat(): void {
+    if (!this.lockEnabled || this.lockHeartbeat) return;
+    const token = this.lockToken;
+    const beat = async () => {
+      this.lockBeatTicks = (this.lockBeatTicks ?? 0) + 1;
+      if (!this.lockHeld || this.lockToken !== token) return;
+      const payload: LockPayload = {
+        pid: process.pid,
+        startedAt: this.lockStartedAt,
+        heartbeatAt: new Date().toISOString(),
+        token,
+      };
+      const tmp = `${this.lockPath}.beat`;
+      try {
+        // Ownership is re-checked against the file itself, not only against our own
+        // flags: a heartbeat must never overwrite a lock that was taken over while
+        // this instance was idle, and it must never recreate one we released.
+        const current = await readFile(this.lockPath, 'utf8').catch(() => undefined);
+        if (current === undefined) return this.loseLock('the lock file disappeared');
+        const owner = parseLockText(current);
+        if (owner.pid !== process.pid || (owner.token !== undefined && owner.token !== token)) {
+          return this.loseLock(`the lock is now held by pid ${String(owner.pid)}`);
+        }
+        const seenAt = await stat(this.lockPath).then(
+          (info) => info.mtimeMs,
+          () => undefined,
+        );
+        await writeFile(tmp, JSON.stringify(payload), 'utf8');
+        if (!this.lockHeld || this.lockToken !== token) {
+          await rm(tmp, { force: true }).catch(() => undefined);
+          return;
+        }
+        // Last look before committing: if the file changed since we read it, another
+        // writer is in charge now and the heartbeat must stand down.
+        const nowAt = await stat(this.lockPath).then(
+          (info) => info.mtimeMs,
+          () => undefined,
+        );
+        if (seenAt !== undefined && nowAt !== undefined && nowAt !== seenAt) {
+          await rm(tmp, { force: true }).catch(() => undefined);
+          return this.loseLock('the lock file changed while heartbeating');
+        }
+        // Rename is the commit point: a reader never sees a half-written payload.
+        await rename(tmp, this.lockPath);
+      } catch {
+        this.lockHeartbeatFailures += 1;
+        await rm(tmp, { force: true }).catch(() => undefined);
+      }
+    };
+    const schedule = () => {
+      this.lockBeatInFlight = beat();
+      void this.lockBeatInFlight;
+    };
+    this.lockBeatOnce = beat;
+    schedule();
+    this.lockHeartbeat = setInterval(schedule, this.heartbeatMs);
+    // Never keep the process alive just to refresh a lock.
+    this.lockHeartbeat.unref?.();
+  }
+
+  private stopLockHeartbeat(): void {
+    if (!this.lockHeartbeat) return;
+    clearInterval(this.lockHeartbeat);
+    this.lockHeartbeat = undefined;
+  }
+
+  /**
+   * The lock is no longer ours (taken over, replaced or deleted by another
+   * process). Stop heartbeating and refuse to write: a store that lost its lock
+   * must fail loudly instead of becoming a second writer over one task file.
+   */
+  private loseLock(reason: string): void {
+    if (!this.lockHeld) return;
+    this.lockHeld = false;
+    this.lockLostReason = reason;
+    this.stopLockHeartbeat();
   }
 
   private async releaseLock(): Promise<void> {
+    this.stopLockHeartbeat();
+    // Wait for a heartbeat that is already in flight: releasing while one is
+    // between its ownership check and its rename would put the lock file back.
+    await this.lockBeatInFlight.catch(() => undefined);
+    await rm(`${this.lockPath}.beat`, { force: true }).catch(() => undefined);
     if (!this.lockHeld) return;
     this.lockHeld = false;
     // Only ever remove a lock this process wrote: deleting somebody else's lock
     // would let a third writer in behind the current holder.
     try {
       const payload = JSON.parse(await readFile(this.lockPath, 'utf8')) as LockPayload;
+      // Both the pid and this acquisition's token must match: a pid reused between
+      // a crash and this release must not lose the lock it legitimately holds.
       if (payload.pid !== process.pid) return;
+      if (this.lockToken && payload.token !== this.lockToken) return;
     } catch {
       // Missing or unreadable: nothing of ours to release.
       return;

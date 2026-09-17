@@ -156,6 +156,12 @@ async function stopApp(app) {
   while (app.child.exitCode === null && Date.now() < deadline) await sleep(200);
 }
 
+async function waitForExit(app, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && app.child.exitCode === null) await sleep(200);
+  return app.child.exitCode !== null;
+}
+
 async function main() {
   rmSync(stateDir, { recursive: true, force: true });
   mkdirSync(hostRootDir, { recursive: true });
@@ -239,6 +245,92 @@ async function main() {
     );
     if (cdp2) await cdp2.evaluate('window.chatagent.host.quitApp()').catch(() => undefined);
     await stopApp(second);
+
+    // ---- scenario 3: a live pid whose heartbeat stopped (probably reused) --
+    const frozen = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    const frozenPayload = JSON.stringify({
+      pid: frozen.pid,
+      startedAt: '2026-09-16T00:00:00.000Z',
+      heartbeatAt: '2026-09-16T00:00:00.000Z',
+    });
+    writeFileSync(lockPath, frozenPayload, 'utf8');
+    const third = launchApp();
+    const cdp3 = await connectToPage();
+    check('the app opens its window while the lock is disputed', Boolean(cdp3));
+    let thirdRunning = false;
+    if (cdp3) {
+      await cdp3.send('Runtime.enable');
+      const status = await cdp3.evaluate('window.chatagent.host.command({ type: "status" })');
+      thirdRunning = status?.ok === true && status.result?.running === true;
+    }
+    check('a frozen heartbeat is still not stolen unattended', thirdRunning === false);
+    check(
+      'the frozen lock is left exactly as it was',
+      readFileSync(lockPath, 'utf8') === frozenPayload,
+      'heartbeat frozen, pid alive',
+    );
+    check(
+      'the run explains the frozen heartbeat instead of hanging',
+      third.logs.some((line) => line.includes('store lock kept')),
+      third.logs.find((line) => line.includes('store lock'))?.trim().slice(0, 120) ?? '(no log line)',
+    );
+    await stopApp(third);
+    try {
+      spawn('taskkill', ['/pid', String(frozen.pid), '/T', '/F'], { stdio: 'ignore' });
+    } catch {
+      // already gone
+    }
+
+    // ---- scenario 4: the real app keeps its own lock fresh ----------------
+    rmSync(lockPath, { force: true });
+    const fourth = launchApp({ CHATAGENT_LOCK_HEARTBEAT_MS: '300' });
+    const cdp4 = await connectToPage();
+    check('the app starts once the disputed lock is gone', Boolean(cdp4));
+    let firstBeat;
+    let secondBeat;
+    if (cdp4) {
+      await cdp4.send('Runtime.enable');
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline && !firstBeat) {
+        try {
+          firstBeat = JSON.parse(readFileSync(lockPath, 'utf8')).heartbeatAt;
+        } catch {
+          firstBeat = undefined;
+        }
+        if (!firstBeat) await sleep(250);
+      }
+      await sleep(1200);
+      try {
+        secondBeat = JSON.parse(readFileSync(lockPath, 'utf8')).heartbeatAt;
+      } catch {
+        secondBeat = undefined;
+      }
+    }
+    check(
+      'the running host refreshes its lock heartbeat',
+      Boolean(firstBeat && secondBeat && Date.parse(secondBeat) > Date.parse(firstBeat)),
+      `${firstBeat} -> ${secondBeat}`,
+    );
+    const fourthLock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    check(
+      'the lock names the host pid and a token (no anonymous lock)',
+      typeof fourthLock.pid === 'number' && typeof fourthLock.token === 'string' && fourthLock.token.length > 8,
+      `pid=${fourthLock.pid} token=${String(fourthLock.token).slice(0, 8)}…`,
+    );
+    if (cdp4) await cdp4.evaluate('window.chatagent.host.quitApp()').catch(() => undefined);
+    // Let the app finish its own shutdown (stop agent → release lock → exit)
+    // before falling back to SIGKILL, otherwise the assertion measures the killer.
+    const exited = await waitForExit(fourth, 15000);
+    check('the app exits by itself after quitApp()', exited, exited ? 'clean exit' : 'had to be killed');
+    check(
+      'quitting removes the lock and its heartbeat scratch file',
+      !existsSync(lockPath) && !readdirSync(hostRootDir).some((name) => name.endsWith('.beat')),
+      readdirSync(hostRootDir).join(', ') || '(empty)',
+    );
+    await stopApp(fourth);
   } catch (error) {
     check(`lock check crashed — ${error.message}`, false);
   } finally {

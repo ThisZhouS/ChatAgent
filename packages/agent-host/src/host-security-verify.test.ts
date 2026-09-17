@@ -174,13 +174,41 @@ describe('V-02 a live holder keeps its lock', () => {
   it('does not release a lock that another process now owns', async () => {
     const root = await makeRoot();
     const file = join(root, 'tasks.json');
-    const store = new JsonFileAgentHostStore(file);
+    // A fast heartbeat makes "the holder noticed it lost the lock" observable.
+    const store = new JsonFileAgentHostStore(file, { heartbeatMs: 20 });
     await store.load();
     // Another writer took the lock over while this instance was idle.
-    await writeFile(`${file}.lock`, JSON.stringify({ pid: process.pid + 1 }), 'utf8');
+    const foreign = JSON.stringify({ pid: process.pid + 1, startedAt: new Date().toISOString() });
+    await writeFile(`${file}.lock`, foreign, 'utf8');
+    // The heartbeat re-checks the file itself and stands down instead of
+    // overwriting the new holder's lock with our own payload. `refreshLock()`
+    // is the same beat the timer runs, triggered explicitly so the assertion
+    // does not depend on timer scheduling.
+    await store.refreshLock();
+    const status = store.lockStatus();
+    expect(status.held, JSON.stringify(status)).toBe(false);
+    // Two independent detections, whichever happens first: the file itself says
+    // another pid owns it, or it changed between the read and the commit.
+    expect(String(status.lostReason)).toMatch(/held by pid|changed while heartbeating/);
     await store.close();
-    await expect(readFile(`${file}.lock`, 'utf8')).resolves.toContain('pid');
+    // Not deleted, and not overwritten by our heartbeat.
+    await expect(readFile(`${file}.lock`, 'utf8')).resolves.toBe(foreign);
     await rm(`${file}.lock`, { force: true });
+  });
+
+  it('keeps its own lock fresh so a second instance never sees a frozen heartbeat', async () => {
+    const root = await makeRoot();
+    const file = join(root, 'tasks.json');
+    const store = new JsonFileAgentHostStore(file, { heartbeatMs: 20 });
+    await store.load();
+    const first = JSON.parse(await readFile(`${file}.lock`, 'utf8')) as { heartbeatAt: string };
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    const second = JSON.parse(await readFile(`${file}.lock`, 'utf8')) as { heartbeatAt: string };
+    expect(Date.parse(second.heartbeatAt)).toBeGreaterThan(Date.parse(first.heartbeatAt));
+    // Our own lock is never removed by our own heartbeat, and close() cleans up.
+    await store.close();
+    await expect(readFile(`${file}.lock`, 'utf8')).rejects.toThrow();
+    await expect(readFile(`${file}.lock.beat`, 'utf8')).rejects.toThrow();
   });
 
   it('serves concurrent first access from one lock acquisition', async () => {

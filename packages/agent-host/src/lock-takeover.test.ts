@@ -49,26 +49,67 @@ describe('store lock inspection', () => {
     expect(info.ambiguous).toBe(false);
   });
 
-  it('flags a live holder as ambiguous (the pid may be reused)', async () => {
+  it('believes a live holder that keeps refreshing its heartbeat', async () => {
     const filePath = await tempStorePath();
     const alive = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], {
       stdio: 'ignore',
       windowsHide: true,
     });
     children.push(alive);
-    await writeLock(filePath, { pid: alive.pid, startedAt: new Date().toISOString() });
+    await writeLock(filePath, {
+      pid: alive.pid,
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+    });
     const info = await inspectStoreLock(filePath);
     expect(info.holderAlive).toBe(true);
-    expect(info.ambiguous).toBe(true);
-    expect(info.reason).toMatch(/alive/);
+    // A refreshing holder is not ambiguous: nobody should be offered a takeover
+    // of a host that is demonstrably running.
+    expect(info.ambiguous).toBe(false);
+    expect(info.state).toBe('heartbeat_fresh');
+    expect(info.reason).toMatch(/still running/);
   });
 
-  it('flags an unparseable lock that names no pid as ambiguous', async () => {
+  it('flags a live pid with a frozen heartbeat as ambiguous (the pid was reused)', async () => {
     const filePath = await tempStorePath();
+    const alive = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    children.push(alive);
+    // Alive pid, heartbeat older than every interval a holder would have made.
+    await writeLock(filePath, {
+      pid: alive.pid,
+      startedAt: '2026-09-16T00:00:00.000Z',
+      heartbeatAt: '2026-09-16T00:00:00.000Z',
+    });
+    const info = await inspectStoreLock(filePath);
+    expect(info.ambiguous).toBe(true);
+    expect(info.state).toBe('heartbeat_stale');
+    expect(info.reason).toMatch(/reused/);
+  });
+
+  it('treats an old unreadable lock that names no pid as a leftover', async () => {
+    const filePath = await tempStorePath();
+    await writeLock(filePath, {}, '{"startedAt":"2026-09-16T00:00:00.000Z"');
+    // Age the file past the heartbeat grace: nobody can still be mid-write.
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    const { utimes } = await import('node:fs/promises');
+    await utimes(`${filePath}.lock`, old, old);
+    const info = await inspectStoreLock(filePath);
+    expect(info.ambiguous).toBe(false);
+    expect(info.state).toBe('owner_unknown');
+    expect(info.holderPid).toBeUndefined();
+  });
+
+  it('does not call a just-written unreadable lock a leftover', async () => {
+    const filePath = await tempStorePath();
+    // A holder that created the file but has not written the payload yet.
     await writeLock(filePath, {}, '{"startedAt":"2026-09-16T00:00:00.000Z"');
     const info = await inspectStoreLock(filePath);
     expect(info.ambiguous).toBe(true);
-    expect(info.holderPid).toBeUndefined();
+    expect(info.state).toBe('owner_unknown');
+    expect(info.reason).toMatch(/mid-write/);
   });
 
   it('salvages the pid from a truncated payload', () => {
@@ -96,7 +137,11 @@ describe('consented lock takeover', () => {
 
   it('moves the old lock aside and records who consented and why', async () => {
     const filePath = await tempStorePath();
-    const previous = { pid: 4242, startedAt: '2026-09-15T10:00:00.000Z' };
+    const previous = {
+      pid: 4242,
+      startedAt: '2026-09-15T10:00:00.000Z',
+      heartbeatAt: '2026-09-16T00:00:00.000Z',
+    };
     await writeLock(filePath, previous);
     const result = await takeOverStoreLock(filePath, {
       actor: 'local-user-consent',
@@ -115,6 +160,10 @@ describe('consented lock takeover', () => {
     expect(entry.actor).toBe('local-user-consent');
     expect(entry.action).toBe('store_lock.takeover');
     expect(entry.previousHolder).toEqual({ pid: 4242, startedAt: previous.startedAt });
+    // The audit says what state the abandoned lock was in, so "took over a
+    // freshly heartbeating host" is distinguishable from "took over a frozen pid".
+    expect(entry.lockState).toBe('heartbeat_stale');
+    expect(typeof entry.heartbeatAgeMs).toBe('number');
     expect(String(entry.reason)).toContain('接管');
   });
 

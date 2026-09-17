@@ -290,6 +290,17 @@ function hostRoot() {
  * which is identical on every Windows machine — task ownership and receipts
  * could not be told apart. The id is generated once and kept in userData.
  */
+/**
+ * Lock heartbeat interval. The default (15 s) is what ships; a positive integer
+ * in CHATAGENT_LOCK_HEARTBEAT_MS only exists so automated checks can observe the
+ * refresh without waiting, and is clamped to a sane range.
+ */
+function readLockHeartbeatMs() {
+  const raw = Number(process.env.CHATAGENT_LOCK_HEARTBEAT_MS);
+  if (!Number.isInteger(raw) || raw < 100 || raw > 600000) return undefined;
+  return raw;
+}
+
 function resolveDeviceId() {
   const file = path.join(app.getPath('userData'), 'device.json');
   try {
@@ -390,12 +401,14 @@ function startReceiptSync(serverUrl) {
  * Starts the local agent host, and — only with explicit local consent — recovers
  * from a disputed single-writer lock.
  *
- * The store heals the unambiguous case on its own (the holder pid is gone). When
- * the lock names a *live* pid that may simply have been reused, the desktop asks
- * the human instead of stealing it: two schedulers writing one task file is worse
- * than not starting. A consented takeover is recorded in an append-only audit
- * file and the old lock is renamed aside, never deleted. When nobody can answer
- * (headless run) the lock wins and the host stays down.
+ * The store heals the unambiguous cases on its own (no lock, no pid, a pid that
+ * is gone). A holder that keeps refreshing its heartbeat is believed and *not*
+ * offered for takeover — stealing a running host's lock would create two
+ * schedulers over one task file. Only a pid that is alive but has stopped
+ * refreshing (usually a reused pid) is handed to the human, and even then only an
+ * explicit "yes" takes over: the old lock is renamed aside, never deleted, and the
+ * takeover is appended to an audit file. When nobody can answer (headless run) the
+ * lock wins and the host stays down.
  */
 async function startHostWithLockRecovery(serverUrl) {
   try {
@@ -426,6 +439,26 @@ async function startHostWithLockRecovery(serverUrl) {
     const info = await inspectStoreLock(filePath).catch(() => undefined);
     const holder = info && info.holderPid ? `进程 ${info.holderPid}` : '未知进程';
     const since = info && info.startedAt ? info.startedAt : '时间未知';
+    const heartbeated =
+      info && typeof info.heartbeatAgeMs === 'number'
+        ? `${Math.max(0, Math.round(info.heartbeatAgeMs / 1000))} 秒前仍在刷新锁文件`
+        : '没有心跳记录';
+
+    // A holder that is demonstrably running (it refreshed the lock a moment ago)
+    // is never offered for takeover: the only safe answer is "close the other
+    // instance". Offering the button here is how a live host loses its lock.
+    if (info && info.state === 'heartbeat_fresh') {
+      const detail =
+        `锁文件：${err.lockPath}\n持有者：${holder}（自 ${since}，${heartbeated}）\n\n` +
+        '该进程仍在运行并持续刷新锁文件，因此不会提供接管。请先退出那个 ChatAgent 实例' +
+        '（托盘菜单“退出”），再重新启动本程序。';
+      try {
+        dialog.showErrorBox('ChatAgent', detail);
+      } catch {
+        console.error('[chatagent] store lock is held by a running instance:', err.lockPath);
+      }
+      return false;
+    }
 
     let choice = 1; // default: do not take over
     try {
@@ -434,9 +467,12 @@ async function startHostWithLockRecovery(serverUrl) {
         title: 'ChatAgent',
         message: '本机任务库被另一个进程占用，后台 Agent 没有启动。',
         detail:
-          `锁文件：${err.lockPath}\n持有者：${holder}（自 ${since}）\n\n` +
-          '如果那个进程其实已经不在（或它的 pid 被其它程序复用），可以在此接管：' +
-          '旧锁会被改名保留、接管原因会写入审计文件，然后后台 Agent 重新启动。' +
+          `锁文件：${err.lockPath}\n持有者：${holder}（自 ${since}，${heartbeated}）\n\n` +
+          (info && info.state === 'heartbeat_stale'
+            ? '该进程还活着，但已经停止刷新锁文件，通常说明这个 pid 被其它程序复用了。'
+            : '无法确认该进程是否仍在运行本程序。') +
+          '如果那个进程其实已经不在，可以在此接管：旧锁会被改名保留、接管状态会写入审计文件，' +
+          '然后后台 Agent 重新启动。' +
           '\n\n不确定时请选择“不接管”，先关闭其它 ChatAgent 实例。',
         buttons: ['不接管（默认）', '接管并重启后台 Agent'],
         defaultId: 0,
@@ -456,7 +492,10 @@ async function startHostWithLockRecovery(serverUrl) {
 
     const takeover = await takeOverStoreLock(filePath, {
       actor: 'local-user-consent',
-      reason: '用户在启动提示中确认接管残留锁（疑似 pid 复用）',
+      reason:
+        info && info.state === 'heartbeat_stale'
+          ? '用户在启动提示中确认接管残留锁（pid 存活但心跳已停止，疑似 pid 复用）'
+          : '用户在启动提示中确认接管残留锁（持有者无法确认）',
     });
     lastLockTakeover = takeover;
     console.info('[chatagent] store lock takeover:', JSON.stringify(takeover));
@@ -501,7 +540,11 @@ function createHost() {
     deviceId: resolveDeviceId(),
     agentId: 'hermes',
     workRoot: path.join(root, 'work'),
-    store: new JsonFileAgentHostStore(path.join(root, 'tasks.json')),
+    store: new JsonFileAgentHostStore(path.join(root, 'tasks.json'), {
+      // Overridable so an end-to-end check can watch the heartbeat move without
+      // waiting the production interval. Out-of-range values are ignored.
+      heartbeatMs: readLockHeartbeatMs(),
+    }),
     adapter,
     executorReason,
   });
