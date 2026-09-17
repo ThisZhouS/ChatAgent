@@ -34,7 +34,11 @@ const memberId = argValue('--member', process.env.SMOKE_MEMBER ?? 'u_alice');
 const memberToken = argValue('--token', process.env.SMOKE_TOKEN ?? 'alice-dev-token');
 const shotDir = resolve(argValue('--shots', join(root, 'Temp', 'ui-shots')));
 const keepOpen = args.includes('--keep-open');
-const packagedExe = join(root, 'apps', 'desktop', 'release', 'win-unpacked', 'ChatAgent.exe');
+// Defaults to the packaged build, but any client binary may be pointed at (an
+// upgrade rehearsal packages a second build next to the shipped one).
+const packagedExe =
+  argValue('--exe', process.env.CHATAGENT_CLIENT_EXE) ??
+  join(root, 'apps', 'desktop', 'release', 'win-unpacked', 'ChatAgent.exe');
 const devElectron = join(root, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'electron.exe');
 
 const results = [];
@@ -252,24 +256,80 @@ async function waitForHealth(timeoutMs = 20000) {
  * nothing was ever sent (observed under load). Retrying with an explicit
  * bubble-marker check keeps that latent harness flake out of the gate.
  */
+/**
+ * Sends one message from the composer and reports whether a bubble with that text
+ * exists in the conversation.
+ *
+ * Two things this has to get right, both learned from a real packaged run: the
+ * bubble only appears after the POST returns and the thread is re-read (so an
+ * immediate check is a race, and a second click on that race posts the message
+ * twice), and the send button is disabled while a send is in flight (:loading),
+ * so a click that lands in that window does nothing at all. It therefore waits
+ * for the button to be clickable, waits for the bubble, and never re-types a
+ * message that is already in flight.
+ */
 async function sendComposerMessage(cdp, text, { attempts = 3 } = {}) {
+  const bubbleSeen = () =>
+    cdp
+      .evaluate(
+        `[...document.querySelectorAll('[data-testid="message-bubble"]')].some((node) => (node.innerText || '').includes(${JSON.stringify(text)}))`,
+      )
+      .catch(() => false);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    await cdp.evaluate(setFieldExpr('composer', text));
+    if (await bubbleSeen()) return true;
+    // A successful send clears the composer: only type when it is empty or still
+    // holds our text, so a retry can never post a second copy.
     const current = await cdp.evaluate(
       `(() => { const field = ${fieldExpr('composer')}; return field ? String(field.value || '') : ''; })()`,
     );
-    if (String(current).includes(text)) {
-      await cdp.evaluate(clickTestIdExpr('send'));
-      const posted = await cdp
-        .evaluate(
-          `[...document.querySelectorAll('[data-testid="message-bubble"]')].some((node) => (node.innerText || '').includes(${JSON.stringify(text)}))`,
-        )
-        .catch(() => false);
-      if (posted) return true;
+    if (!String(current).includes(text)) {
+      await cdp.evaluate(setFieldExpr('composer', text));
     }
-    await sleep(400);
+    if (await clickWhenSendable(cdp)) {
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        if (await bubbleSeen()) return true;
+        await sleep(150);
+      }
+    }
+    await sleep(300);
   }
   return false;
+}
+
+/** Clicks the send control once it is enabled (a loading button swallows clicks). */
+async function clickWhenSendable(cdp, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await cdp.evaluate(`(() => {
+      const host = ${findExpr('send')};
+      if (!host) return { found: false };
+      const button = host.closest('button') || host.querySelector('button') || host;
+      return { found: true, disabled: Boolean(button.disabled), loading: button.classList.contains('is-loading') };
+    })()`);
+    if (state && state.found && !state.disabled && !state.loading) {
+      await cdp.evaluate(clickTestIdExpr('send'));
+      return true;
+    }
+    await sleep(100);
+  }
+  return false;
+}
+
+/** What the page looked like when a send produced no bubble (diagnostics only). */
+async function composerDiagnostics(cdp, text) {
+  return cdp.evaluate(`(() => {
+    const field = ${fieldExpr('composer')};
+    const host = ${findExpr('send')};
+    const button = host ? host.closest('button') || host.querySelector('button') || host : null;
+    const bubbles = [...document.querySelectorAll('[data-testid="message-bubble"]')];
+    return {
+      composerValue: field ? String(field.value || '') : null,
+      sendDisabled: button ? Boolean(button.disabled) : null,
+      bubbles: bubbles.length,
+      hasMarker: bubbles.some((node) => (node.innerText || '').includes(${JSON.stringify(text)})),
+    };
+  })()`);
 }
 
 function launchClient() {
@@ -609,7 +669,16 @@ async function main() {
     await cdp.screenshot('03-ai-reply');
 
     const docMarker = `E2E-DOC-${stamp}`;
-    await sendComposerMessage(cdp, `帮我生成一份 Word 周报 ${docMarker}`);
+    const docRequest = `帮我生成一份 Word 周报 ${docMarker}`;
+    const posted = await sendComposerMessage(cdp, docRequest);
+    if (!posted) {
+      // A send that produced no bubble has to say why: a disabled button (a send
+      // still in flight) plus a composer that still holds the text means nothing
+      // was lost, which is a different story from a swallowed message.
+      const diagnostics = await composerDiagnostics(cdp, docRequest).catch(() => null);
+      console.log(`[diag] document request not posted — ${JSON.stringify(diagnostics)}`);
+    }
+    record('document request posted from the client', posted, posted ? `marker ${docMarker}` : 'no bubble appeared');
     const docReply = await waitForBubbleAfter(cdp, docMarker, /已生成文件|已完成|\.docx/, 60000, 'document task reply');
     record('document task finished in the UI', docReply !== '', normaliseText(docReply).slice(0, 120));
 

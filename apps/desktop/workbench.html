@@ -104,6 +104,9 @@
         </div>
         <p class="notice" id="executor-note" hidden></p>
         <p class="notice warn-note" id="integrity-note" hidden></p>
+        <p class="notice" id="retention-note" hidden></p>
+        <p class="notice warn-note" id="authorization-note" hidden></p>
+        <p class="notice" id="receipt-note" hidden></p>
         <p class="notice" id="error-note" hidden></p>
       </div>
 
@@ -264,6 +267,60 @@
           const integrityNote = $('integrity-note');
           show(integrityNote, integrityParts.length > 0);
           setText(integrityNote, integrityParts.join('；'));
+
+          // Retention is housekeeping, not a repair: it says what was (or will be)
+          // dropped and that in-flight work is unaffected — this is the offline
+          // view, so the same facts the online workbench shows must be here too.
+          const retentionParts = [];
+          if (integrity.prunable) {
+            retentionParts.push(`${integrity.prunable} 条更早的终态记录会在下次写入时清理（进行中的任务不受影响）`);
+          }
+          if (integrity.pruned) {
+            retentionParts.push(`本次运行已按保留策略清理 ${integrity.pruned} 条更早的终态记录`);
+          }
+          show($('retention-note'), retentionParts.length > 0);
+          setText($('retention-note'), retentionParts.join('；'));
+
+          // Continuous authorization refresh: being offline is exactly when this
+          // matters, so the offline workbench explains a held queue instead of
+          // showing tasks that silently never start.
+          const authorization = status.authorization || null;
+          const authorizationParts = [];
+          if (authorization && authorization.state === 'unverified') {
+            authorizationParts.push(
+              '授权暂时无法向组织服务复核（' + (authorization.lastError || '原因未知') + '）',
+            );
+          }
+          if (authorization && authorization.heldTasks) {
+            authorizationParts.push(`${authorization.heldTasks} 条外部操作任务已暂缓，复核恢复后自动继续`);
+          }
+          if (authorization && authorization.revoked) {
+            authorizationParts.push(`组织服务已撤销 ${authorization.revoked} 项授权`);
+          }
+          if (authorization && authorization.unverifiable) {
+            authorizationParts.push(`${authorization.unverifiable} 项授权无法确认`);
+          }
+          show($('authorization-note'), authorizationParts.length > 0);
+          setText($('authorization-note'), authorizationParts.join('；'));
+
+          // Receipt uploads: a refused batch needs a human, a network failure does not.
+          const sync = status.receiptSync || null;
+          const pending = (sync && sync.pending) || 0;
+          const failure = (sync && sync.lastFailure) || null;
+          let receiptText = '';
+          if (pending > 0) {
+            if (failure && failure.kind === 'server_rejected') {
+              receiptText = `${pending} 条回执被服务端拒收（${failure.detail || '原因未知'}）：已停止自动重试，请重新登录或确认设备归属后再试（记录仍在本机）`;
+            } else if (failure && failure.kind === 'server_error') {
+              receiptText = `${pending} 条回执未上传（服务端错误 ${failure.detail || ''}），稍后自动重试`;
+            } else {
+              receiptText = `${pending} 条回执未上传，联网后自动重试`;
+            }
+          } else if (failure && failure.kind === 'server_rejected') {
+            receiptText = `回执上传曾被服务端拒绝（${failure.detail || ''}），当前没有待上传记录`;
+          }
+          show($('receipt-note'), receiptText !== '');
+          setText($('receipt-note'), receiptText);
           $('pause').textContent = status.paused ? '继续后台' : '暂停后台';
         } else {
           setText($('error-note'), `status: ${statusRes.error || 'unknown'}`);

@@ -58,7 +58,7 @@ ChatAgent/
 │   ├── im-gateway/      IM 网关抽象 + 钉钉/飞书/企微/QQ 规范化
 │   ├── agent-host/      本机 Agent Host（任务库/租约/停止/Hermes 适配/IPC/载入校验/保留策略/进程树/锁心跳与持有者身份/持续授权刷新）
 │   └── task-engine/     任务状态机、队列、重试、取消、持久化
-├── docs/                项目简报、调研、需求、任务、架构、环境、验收、Gate 记录
+├── docs/                项目简报、调研、需求、任务、架构、环境、验收、Gate 记录、升级调研（upgrade-2026-09-17-electron.md）
 │   ├── gate1-2-identity-task-integrity.md  认证/状态机/迁移策略
 │   ├── gate4-approval-outbox.md            审批摘要/outbox/回执语义
 │   ├── adr-0001-standalone-native-chat.md  独立产品与原生聊天方向决策

@@ -202,8 +202,15 @@ describe('V-02 a live holder keeps its lock', () => {
     const store = new JsonFileAgentHostStore(file, { heartbeatMs: 20 });
     await store.load();
     const first = JSON.parse(await readFile(`${file}.lock`, 'utf8')) as { heartbeatAt: string };
-    await new Promise((resolve) => setTimeout(resolve, 90));
-    const second = JSON.parse(await readFile(`${file}.lock`, 'utf8')) as { heartbeatAt: string };
+    // Poll instead of sleeping a fixed 90 ms: the whole suite runs in parallel, so
+    // a single sleep is a flake waiting to happen on a loaded machine.
+    const deadline = Date.now() + 10_000;
+    let second = first;
+    while (Date.now() < deadline) {
+      second = JSON.parse(await readFile(`${file}.lock`, 'utf8')) as { heartbeatAt: string };
+      if (Date.parse(second.heartbeatAt) > Date.parse(first.heartbeatAt)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     expect(Date.parse(second.heartbeatAt)).toBeGreaterThan(Date.parse(first.heartbeatAt));
     // Our own lock is never removed by our own heartbeat, and close() cleans up.
     await store.close();

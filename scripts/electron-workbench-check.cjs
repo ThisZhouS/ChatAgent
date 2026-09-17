@@ -37,6 +37,31 @@ app.on('window-all-closed', () => {
 app.whenReady().then(async () => {
   let host;
   try {
+    // Seed more terminal rows than the store keeps, before anything loads: the
+    // offline workbench has to show retention housekeeping (and that in-flight
+    // work is unaffected) instead of silently dropping history.
+    const seeded = [];
+    for (let index = 0; index < 520; index += 1) {
+      const at = new Date(Date.UTC(2026, 8, 1, 0, 0, index)).toISOString();
+      seeded.push({
+        taskId: `wb-old-${String(index).padStart(3, '0')}`,
+        deviceId: 'desktop-workbench-check',
+        agentId: 'hermes',
+        goal: '历史任务',
+        kind: 'document',
+        state: 'succeeded',
+        workDir: path.join(root, 'work', `wb-old-${index}`),
+        toolsets: ['document'],
+        attempts: 1,
+        maxAttempts: 1,
+        createdAt: at,
+        updatedAt: at,
+        finishedAt: at,
+        version: 1,
+      });
+    }
+    fs.writeFileSync(path.join(root, 'tasks.json'), JSON.stringify(seeded), 'utf8');
+
     host = new LocalAgentHost({
       deviceId: 'desktop-workbench-check',
       agentId: 'hermes',
@@ -138,6 +163,16 @@ app.whenReady().then(async () => {
 
     // The workbench keeps working after the server is unreachable: the page is
     // local, so nothing above touched http://localhost:8787.
+    check(
+      'workbench shows retention housekeeping instead of silent data loss',
+      text.includes('条更早的终态记录') && text.includes('进行中的任务不受影响'),
+      text.includes('保留') ? 'retention note rendered' : '(no retention note)',
+    );
+    check(
+      'a clean run shows no authorization or receipt alarm',
+      !text.includes('授权暂时无法向组织服务复核') && !text.includes('条回执未上传'),
+      'no false alarms in the offline workbench',
+    );
     check('workbench never needed the organization server', true, 'page is file:// and host-local');
   } catch (error) {
     console.log(`FAIL  workbench check crashed — ${error.stack}`);

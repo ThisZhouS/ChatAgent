@@ -29,7 +29,11 @@ const serverPort = Number(argValue('--server-port', '8795'));
 const stateDir = join(root, 'Temp', 'csp-check');
 const hostRootDir = join(stateDir, 'host');
 const profileDir = join(stateDir, 'profile');
-const devElectron = join(root, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'electron.exe');
+// The runtime can be pointed elsewhere with CHATAGENT_ELECTRON_BIN so an upgrade
+// (or a beta) can be rehearsed against the real checks without touching the pin.
+const devElectron =
+  process.env.CHATAGENT_ELECTRON_BIN ||
+  join(root, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'electron.exe');
 const serverUrl = `http://127.0.0.1:${serverPort}`;
 
 /** Mode 1: no CSP at all (the desktop must supply one). Mode 2: server CSP. */

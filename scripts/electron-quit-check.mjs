@@ -29,7 +29,11 @@ const debugPort = Number(argValue('--debug-port', '9345'));
 const stateDir = join(root, 'Temp', 'quit-check');
 const hostRoot = join(stateDir, 'host');
 const profileDir = join(stateDir, 'profile');
-const devElectron = join(root, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'electron.exe');
+// The runtime can be pointed elsewhere with CHATAGENT_ELECTRON_BIN so an upgrade
+// (or a beta) can be rehearsed against the real checks without touching the pin.
+const devElectron =
+  process.env.CHATAGENT_ELECTRON_BIN ||
+  join(root, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'electron.exe');
 const packagedExe = join(root, 'apps', 'desktop', 'release', 'win-unpacked', 'ChatAgent.exe');
 
 const results = [];
