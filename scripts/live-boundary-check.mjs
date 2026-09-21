@@ -5,6 +5,7 @@
  * Exit: 0 = as documented, 1 = a boundary differed, 2 = server unreachable.
  * The event-stream probe is deliberately absent (it left a socket open and made the exit code
  * untrustworthy: round 44 in docs/iteration-2026-09-16-gate7a1-hardening.md). */
+async function main() {
 const at = process.argv.indexOf('--server');
 const server = ((at === -1 ? process.env.CHATAGENT_SERVER_URL : process.argv[at + 1]) || 'http://127.0.0.1:8787').replace(/\/+$/, '');
 const results = [];
@@ -18,7 +19,8 @@ async function req(path, init) {
 let health;
 try { health = await req('/health'); } catch (e) {
   console.log('[live-boundaries] ' + server + ' unreachable (' + e.message + ') -- nothing verified');
-  process.exitCode = 2;
+  return 2; // process.exitCode alone does not stop execution: the checks below would run
+  // against an undefined health and crash with exit 1 instead of the documented 2.
 }
 const authMode = (health.body && health.body.authMode) || 'unknown';
 check('health answers ok', health.status === 200 && Boolean(health.body && health.body.ok), 'status=' + health.status + ' authMode=' + authMode);
@@ -60,4 +62,9 @@ else { console.log('runtime behaviour only: this is not Gate 7A.3 (real Hermes r
 // exitCode, not exit(): calling process.exit() while undici keep-alive handles are
 // closing trips the libuv UV_HANDLE_CLOSING assertion on this platform (Node 24.11 / Windows).
 // Observed twice: exit 127 after every check had already passed.
-process.exitCode = failed > 0 ? 1 : 0;
+return failed > 0 ? 1 : 0;
+}
+
+// exitCode, not exit(): calling process.exit() while undici keep-alive handles close trips the
+// libuv UV_HANDLE_CLOSING assertion on this platform (round 45).
+process.exitCode = await main();
