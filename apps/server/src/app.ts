@@ -1574,7 +1574,14 @@ async function streamNativeEvents(
   // through the normal close path. Each entry is authorized on its own - a reconnect must
   // never hand out what live delivery would have refused.
   if (resumeFrom !== undefined) {
-    for (const entry of hub.since(resumeFrom)) {
+    const replay = hub.since(resumeFrom);
+    if (replay.truncated) {
+      // The cursor is older than anything still held. Saying nothing would tell the client
+      // "you are up to date", which it would believe; this asks it to reload instead.
+      const notice = { type: 'resync', reason: 'cursor_expired', at: new Date().toISOString() };
+      writeAndCheck(reply.raw, `event: resync\ndata: ${JSON.stringify(notice)}\n\n`);
+    }
+    for (const entry of replay.entries) {
       if (closed) break;
       await deliverIfAuthorized(reply.raw, service, principal, entry.event, entry.seq);
     }
@@ -1630,6 +1637,8 @@ async function deliverIfAuthorized(
       await service.getConversation(principal, event.conversationId);
     } else if (event.type === 'task') {
       await service.getTask(principal, event.taskId);
+    } else if (event.type === 'resync') {
+      // Carries no data of its own, so there is nothing to authorize beyond being a member.
     } else if (!(await service.canSeeApproval(principal, event.approvalId))) {
       return;
     }

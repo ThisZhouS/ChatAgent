@@ -174,7 +174,19 @@ const streamInstances: FakeEventSource[] = [];
 class FakeEventSource {
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
-  addEventListener(): void {}
+  private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+
+  addEventListener(type: string, handler: (event: unknown) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), handler]);
+  }
+
+  /** Test helper: deliver a server-sent event to the handlers the view registered. */
+  dispatch(type: string, data: unknown = {}): void {
+    for (const handler of this.listeners.get(type) ?? []) {
+      handler({ data: JSON.stringify(data) });
+    }
+  }
+
   close(): void {}
 
   constructor() {
@@ -616,6 +628,22 @@ describe('ChatView', () => {
       title: '我的项目组',
       members: {},
     });
+  });
+
+
+  it('reloads when the stream says the cursor is stale', async () => {
+    mountChat();
+    await flushPromises();
+    mocks.listMessages.mockClear();
+
+    const stream = streamInstances.at(-1);
+    expect(stream, 'the view subscribes to the native event stream').toBeTruthy();
+    // The server warned that the cursor predates its replay buffer instead of replaying
+    // nothing: the client must reload rather than assume it is up to date.
+    stream?.dispatch?.('resync');
+    await flushPromises();
+
+    expect(mocks.listMessages).toHaveBeenCalled();
   });
 
   it('sends the composed text through the native API', async () => {

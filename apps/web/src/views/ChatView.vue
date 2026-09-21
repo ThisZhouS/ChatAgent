@@ -1110,6 +1110,12 @@ function connectStream() {
     const event = JSON.parse((raw as MessageEvent).data) as { conversationId?: string };
     if (event.conversationId === activeId.value) void loadActiveTask();
   });
+  stream.addEventListener('resync', () => {
+    // The cursor was older than the server's replay buffer: reload instead of believing the
+    // (empty) stream means "nothing happened while you were away".
+    void resyncAfterReconnect();
+  });
+
   stream.addEventListener('agent_intake', (raw) => {
     const event = JSON.parse((raw as MessageEvent).data) as {
       conversationId: string;

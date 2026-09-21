@@ -84,9 +84,24 @@ export class NativeEventHub {
    * Events published after `afterSeq`, oldest first. Callers re-authorize each one before
    * writing it: a reconnect must not become a way to read what the stream would refuse.
    */
-  since(afterSeq: number): SequencedNativeEvent[] {
-    if (!Number.isFinite(afterSeq) || afterSeq < 0) return [];
-    return this.recent.filter((entry) => entry.seq > afterSeq);
+  /** The oldest event still held for replay, or undefined when nothing is held. */
+  get oldestSeq(): number | undefined {
+    return this.recent[0]?.seq;
+  }
+
+  /**
+   * Events published after `afterSeq`, oldest first, plus whether the request fell off the
+   * back of the buffer. That flag matters: returning an empty list for a cursor we can no
+   * longer honour tells the client "nothing happened", which is a lie it will believe.
+   */
+  since(afterSeq: number): { entries: SequencedNativeEvent[]; truncated: boolean } {
+    if (!Number.isFinite(afterSeq) || afterSeq < 0) return { entries: [], truncated: false };
+    const entries = this.recent.filter((entry) => entry.seq > afterSeq);
+    const oldest = this.oldestSeq;
+    // Two ways to be out of date: the cursor is older than the buffer, or the buffer is empty
+    // while the client claims to have seen events (which means it was reset by a restart).
+    const truncated = oldest !== undefined ? afterSeq < oldest - 1 : afterSeq > 0;
+    return { entries, truncated };
   }
 
   subscribe(listener: NativeEventListener, principalId = 'anonymous'): Subscription {

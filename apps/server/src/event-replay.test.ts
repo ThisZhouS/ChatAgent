@@ -140,10 +140,13 @@ describe('event hub sequencing', () => {
     expect(hub.latestSeq).toBe(5);
     // The buffer is bounded: only the newest three survive, so a very old cursor simply
     // gets what is still held instead of a false "nothing missed".
-    expect(hub.since(0).map((entry) => entry.seq)).toEqual([3, 4, 5]);
-    expect(hub.since(4).map((entry) => entry.seq)).toEqual([5]);
-    expect(hub.since(5)).toEqual([]);
-    expect(hub.since(Number.NaN)).toEqual([]);
+    expect(hub.since(0).entries.map((entry) => entry.seq)).toEqual([3, 4, 5]);
+    // The cursor fell off the buffer: the caller must know, not receive a bare "nothing".
+    expect(hub.since(0).truncated).toBe(true);
+    expect(hub.since(4).entries.map((entry) => entry.seq)).toEqual([5]);
+    expect(hub.since(4).truncated).toBe(false);
+    expect(hub.since(5)).toEqual({ entries: [], truncated: false });
+    expect(hub.since(Number.NaN)).toEqual({ entries: [], truncated: false });
   });
 });
 

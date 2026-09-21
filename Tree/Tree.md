@@ -125,3 +125,4 @@ pnpm start
 ```
 
 （本轮新增：`apps/server/src/agent-tier.ts` 联系人权限分级；`packages/hermes/src/runtime.ts` 按次工具白名单；`apps/web/src/components/AccountTierEditor.vue` 等级编辑器；`docs/product-decomposition-gap-matrix-2026-09-17.md` 功能树差距矩阵与计划。）
+（本轮新增：`docs/adr-0004-storage-and-event-cursor.md` 存储与事件游标决策。）

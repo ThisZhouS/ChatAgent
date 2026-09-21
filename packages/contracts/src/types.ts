@@ -464,6 +464,15 @@ export type NativeEvent =
     }
   | { type: 'conversation_dissolved'; conversationId: string; at: string }
   | {
+      /**
+       * Sent when the requested cursor is older than what the server still holds: the client
+       * must reload instead of assuming it is up to date.
+       */
+      type: 'resync';
+      reason: 'cursor_expired';
+      at: string;
+    }
+  | {
       type: 'approval';
       approvalId: string;
       taskId?: string;
