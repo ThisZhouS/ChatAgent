@@ -549,7 +549,11 @@ export class ChatAgentService {
     //    who left must be re-invited by somebody who is still in the group);
     //  - re-creation only ever ADDS the requested members, never removes the
     //    ones that were invited in the meantime.
-    const existing = await this.conversations.findByChatId('group', chatId);
+    const existing = await this.conversations.findByChatId(
+      'group',
+      chatId,
+      principal.organizationId,
+    );
     if (
       existing &&
       existing.participantIds.length > 0 &&
@@ -578,13 +582,167 @@ export class ChatAgentService {
     for (const participantId of participantIds) {
       await this.conversations.addParticipant(conversation.id, participantId);
     }
+    // The creator owns the group. Re-creating an existing group never changes its owner,
+    // so "create" cannot be used to take a group over.
+    if (!existing || !conversation.ownerId) {
+      await this.conversations.updateGovernance(conversation.id, {
+        ownerId: conversation.ownerId ?? principal.id,
+        adminIds: conversation.adminIds ?? [conversation.ownerId ?? principal.id],
+      });
+    }
     return (await this.conversations.get(conversation.id)) ?? conversation;
   }
 
+  // Group governance -------------------------------------------------------
+
   /**
-   * Renames a group. Only a participant may do it, and the new title is what
-   * everybody sees from then on (the deterministic key is unaffected, so the
-   * conversation identity does not change).
+   * Who may manage this group: the owner, an admin, or an organization admin. Returns the
+   * role so callers can say what was missing instead of a bare 403.
+   */
+  private requireGroupManager(
+    principal: Principal,
+    conversation: Conversation,
+  ): 'owner' | 'admin' {
+    if (conversation.ownerId === principal.id) return 'owner';
+    if (conversation.adminIds?.includes(principal.id)) return 'admin';
+    if (isOrgAdmin(principal)) return 'admin';
+    throw new ServiceError(403, 'forbidden', 'group_manager_required');
+  }
+
+  /** Every group write goes through here: dissolved groups accept nothing new. */
+  private assertGroupAlive(conversation: Conversation): void {
+    if (conversation.dissolvedAt) {
+      throw new ServiceError(409, 'this group has been dissolved', 'group_dissolved');
+    }
+  }
+
+  /** Pins (or clears) the announcement every participant sees. */
+  async setGroupAnnouncement(
+    principal: Principal,
+    conversationId: string,
+    announcement: string,
+  ): Promise<Conversation> {
+    this.requireMember(principal);
+    const conversation = await this.conversations.get(conversationId);
+    if (!conversation || !canReadConversation(principal, conversation)) {
+      throw new ServiceError(404, 'conversation not found');
+    }
+    if (conversation.targetKind !== 'group') {
+      throw new ServiceError(400, 'only groups have an announcement');
+    }
+    if (!conversation.participantIds.includes(principal.id)) {
+      throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    this.requireGroupManager(principal, conversation);
+    this.assertGroupAlive(conversation);
+    const clean = announcement.trim();
+    if (clean.length > 500) {
+      throw new ServiceError(400, 'announcement must be at most 500 characters');
+    }
+    const updated = await this.conversations.updateGovernance(conversation.id, {
+      announcement: clean === '' ? null : clean,
+    });
+    this.audit?.({
+      action: clean === '' ? 'group.announcement_cleared' : 'group.announcement_set',
+      outcome: 'ok',
+      actorId: principal.id,
+      target: conversation.id,
+    });
+    this.events.publish({
+      type: 'conversation_announcement',
+      conversationId: conversation.id,
+      announcement: clean,
+      at: new Date().toISOString(),
+    });
+    return updated ?? conversation;
+  }
+
+  /** Grants or revokes admin rights. Owner only: admins cannot create peers. */
+  async setGroupAdmin(
+    principal: Principal,
+    conversationId: string,
+    memberId: string,
+    admin: boolean,
+  ): Promise<Conversation> {
+    this.requireMember(principal);
+    const conversation = await this.conversations.get(conversationId);
+    if (!conversation || !canReadConversation(principal, conversation)) {
+      throw new ServiceError(404, 'conversation not found');
+    }
+    if (conversation.targetKind !== 'group') {
+      throw new ServiceError(400, 'only groups have admins');
+    }
+    if (!conversation.participantIds.includes(principal.id)) {
+      throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    if (conversation.ownerId !== principal.id && !isOrgAdmin(principal)) {
+      throw new ServiceError(403, 'forbidden', 'group_owner_required');
+    }
+    this.assertGroupAlive(conversation);
+    if (!conversation.participantIds.includes(memberId)) {
+      throw new ServiceError(404, 'member not found');
+    }
+    if (memberId === conversation.ownerId) {
+      // The owner's rights are not a flag that can be toggled off.
+      throw new ServiceError(400, 'the owner already manages this group', 'owner_immutable');
+    }
+    const current = new Set(conversation.adminIds ?? []);
+    if (admin) current.add(memberId);
+    else current.delete(memberId);
+    const updated = await this.conversations.updateGovernance(conversation.id, {
+      adminIds: [...current],
+    });
+    this.audit?.({
+      action: admin ? 'group.admin_granted' : 'group.admin_revoked',
+      outcome: 'ok',
+      actorId: principal.id,
+      target: conversation.id,
+      detail: `member:${memberId}`,
+    });
+    return updated ?? conversation;
+  }
+
+  /**
+   * Dissolves a group: history stays readable, nothing new may be sent into it. Deleting
+   * the row instead would erase the record of what was said, which is not what "解散" means.
+   */
+  async dissolveGroup(principal: Principal, conversationId: string): Promise<Conversation> {
+    this.requireMember(principal);
+    const conversation = await this.conversations.get(conversationId);
+    if (!conversation || !canReadConversation(principal, conversation)) {
+      throw new ServiceError(404, 'conversation not found');
+    }
+    if (conversation.targetKind !== 'group') {
+      throw new ServiceError(400, 'only groups can be dissolved');
+    }
+    if (!conversation.participantIds.includes(principal.id)) {
+      throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    if (conversation.ownerId !== principal.id && !isOrgAdmin(principal)) {
+      throw new ServiceError(403, 'forbidden', 'group_owner_required');
+    }
+    if (conversation.dissolvedAt) return conversation;
+    const now = new Date().toISOString();
+    const updated = await this.conversations.updateGovernance(conversation.id, {
+      dissolvedAt: now,
+    });
+    this.audit?.({
+      action: 'group.dissolved',
+      outcome: 'ok',
+      actorId: principal.id,
+      target: conversation.id,
+    });
+    this.events.publish({
+      type: 'conversation_dissolved',
+      conversationId: conversation.id,
+      at: now,
+    });
+    return updated ?? conversation;
+  }
+  /**
+   * Renames a group. Owner, admin or organization admin only: the title is what everybody
+   * sees, so it is a governance action, not a personal preference (the deterministic key is
+   * unaffected, so the conversation identity does not change).
    */
   async renameGroup(
     principal: Principal,
@@ -602,6 +760,8 @@ export class ChatAgentService {
     if (!conversation.participantIds.includes(principal.id)) {
       throw new ServiceError(403, 'forbidden', 'not_a_participant');
     }
+    this.requireGroupManager(principal, conversation);
+    this.assertGroupAlive(conversation);
     const clean = title.trim();
     if (clean === '' || clean.length > 64) {
       throw new ServiceError(400, 'title must be between 1 and 64 characters');
@@ -714,7 +874,28 @@ export class ChatAgentService {
     if (!conversation.participantIds.includes(memberId)) {
       throw new ServiceError(404, 'member not found');
     }
+    const role = this.requireGroupManager(principal, conversation);
+    this.assertGroupAlive(conversation);
+    if (memberId === conversation.ownerId) {
+      // Removing the owner would leave a group nobody can administer.
+      throw new ServiceError(403, 'forbidden', 'cannot_remove_owner');
+    }
+    if (role === 'admin' && conversation.adminIds?.includes(memberId)) {
+      // Admins manage members, not each other; the owner settles that.
+      throw new ServiceError(403, 'forbidden', 'cannot_remove_admin');
+    }
     await this.conversations.removeParticipant(conversation.id, memberId);
+    const admins = (conversation.adminIds ?? []).filter((id) => id !== memberId);
+    if (admins.length !== (conversation.adminIds ?? []).length) {
+      await this.conversations.updateGovernance(conversation.id, { adminIds: admins });
+    }
+    this.audit?.({
+      action: 'group.member_removed',
+      outcome: 'ok',
+      actorId: principal.id,
+      target: conversation.id,
+      detail: `member:${memberId}`,
+    });
     return { ok: true };
   }
 
@@ -761,6 +942,15 @@ export class ChatAgentService {
     }
     if (!conversation.participantIds.includes(principal.id)) {
       throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    const others = conversation.participantIds.filter((id) => id !== principal.id);
+    if (conversation.ownerId === principal.id && others.length > 0) {
+      // Leaving would strand the group without an owner; hand it over or dissolve it.
+      throw new ServiceError(
+        409,
+        'hand the group to another member or dissolve it before leaving',
+        'owner_must_transfer',
+      );
     }
     await this.conversations.removeParticipant(conversation.id, principal.id);
     return { ok: true };
@@ -889,6 +1079,11 @@ export class ChatAgentService {
     }
 
     const kind = input.attachments.length > 0 ? 'mixed' : 'text';
+
+    // A dissolved group is a tombstone: the history stays readable, nothing new goes in.
+    if (conversation.dissolvedAt) {
+      throw new ServiceError(409, 'this group has been dissolved', 'group_dissolved');
+    }
 
     // Blocking is a delivery rule, not a label: a member who blocked the sender does not
     // receive their direct messages. It is deliberately scoped to direct conversations -

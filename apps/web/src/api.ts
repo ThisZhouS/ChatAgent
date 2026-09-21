@@ -235,6 +235,22 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ title }),
       }),
+    /** Group governance: announcement, admins and dissolution. */
+    setAnnouncement: (conversationId: string, announcement: string) =>
+      request<Conversation>('/conversations/' + conversationId + '/announcement', {
+        method: 'POST',
+        body: JSON.stringify({ announcement }),
+      }),
+    setAdmin: (conversationId: string, memberId: string, admin: boolean) =>
+      request<Conversation>('/conversations/' + conversationId + '/admins', {
+        method: 'POST',
+        body: JSON.stringify({ memberId, admin }),
+      }),
+    dissolve: (conversationId: string) =>
+      request<Conversation>('/conversations/' + conversationId + '/dissolve', {
+        method: 'POST',
+      }),
+
     removeMember: (conversationId: string, memberId: string) =>
       request<{ ok: boolean }>(`/conversations/${conversationId}/members/${memberId}`, {
         method: 'DELETE',

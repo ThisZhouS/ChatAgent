@@ -252,7 +252,7 @@ pnpm dev
 - [x] **P0-3 工具开关单一来源 + 拒绝原因回灌提示词**：唯一来源 `packages/agent-host/src/policy.ts`（13 项 + 能力下限），提交期即拒绝（含两份旧名单漂移的 6 个名字），`capabilityBrief()` 由同一名单生成并注入本机 Hermes 目标文本，拒绝信息区分「被关闭」与「不是能力」。证据：`policy.test.ts` 5 例、`host-security.test.ts` +2 例、`adapter.test.ts` +1 例。
 - [x] **P1-1 断线补差与消息幂等**：事件带 `seq`（hub 有界重放缓冲），SSE 写 `id:` 并按 `Last-Event-ID`/`?since=` **逐条重新鉴权**回放；客户端重连补拉按 id 合并；发送加 `clientMsgId`（作用域=发送者+会话+key，10 分钟 TTL，有界台账）。证据：`event-replay.test.ts` 4 例、`ChatView.test.ts` 重连补拉一例。
 - [x] **P1-2 好友关系与验证**：`RelationStore`（`data/relations.json`）保存申请与关系；申请→仅被申请人可同意→双向好友；备注私有；拉黑**私聊投递拒绝**（403，不落库）且不能再申请，群聊不受影响；界面有申请收件箱与联系人设置。证据：`friends.test.ts` 6 例 + `ChatView.test.ts` 3 例。**假设待确认**：好友=人际好友，拉黑≠忽略级。
-- [ ] **P1-3 群治理**（群主/管理员/公告/解散群 + 群 ID 按组织唯一）。
+- [x] **P1-3 群治理**：`ownerId`/`adminIds`/`announcement`/`dissolvedAt`；改名/公告/踢人/解散限群主或管理员，管理员不能动群主与其他管理员，群主退群需先交接（409）；公告广播；解散是软删除（历史可读、不能再发）；`findByChatId` 按组织隔离。证据：`group-governance.test.ts` 6 例 + `ChatView.test.ts` 2 例。
 - [ ] **P1-4 消息呈现**（转发署名与原时间、图片预览、@强提醒、会话免打扰）。
 - [ ] **P2**：文件拖入与类型/魔数校验、关键词正则钩子、澄清提问打通、窗口置顶/隐藏、界面风格与背景、表情与贴纸、群成员别名、事件游标与本地存储演进。
 

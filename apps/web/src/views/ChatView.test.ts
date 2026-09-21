@@ -40,6 +40,10 @@ const mocks = vi.hoisted(() => {
     origin: 'native',
     targetKind: 'group',
     targetId: 'u_alice',
+    // The signed-in member created this group, so the governance controls are shown to
+    // them (the server refuses them for everybody else).
+    ownerId: 'u_alice',
+    adminIds: ['u_alice'],
     createdAt: now,
     updatedAt: now,
     messageIds: [],
@@ -59,6 +63,9 @@ const mocks = vi.hoisted(() => {
     createGroup: vi.fn(async () => conversation),
     addMember: vi.fn(async () => ({ ok: true })),
     rename: vi.fn(async () => ({ id: 'conv_group', title: '改名后' })),
+    setAnnouncement: vi.fn(async () => ({ id: 'conv_group' })),
+    setAdmin: vi.fn(async () => ({ id: 'conv_group' })),
+    dissolve: vi.fn(async () => ({ id: 'conv_group' })),
     removeMember: vi.fn(async () => ({ ok: true })),
     leave: vi.fn(async () => ({ ok: true })),
     listConversations: vi.fn(async () => [conversation]),
@@ -131,6 +138,9 @@ vi.mock('../api', () => ({
       exportConversation: vi.fn(async () => ({ id: 'f1', name: 'x.docx', url: '/api/files/f1' })),
       addMember: mocks.addMember,
       rename: mocks.rename,
+      setAnnouncement: mocks.setAnnouncement,
+      setAdmin: mocks.setAdmin,
+      dissolve: mocks.dissolve,
       removeMember: mocks.removeMember,
       leave: mocks.leave,
       upload: vi.fn(),
@@ -166,6 +176,9 @@ class FakeEventSource {
 beforeEach(() => {
   vi.stubGlobal('EventSource', FakeEventSource);
   streamInstances.length = 0;
+  // Dialogs are teleported to the body and tests attach their wrapper there; clearing the
+  // body keeps one test's dialogs from being found by the next one.
+  document.body.innerHTML = '';
   // The address book is optional on screen: default to "nothing pending, nothing changed".
   addressBook.requests.mockReset();
   addressBook.requests.mockResolvedValue({ incoming: [], outgoing: [] });
@@ -625,6 +638,57 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('群成员');
     expect(wrapper.text()).toContain('Bob');
     expect(wrapper.text()).toContain('ChatAgent 助理');
+  });
+
+
+  it('shows the group announcement and lets the owner publish and dissolve', async () => {
+    mocks.listConversations.mockResolvedValue([{ ...mocks.group, announcement: '本周五交周报' }]);
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+
+    // Everyone in the group sees the announcement without opening anything.
+    expect(wrapper.find('[data-testid="group-announcement"]').text()).toContain('本周五交周报');
+
+    await wrapper.find('[data-testid="members"]').trigger('click');
+    await flushPromises();
+    const field = document.querySelector('[data-testid="announcement-input"]') as HTMLTextAreaElement;
+    expect(field, 'the manager panel offers an announcement field').toBeTruthy();
+    field.value = '周五 17:00 前交';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await flushPromises();
+
+    const publish = document.querySelector('[data-testid="announcement-publish"]') as HTMLElement;
+    publish.click();
+    await flushPromises();
+    expect(mocks.setAnnouncement).toHaveBeenCalledWith('conv_group', '周五 17:00 前交');
+
+    // Dissolving asks first, then goes through the API.
+    const dissolve = document.querySelector('[data-testid="group-dissolve"]') as HTMLElement;
+    dissolve.click();
+    await flushPromises();
+    // Dissolving stops the room for everybody, so it takes a second, explicit click.
+    expect(mocks.dissolve).not.toHaveBeenCalled();
+    const confirm = document.querySelector(
+      '[data-testid="group-dissolve-confirm"]',
+    ) as HTMLElement;
+    expect(confirm, 'dissolving asks for confirmation').toBeTruthy();
+    confirm.click();
+    await flushPromises();
+    expect(mocks.dissolve).toHaveBeenCalledWith('conv_group');
+  });
+
+  it('hides the governance controls from a member who does not manage the group', async () => {
+    mocks.listConversations.mockResolvedValue([
+      { ...mocks.group, ownerId: 'u_bob', adminIds: ['u_bob'] },
+    ]);
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+    await wrapper.find('[data-testid="members"]').trigger('click');
+    await flushPromises();
+
+    expect(document.querySelector('[data-testid="announcement-input"]')).toBeNull();
+    expect(document.querySelector('[data-testid="group-dissolve"]')).toBeNull();
+    expect(document.querySelector('[data-testid="remove-member"]')).toBeNull();
   });
 
   it('renames the open group and removes a member from the panel', async () => {

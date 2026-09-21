@@ -365,13 +365,23 @@ export class ConversationStore {
     await this.persist();
   }
 
-  /** Finds a conversation by its deterministic key. */
-  async findByChatId(chatType: ChatType, chatId: string): Promise<Conversation | undefined> {
+  /**
+   * Finds a conversation by its deterministic key. The key is scoped to the organization:
+   * two organizations can legitimately produce the same chatId and must never share a
+   * conversation (the earlier lookup ignored the organization entirely).
+   */
+  async findByChatId(
+    chatType: ChatType,
+    chatId: string,
+    organizationId?: string,
+  ): Promise<Conversation | undefined> {
     await this.load();
     for (const conversation of this.conversations.values()) {
-      if (conversation.chatType === chatType && conversation.chatId === chatId) {
-        return cloneConversation(conversation);
+      if (conversation.chatType !== chatType || conversation.chatId !== chatId) continue;
+      if (organizationId !== undefined && conversation.organizationId !== organizationId) {
+        continue;
       }
+      return cloneConversation(conversation);
     }
     return undefined;
   }
@@ -384,6 +394,39 @@ export class ConversationStore {
     conversation.title = title;
     conversation.updatedAt = new Date().toISOString();
     await this.persist();
+  }
+
+  /**
+   * Group governance: who owns it, who helps run it, the pinned announcement and the
+   * dissolved tombstone. One method so a governance change is a single durable write.
+   */
+  async updateGovernance(
+    conversationId: string,
+    patch: {
+      ownerId?: string;
+      adminIds?: string[];
+      announcement?: string | null;
+      dissolvedAt?: string;
+    },
+  ): Promise<Conversation | undefined> {
+    await this.load();
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return undefined;
+    if (patch.ownerId !== undefined) conversation.ownerId = patch.ownerId;
+    if (patch.adminIds !== undefined) conversation.adminIds = [...patch.adminIds];
+    if (patch.announcement !== undefined) {
+      if (patch.announcement === null) {
+        delete conversation.announcement;
+        delete conversation.announcementAt;
+      } else {
+        conversation.announcement = patch.announcement;
+        conversation.announcementAt = new Date().toISOString();
+      }
+    }
+    if (patch.dissolvedAt !== undefined) conversation.dissolvedAt = patch.dissolvedAt;
+    conversation.updatedAt = new Date().toISOString();
+    await this.persist();
+    return cloneConversation(conversation);
   }
 
   /** Removes a participant (leaving a group). */

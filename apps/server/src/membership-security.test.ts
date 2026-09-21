@@ -203,11 +203,13 @@ describe('task visibility after leaving a group', () => {
     const bobToken = await login(app, 'u_bob', 'bob-token');
     const accountId = await createAgent(app, auth(adminToken));
 
+    // The admin owns the group so Alice can leave it: an owner must hand a group over (or
+    // dissolve it) before leaving, and this test is about post-leave visibility, not that.
     const group = await app.inject({
       method: 'POST',
       url: '/api/groups',
-      headers: auth(aliceToken),
-      payload: { title: '离职可见性验证组', memberIds: [accountId, 'u_bob'] },
+      headers: auth(adminToken),
+      payload: { title: '离职可见性验证组', memberIds: [accountId, 'u_bob', 'u_alice'] },
     });
     expect(group.statusCode, group.body).toBe(200);
     const conversationId = group.json().id as string;
@@ -1592,8 +1594,9 @@ describe('group recovery and identity hardening', () => {
     expect(created.statusCode, created.body).toBe(200);
     const conversationId = (created.json() as { id: string }).id;
 
-    // Both humans leave, so the group is inert: no participant remains.
-    for (const token of [aliceToken, bobToken]) {
+    // Both humans leave, so the group is inert: no participant remains. Bob goes first -
+    // Alice owns the group, and an owner may only leave once nobody is left to strand.
+    for (const token of [bobToken, aliceToken]) {
       const left = await app.inject({
         method: 'POST',
         url: `/api/conversations/${conversationId}/leave`,
@@ -1912,18 +1915,19 @@ describe('membership audit trail', () => {
     const group = await app.inject({
       method: 'POST',
       url: '/api/groups',
-      headers: auth(aliceToken),
-      payload: { title: '审计验证组', memberIds: [accountId] },
+      headers: auth(adminToken),
+      payload: { title: '审计验证组', memberIds: [accountId, 'u_alice'] },
     });
     expect(group.statusCode, group.body).toBe(200);
     const conversationId = (group.json() as { id: string }).id;
     const invited = await app.inject({
       method: 'POST',
       url: `/api/conversations/${conversationId}/members`,
-      headers: auth(aliceToken),
+      headers: auth(adminToken),
       payload: { memberId: 'u_bob' },
     });
     expect(invited.statusCode, invited.body).toBe(200);
+    // Alice is a plain member here, so leaving is simply leaving.
     const left = await app.inject({
       method: 'POST',
       url: `/api/conversations/${conversationId}/leave`,

@@ -251,6 +251,18 @@ export interface Conversation {
   origin: ConversationOrigin;
   targetKind: ConversationTargetKind;
   targetId: string;
+  /** Group governance: the creator may rename, announce, kick and dissolve. */
+  ownerId?: string;
+  /** Members the owner granted admin rights; the owner always counts as one. */
+  adminIds?: string[];
+  /** Pinned announcement every participant sees; owner/admin only. */
+  announcement?: string;
+  announcementAt?: string;
+  /**
+   * Set when a group was dissolved. The history stays readable (it is the record of
+   * what was said) but nothing new may be sent into it.
+   */
+  dissolvedAt?: string;
   createdAt: string;
   updatedAt: string;
   messageIds: string[];
@@ -396,6 +408,13 @@ export type NativeEvent =
       title: string;
       at: string;
     }
+  | {
+      type: 'conversation_announcement';
+      conversationId: string;
+      announcement: string;
+      at: string;
+    }
+  | { type: 'conversation_dissolved'; conversationId: string; at: string }
   | {
       type: 'approval';
       approvalId: string;

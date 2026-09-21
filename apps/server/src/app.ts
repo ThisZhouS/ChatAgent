@@ -16,6 +16,8 @@ import {
   createMemberSchema,
   friendDecisionSchema,
   friendRequestSchema,
+  groupAdminSchema,
+  groupAnnouncementSchema,
   generateExcelSchema,
   generateWordSchema,
   inboundMessageSchema,
@@ -944,6 +946,35 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     return delivered;
   });
 
+  // Group governance ---------------------------------------------------------
+  /** Pins or clears the announcement every participant sees (owner/admin only). */
+  app.post('/api/conversations/:id/announcement', async (request, reply) => {
+    const parsed = groupAnnouncementSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.setGroupAnnouncement(
+      request.principal,
+      (request.params as { id: string }).id,
+      parsed.data.announcement,
+    );
+  });
+
+  /** Grants or revokes admin rights inside a group (owner only). */
+  app.post('/api/conversations/:id/admins', async (request, reply) => {
+    const parsed = groupAdminSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.setGroupAdmin(
+      request.principal,
+      (request.params as { id: string }).id,
+      parsed.data.memberId,
+      parsed.data.admin,
+    );
+  });
+
+  /** Dissolves a group: history stays, sending stops (owner or org admin). */
+  app.post('/api/conversations/:id/dissolve', async (request) =>
+    service.dissolveGroup(request.principal, (request.params as { id: string }).id),
+  );
+
   /** Forwards a message into another conversation the caller belongs to. */
   app.post('/api/messages/:id/forward', async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -1527,7 +1558,9 @@ async function deliverIfAuthorized(
       event.type === 'message' ||
       event.type === 'message_recalled' ||
       event.type === 'agent_intake' ||
-      event.type === 'conversation_updated'
+      event.type === 'conversation_updated' ||
+      event.type === 'conversation_announcement' ||
+      event.type === 'conversation_dissolved'
     ) {
       await service.getConversation(principal, event.conversationId);
     } else if (event.type === 'task') {

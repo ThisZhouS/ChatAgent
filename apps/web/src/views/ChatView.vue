@@ -283,6 +283,61 @@ function openRenameDialog() {
   renameDialog.value = true;
 }
 
+const announcementDraft = ref('');
+const groupBusy = ref(false);
+/** Dissolving takes two clicks: the first arms it, the second does it. */
+const dissolveArmed = ref(false);
+
+/** True when the caller may run this group (owner, admin or org admin). */
+const canManageGroup = computed(() => {
+  const conversation = activeConversation.value;
+  if (!conversation || conversation.targetKind !== 'group') return false;
+  if (conversation.dissolvedAt) return false;
+  return (conversation.adminIds ?? []).includes(meId.value) || conversation.ownerId === meId.value;
+});
+
+const isGroupOwner = computed(
+  () => activeConversation.value?.targetKind === 'group' && activeConversation.value.ownerId === meId.value,
+);
+
+async function publishAnnouncement() {
+  if (!activeId.value) return;
+  groupBusy.value = true;
+  error.value = '';
+  try {
+    await api.chat.setAnnouncement(activeId.value, announcementDraft.value.trim());
+    announcementDraft.value = '';
+    await loadConversations(true);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    groupBusy.value = false;
+  }
+}
+
+async function toggleGroupAdmin(memberId: string, admin: boolean) {
+  if (!activeId.value) return;
+  error.value = '';
+  try {
+    await api.chat.setAdmin(activeId.value, memberId, admin);
+    await loadConversations(true);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function dissolveGroup() {
+  if (!activeId.value) return;
+  error.value = '';
+  try {
+    await api.chat.dissolve(activeId.value);
+    dissolveArmed.value = false;
+    memberPanel.value = false;
+    await loadConversations(true);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
 async function renameGroup() {
   if (!activeId.value || renameTitle.value.trim() === '') return;
   try {
@@ -965,15 +1020,87 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="memberPanel" title="群成员" width="360px" data-testid="member-panel">
+    <el-dialog v-model="memberPanel" title="群成员与治理" width="420px" data-testid="member-panel">
+      <template v-if="canManageGroup">
+        <label class="tier-label">群公告（所有人可见）</label>
+        <el-input
+          v-model="announcementDraft"
+          type="textarea"
+          :rows="2"
+          maxlength="500"
+          data-testid="announcement-input"
+          placeholder="例如：本周五 17:00 前提交周报"
+        />
+        <div class="relation-actions">
+          <el-button
+            type="primary"
+            :loading="groupBusy"
+            data-testid="announcement-publish"
+            @click="publishAnnouncement"
+          >
+            发布公告
+          </el-button>
+          <el-button
+            v-if="activeConversation?.announcement"
+            data-testid="announcement-clear"
+            @click="announcementDraft = '' ; publishAnnouncement()"
+          >
+            清除公告
+          </el-button>
+          <!-- Two explicit steps instead of a popover: dissolving stops the room for
+               everybody, so the second click is the confirmation. -->
+          <el-button
+            v-if="!dissolveArmed"
+            type="danger"
+            data-testid="group-dissolve"
+            @click="dissolveArmed = true"
+          >
+            解散群聊
+          </el-button>
+          <el-button
+            v-else
+            type="danger"
+            plain
+            data-testid="group-dissolve-confirm"
+            @click="dissolveGroup"
+          >
+            确认解散（不可恢复，历史保留）
+          </el-button>
+        </div>
+      </template>
       <el-empty v-if="participantList.length === 0" description="暂无成员" :image-size="60" />
       <ul v-else class="member-list">
         <li v-for="member in participantList" :key="member.id">
           <span class="member-name">{{ member.displayName }}</span>
           <span>
             <el-tag v-if="member.kind === 'agent'" size="small" type="primary">AI</el-tag>
+            <el-tag
+              v-if="activeConversation?.ownerId === member.id"
+              size="small"
+              type="warning"
+              data-testid="member-owner"
+            >
+              群主
+            </el-tag>
+            <el-tag
+              v-else-if="activeConversation?.adminIds?.includes(member.id)"
+              size="small"
+              type="info"
+              data-testid="member-admin"
+            >
+              管理员
+            </el-tag>
             <el-button
-              v-if="member.id !== meId"
+              v-if="isGroupOwner && member.kind === 'member' && member.id !== meId"
+              size="small"
+              text
+              data-testid="toggle-admin"
+              @click="toggleGroupAdmin(member.id, !(activeConversation?.adminIds ?? []).includes(member.id))"
+            >
+              {{ (activeConversation?.adminIds ?? []).includes(member.id) ? '取消管理员' : '设为管理员' }}
+            </el-button>
+            <el-button
+              v-if="canManageGroup && member.id !== meId && member.id !== activeConversation?.ownerId"
               size="small"
               text
               type="danger"
@@ -1426,6 +1553,25 @@ onUnmounted(() => {
               <span class="quote-text">{{ quotePreviewOf(quoted) }}</span>
               <el-button size="small" text @click="quoted = null">取消</el-button>
             </div>
+            <el-alert
+              v-if="activeConversation?.targetKind === 'group' && activeConversation.announcement"
+              type="info"
+              show-icon
+              :closable="false"
+              class="group-announcement"
+              data-testid="group-announcement"
+            >
+              <template #title>群公告</template>
+              {{ activeConversation.announcement }}
+            </el-alert>
+            <el-alert
+              v-if="activeConversation?.dissolvedAt"
+              type="warning"
+              show-icon
+              :closable="false"
+              data-testid="group-dissolved"
+              title="该群已解散，不能再发送消息（历史仍可查看）"
+            />
             <p
               v-if="intakeNotice"
               class="intake-notice"

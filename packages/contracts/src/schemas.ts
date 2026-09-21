@@ -159,6 +159,17 @@ export const createGroupSchema = z.object({
   memberIds: z.array(z.string().min(1).max(64)).min(1).max(20),
 });
 
+/** A group announcement: short, owner/admin only, shown to every participant. */
+export const groupAnnouncementSchema = z.object({
+  announcement: z.string().max(500),
+});
+
+/** Grants or revokes admin rights inside one group (owner only). */
+export const groupAdminSchema = z.object({
+  memberId: z.string().min(1).max(128),
+  admin: z.boolean(),
+});
+
 export const friendRequestSchema = z.object({
   toMemberId: z.string().min(1).max(128),
   /** Short greeting; kept short so a request cannot be used as a message channel. */
@@ -214,6 +225,8 @@ export type OpenConversationInput = z.infer<typeof openConversationSchema>;
 export type CreateGroupInput = z.infer<typeof createGroupSchema>;
 export type NativeMessageInput = z.infer<typeof nativeMessageSchema>;
 export type FriendRequestInput = z.infer<typeof friendRequestSchema>;
+export type GroupAnnouncementInput = z.infer<typeof groupAnnouncementSchema>;
+export type GroupAdminInput = z.infer<typeof groupAdminSchema>;
 export type FriendDecisionInput = z.infer<typeof friendDecisionSchema>;
 export type ContactPatchInput = z.infer<typeof contactPatchSchema>;
 export type CreateAccountInput = z.infer<typeof createAccountSchema>;
