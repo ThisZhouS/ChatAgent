@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
+import { capabilityBrief, FORBIDDEN_TOOLSETS as FORBIDDEN_TOOLSET_NAMES, isForbiddenToolset } from './policy';
 import { collectArtifacts, writeFileIfUnchanged } from './sandbox';
 import { terminateProcessTree } from './process-tree';
 import type { ExecutorRequest, ExecutorResult, HermesAdapterConfig } from './types';
@@ -46,17 +47,13 @@ export const HERMES_TOOLSETS = [
   'computer_use',
 ] as const;
 
-/** Capabilities that must never be granted implicitly to an on-device agent. */
-export const FORBIDDEN_TOOLSETS = [
-  'terminal',
-  'code_execution',
-  'browser',
-  'computer_use',
-  'cronjob',
-  'delegation',
-  'homeassistant',
-  'spotify',
-] as const;
+/**
+ * Capabilities that must never be granted implicitly to an on-device agent. The list lives
+ * in policy.ts and is the same one the host checks at submit time: two copies had drifted,
+ * which let `browser`/`computer_use`/`cronjob`/`delegation`/`homeassistant`/`spotify` slip
+ * past the door and fail late as an executor error.
+ */
+export const FORBIDDEN_TOOLSETS = FORBIDDEN_TOOLSET_NAMES;
 
 /**
  * Product vocabulary → Hermes toolsets. Only explicitly mapped capabilities are
@@ -79,7 +76,7 @@ export function resolveHermesToolsets(requested: string[]): { toolsets: string[]
     const mapped = CHATAGENT_TOOLSET_MAP[name];
     if (mapped === undefined) {
       if ((HERMES_TOOLSETS as readonly string[]).includes(name)) {
-        if ((FORBIDDEN_TOOLSETS as readonly string[]).includes(name)) invalid.push(name);
+        if (isForbiddenToolset(name)) invalid.push(name);
         else resolved.add(name);
       } else {
         invalid.push(name);
@@ -135,8 +132,15 @@ export class HermesProcessAdapter implements HermesAdapter {
   constructor(private readonly config: HermesAdapterConfig) {}
 
   buildArgs(request: ExecutorRequest): string[] {
-    const args = ['--cli', '-z', request.goal, '--ignore-user-config'];
     const { toolsets } = resolveHermesToolsets(request.toolsets);
+    // The boundary travels with the prompt: a model that knows which capabilities are
+    // switched off stops asking for them instead of probing until something gives.
+    const args = [
+      '--cli',
+      '-z',
+      `${request.goal}\n\n${capabilityBrief(toolsets)}`,
+      '--ignore-user-config',
+    ];
     args.push('-t', toolsets.join(','));
     if (this.config.model) args.push('-m', this.config.model);
     if (this.config.provider) args.push('--provider', this.config.provider);
@@ -149,6 +153,17 @@ export class HermesProcessAdapter implements HermesAdapter {
     if (resolved.invalid.length > 0) {
       // Fail closed: an unknown or forbidden capability never silently degrades
       // into "run with whatever Hermes has enabled by default".
+      // Name which entry was refused and why, so the operator (and the task's blocked
+      // reason) can tell "you asked for something switched off" from "that name is not a
+      // toolset at all".
+      const forbidden = resolved.invalid.filter((name) => isForbiddenToolset(name));
+      const unknown = resolved.invalid.filter((name) => !isForbiddenToolset(name));
+      const detail = [
+        forbidden.length > 0 ? `switched off: ${forbidden.join(', ')}` : '',
+        unknown.length > 0 ? `not a capability: ${unknown.join(', ')}` : '',
+      ]
+        .filter((part) => part !== '')
+        .join('; ');
       return {
         executor: 'hermes',
         exitCode: null,
@@ -158,7 +173,7 @@ export class HermesProcessAdapter implements HermesAdapter {
         durationMs: Date.now() - startedAt,
         failure: {
           kind: 'invalid_toolset',
-          message: `unsupported or forbidden toolset(s): ${resolved.invalid.join(', ')}`,
+          message: `refused toolset(s) - ${detail}`,
         },
       };
     }

@@ -57,7 +57,8 @@ function delegation(overrides: Record<string, unknown> = {}) {
     ownerId: 'employee-1',
     agentId: AGENT,
     deviceId: DEVICE,
-    capabilities: ['browser'],
+    // A grantable product capability: `browser` is switched off in policy.ts now.
+    capabilities: ['messages.send'],
     issuedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 3600_000).toISOString(),
     source: 'organization-server' as const,
@@ -78,7 +79,10 @@ function approval(overrides: Record<string, unknown> = {}) {
       agentId: AGENT,
       kind: 'side_effect',
       goal: 'unused',
-      toolsets: ['browser'],
+      // A side effect names a capability that is actually grantable: `browser` is switched
+      // off in policy.ts and is now refused at submit time, which is a different guarantee
+      // than the one these tests are about.
+      toolsets: ['messages.send'],
     }),
     ...overrides,
   };
@@ -95,7 +99,7 @@ function sideEffectTask(
     goal: `副作用任务 ${taskId}`,
     kind: 'side_effect',
     workDir: join(workRoot, taskId),
-    toolsets: ['browser'],
+    toolsets: ['messages.send'],
     delegationId: 'delegation-1',
     approvalId: 'approval-1',
   };

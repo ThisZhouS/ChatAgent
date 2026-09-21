@@ -204,6 +204,44 @@ describe('H-01 idempotent submission', () => {
     expect(await host.retry(task.taskId)).toBeUndefined();
     await host.stop();
   });
+
+  it('refuses a switched-off capability at submit time, not at execution time', async () => {
+    const root = await makeRoot();
+    const { host } = makeHost({ workRoot: root });
+    await host.start();
+    // `browser` lived only in the adapter's list, so this submission used to be accepted and
+    // the task failed later as an opaque executor error. The door is where it must stop.
+    const submitted = await host.submit(baseTask({ kind: 'side_effect', toolsets: ['browser'] }));
+    expect(submitted.state).toBe('failed');
+    expect(submitted.blockedReason).toBe('capability_not_granted');
+    expect(submitted.summary).toContain('未执行');
+    // Nothing ran, so nothing was attempted.
+    expect(submitted.attempts).toBe(0);
+    await host.stop();
+  });
+
+  it('refuses a blank capability name instead of treating it as the default', async () => {
+    const root = await makeRoot();
+    const { host } = makeHost({ workRoot: root });
+    await host.start();
+    // A blank entry is falsy, so a naive `find(...)` check waves it through as "no toolset
+    // named, use the default". It is a refusal instead.
+    const submitted = await host.submit(baseTask({ kind: 'document', toolsets: [''] }));
+    expect(submitted.state).toBe('failed');
+    expect(submitted.blockedReason).toBe('capability_not_granted');
+    await host.stop();
+  });
+
+  it('keeps an omitted toolset list meaning the documented document default', async () => {
+    const root = await makeRoot();
+    const { host } = makeHost({ workRoot: root });
+    await host.start();
+    // Omitting the list is the one accepted shorthand, and the stored row records it
+    // explicitly, so a later capability check sees a named toolset rather than an empty one.
+    const submitted = await host.submit(baseTask({ kind: 'document', toolsets: [] }));
+    expect(submitted.toolsets).toEqual(['document']);
+    await host.stop();
+  });
 });
 
 describe('H-02 trusted authorization', () => {

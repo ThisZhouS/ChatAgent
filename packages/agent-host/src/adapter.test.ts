@@ -105,7 +105,8 @@ describe('hermes process adapter arguments', () => {
     expect(refused.invalid).toEqual(['terminal', 'computer_use']);
     // Every mapped target must be a real Hermes toolset name.
     expect((HERMES_TOOLSETS as readonly string[]).includes('file')).toBe(true);
-    expect((FORBIDDEN_TOOLSETS as readonly string[]).includes('terminal')).toBe(true);
+    // The forbidden list is a Set now (one shared source), so membership is the check.
+    expect([...FORBIDDEN_TOOLSETS]).toContain('terminal');
   });
 
   it('fails closed when a forbidden toolset is requested', async () => {
@@ -121,7 +122,30 @@ describe('hermes process adapter arguments', () => {
       timeoutMs: 1000,
     });
     expect(result.failure?.kind).toBe('invalid_toolset');
+    // The refusal says which entry was refused and why, instead of a generic message.
+    expect(result.failure?.message).toContain('switched off: terminal');
     expect(result.artifacts).toEqual([]);
+  });
+
+  it('tells the model which capabilities are switched off for the run', async () => {
+    const adapter = new HermesProcessAdapter({ executable: 'does-not-exist.exe' });
+    const args = adapter.buildArgs({
+      taskId: 't5',
+      runId: 'r5',
+      goal: '整理周报',
+      workDir: 'C:/tmp',
+      toolsets: ['document'],
+      timeoutMs: 1000,
+    });
+    const goal = args[args.indexOf('-z') + 1] ?? '';
+    // The boundary is injected with the run, and it is generated from the same list the
+    // host checks - so a switched-off capability can never still be advertised.
+    expect(goal).toContain('整理周报');
+    expect(goal).toContain('Run boundaries');
+    expect(goal).toContain('Switched off and not negotiable');
+    expect(goal).toContain('browser');
+    expect(goal).toContain('never emulate it');
+    expect(goal).toContain('Available toolsets for this run: file');
   });
 });
 

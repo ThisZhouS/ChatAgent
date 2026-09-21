@@ -138,3 +138,9 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **三处硬门**：入站闸门（`ignore` 不投喂、写审计、不告知发送者）、运行时 `allowedTools`（被关的工具不广播、执行处拒绝）、`POST /api/tasks` 403。提示词只声明等级，不承担边界。
 - **`chat` 级是白名单而不是黑名单**：只保留显式列出的只读工具（`parse_document`），新工具默认对该等级不可用——新增能力不会自动对低等级开放。
 - **负责人与组织管理员不可被降级**：`owner` 等级由账号 `ownerId` 与目录角色派生，`contactTiers` 里无法表示。
+
+## 工具能力边界（2026-09-17，P0-3）
+
+- **唯一名单**：`packages/agent-host/src/policy.ts` 是禁止工具集的唯一来源（host 提交期与 adapter 执行期都引用它）。历史上两份名单漂移过，导致 `browser`/`computer_use`/`cronjob`/`delegation`/`homeassistant`/`spotify` 能过提交门、只在执行期失败。新增能力必须改这一处，并同时被两个检查点覆盖。
+- **门口拒绝**：禁止项在 `submit()` 即返回 `capability_not_granted`（attempts=0，不建工作目录、不调用执行器）；空名单与空字符串同样拒绝，省略名单才会落到显式 `['document']`。
+- **提示词只是声明**：`capabilityBrief()` 与检查用同一份名单生成，注入本机 Hermes 调用的目标文本，明确「关闭即不存在、不得模拟或手写其输出、缺少能力要报告而不是绕路」。

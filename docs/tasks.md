@@ -249,7 +249,7 @@ pnpm dev
 
 - [x] **P0-1 消息投喂闸门**：消息默认在过撤回时间后再交给 agent；撤回取消未投喂项；上下文窗口化；提示词注入不可绕过规则。实现 `apps/server/src/agent-intake.ts` + `AgentIntakeStore`；验证 9 + 4 + 1 例。
 - [x] **P0-2 Agent 联系人级权限分级**：`owner/confirm/chat/ignore` 四档，三处硬门（入站闸门、运行时 `allowedTools`、`POST /api/tasks` 403），账号编辑弹窗可设默认与逐联系人等级。证据：`contact-tier.test.ts` 8 例、`runtime-allowlist.test.ts` 4 例、`AccountTierEditor.test.ts` 5 例。
-- [ ] **P0-3 工具开关单一来源 + 拒绝原因回灌提示词**（两份 FORBIDDEN 列表不一致）。
+- [x] **P0-3 工具开关单一来源 + 拒绝原因回灌提示词**：唯一来源 `packages/agent-host/src/policy.ts`（13 项 + 能力下限），提交期即拒绝（含两份旧名单漂移的 6 个名字），`capabilityBrief()` 由同一名单生成并注入本机 Hermes 目标文本，拒绝信息区分「被关闭」与「不是能力」。证据：`policy.test.ts` 5 例、`host-security.test.ts` +2 例、`adapter.test.ts` +1 例。
 - [ ] **P1-1 断线补差与消息幂等**（SSE 事件 id/游标 + clientMsgId）。
 - [ ] **P1-2 好友关系与验证**（申请/同意/备注/拉黑/删除 + 投递拦截）。
 - [ ] **P1-3 群治理**（群主/管理员/公告/解散群 + 群 ID 按组织唯一）。

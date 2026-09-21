@@ -99,7 +99,7 @@
 - 改动点：`packages/contracts/src/types.ts`（账号/联系人策略字段 + zod `.strict()`）、`packages/contracts/src/schemas.ts`、`apps/server/src/auth.ts`（纯函数 `resolveContactTier`）、`apps/server/src/service.ts`（`service.ts:2026` 附近的入站判定与拒绝点）、`apps/web/src/views/AccountsView.vue`（等级设置）、`packages/hermes/src/system-prompt.ts`（等级作为规则注入）。
 - 验收：新增 `apps/server/src/contact-tier.test.ts`：`ignore` → 0 任务且写审计；`chat` → 有回复、无副作用工具调用；`confirm` → 副作用进入审批；契约拒收未知等级。命令：`node node_modules/vitest/vitest.mjs run apps/server/src/contact-tier.test.ts`。
 
-### P0-3 工具开关单一来源 + 拒绝原因回灌
+### P0-3 工具开关单一来源 + 拒绝原因回灌 —— 已实现（见 §3.3）
 
 - 目标：`browser/computer_use/cronjob/delegation/homeassistant/spotify` 等被拒工具在任何入口（提交期与执行期）都被拒；把「本次被拒绝的动作与原因」作为一条观察消息交给模型，并声明不可绕过。
 - 改动点：抽出 `packages/agent-host/src/policy.ts` 作为唯一的允许/禁止来源（`host.ts:797` 与 `adapter.ts:50` 都改为引用它）、`packages/agent-host/src/host.ts`（拒绝时写 `blockedReason`）、`packages/hermes/src/runtime.ts`（把拒绝记录注入一次）。
@@ -155,6 +155,15 @@
 - 提示词（辅助）：按次注入一行规则（`tierPromptRule`），说明本次请求来自谁、等级意味着什么。
 - 界面：`apps/web/src/components/AccountTierEditor.vue`（账号编辑弹窗内）设置默认等级与逐联系人等级，列表列显示「默认等级（N 人单独设定）」。
 - 验证：`apps/server/src/contact-tier.test.ts` 8 例（解析与回退、工具面、HTTP：忽略级不投喂且审计可查、忽略级 API 403、聊天级负责人仍能出文档而联系人不能）、`packages/hermes/src/runtime-allowlist.test.ts` 4 例（不广播 + 执行处拒绝 + 无白名单时不受影响 + 提示词含规则）、`apps/web/src/components/AccountTierEditor.test.ts` 5 例。根套件 37 文件 / 349 用例、web 48 用例、`tsc`/`vue-tsc` 0 错。
+
+### 3.3 工具开关单一来源与边界注入（P0-3）
+
+- 问题（审计发现）：能力名单**存在两份**——`host.ts` 拒 `*`/terminal/code_execution/node/python/shell/custom，`adapter.ts` 拒 terminal/code_execution/**browser**/computer_use/cronjob/delegation/homeassistant/spotify。交集之外的名字可以**过提交门、在执行期才失败**，任务只看到一条不透明的执行器错误。
+- 现在只剩一份：`packages/agent-host/src/policy.ts` 是唯一来源（13 个禁止项 + 文档能力下限 + `refusedToolsets()`/`refuseCapabilities()`/`capabilityBrief()`），`host.ts` 与 `adapter.ts` 都从它导入；`adapter.ts` 为兼容仍 re-export 旧名字。
+- 拒绝发生在门口：`kind:'side_effect' + toolsets:['browser']` 现在**提交即失败**并带 `blockedReason: capability_not_granted`（attempts 保持 0），不再进入执行器。空名单规则保持 fail-closed（持久化行为空 → 拒绝；省略名单是唯一被接受的简写，且落库时写成显式 `['document']`）。
+- 边界进提示词（为辅）：`capabilityBrief(granted)` 由**同一份名单**生成，随本机 Hermes 调用的 goal 一起注入：可用工具集、被关闭的清单、以及「关闭即不存在：不得模拟、不得手写其输出、不得寻找等价路径；缺少能力就停下并报告缺哪一个」。
+- 拒绝信息可归因：执行器失败信息区分「switched off: …」与「not a capability: …」，运维与任务卡都能看懂为什么没跑。
+- 验证：`policy.test.ts` 5 例（含两份旧名单漂移的 6 个名字逐一在提交期被拒）、`host-security.test.ts` +2 例（提交期拒绝 / 空名与省略名单的区别）、`adapter.test.ts` +1 例（goal 里确实带上了边界文案与关闭清单）与拒绝信息断言。根套件 38 文件 / **358 用例**、Electron 检查（锁 18/18、回执 21/21、冒烟 6/6、工作台 13/13）全绿。
 
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 

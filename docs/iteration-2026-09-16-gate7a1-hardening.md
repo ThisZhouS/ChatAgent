@@ -396,3 +396,12 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 三处硬门：入站闸门（`ignore` 不投喂、写审计、不告知发送者）、运行时按次 `allowedTools`（不广播 + 执行处拒绝，`chat` 只留 `parse_document`）、`POST /api/tasks` 403。
 - 契约/存储：`AgentAccount.contactTiers` + `defaultTier`，zod 校验与存储克隆/迁移齐备；账号编辑弹窗内新增 `AccountTierEditor`（默认等级 + 逐联系人等级），列表显示「默认等级（N 人单独设定）」。
 - 验证：根套件 37 文件 / **349 用例**、apps/web **48 用例**、`tsc`/`vue-tsc` 0 错；新增 17 例（服务端 8 + 运行时 4 + 前端 5）。
+
+## 第二十一轮（2026-09-18）：工具能力唯一名单与边界注入（P0-3）
+
+审计发现的「两份 FORBIDDEN 名单」被证实是真实漏洞面：`browser`/`computer_use`/`cronjob`/`delegation`/`homeassistant`/`spotify` 能通过 host 的提交期检查，只在 adapter 启动执行器前才被拒——任务只看到一条不透明的执行器错误。
+
+- 新增 `packages/agent-host/src/policy.ts` 作为唯一来源（13 个禁止项、文档能力下限、`refusedToolsets`/`refuseCapabilities`/`capabilityBrief`/`isForbiddenToolset`），host 与 adapter 均改为引用它。
+- 门口拒绝：`side_effect + browser` 现在提交即 `failed` + `capability_not_granted`（attempts=0）；空名单/空字符串仍 fail-closed，省略名单才落显式 `['document']`。
+- 边界入提示词：`capabilityBrief()` 与检查共用同一名单，注入本机 Hermes 的 goal；拒绝信息区分「被关闭」与「不是能力」。
+- 验证：根套件 38 文件 / **358 用例**、`tsc` 0 错、Electron 锁 18/18、回执 21/21、冒烟 6/6、工作台 13/13；`authorization-refresh.test.ts` 的两处 `browser` 断言改为可授予能力（`messages.send`），以免它们被能力政策而非授权刷新所左右。

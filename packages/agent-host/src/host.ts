@@ -7,6 +7,7 @@ import {
   type AuthorizationVerification,
   type GrantKind,
 } from './authorization';
+import { refuseCapabilities } from './policy';
 import { INVALID_ROW_REASON } from './record-integrity';
 import { assertInsideWorkRoot, ensureTaskWorkDir } from './sandbox';
 import type { AgentHostStore } from './store';
@@ -794,41 +795,10 @@ function delay(ms: number): Promise<void> {
  * else (messaging, web, terminal, code execution, the `*` wildcard) is either a
  * side effect that needs a delegation + approval, or is refused outright.
  */
-const DOCUMENT_TOOLSETS = new Set(['document', 'document.read', 'file']);
-const FORBIDDEN_TOOLSETS = new Set([
-  '*',
-  'terminal',
-  'code_execution',
-  'node',
-  'python',
-  'shell',
-  'custom',
-]);
-
-/**
- * Returns the block reason when the requested capabilities may not run for this
- * kind, or undefined when they may. Fail closed: an unknown toolset is not a
- * document toolset.
- */
-export function refuseCapabilities(
-  kind: LocalTaskRecord['kind'],
-  toolsets: string[],
-): BlockReason | undefined {
-  if (!Array.isArray(toolsets)) return 'capability_not_granted';
-  const forbidden = toolsets.find((toolset) => FORBIDDEN_TOOLSETS.has(toolset));
-  if (forbidden) return 'capability_not_granted';
-  if (kind !== 'document') return undefined; // side effects are gated by delegation
-  // Fail closed: an empty list is not "the default capability" (a planted
-  // empty-toolset row used to run), and a blank entry is not a document toolset.
-  if (toolsets.length === 0) return 'capability_not_granted';
-  // `some`, not `find`: the offending entry may be the empty string, which is
-  // falsy — `find(...) ? refused : allowed` would wave a blank name through.
-  const unknown = toolsets.some(
-    (toolset) =>
-      typeof toolset !== 'string' || toolset.trim() === '' || !DOCUMENT_TOOLSETS.has(toolset),
-  );
-  return unknown ? 'capability_not_granted' : undefined;
-}
+// One list, shared with the adapter: these used to be two and had drifted, so a
+// side-effect task naming e.g. `browser` passed the host check and only failed later, as
+// an executor error. See policy.ts.
+export { refusedToolsets, isForbiddenToolset, capabilityBrief } from './policy';
 
 function describeBlock(reason: BlockReason): string {
   switch (reason) {
