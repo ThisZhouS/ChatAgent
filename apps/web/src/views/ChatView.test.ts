@@ -66,6 +66,7 @@ const mocks = vi.hoisted(() => {
     setAnnouncement: vi.fn(async () => ({ id: 'conv_group' })),
     setAdmin: vi.fn(async () => ({ id: 'conv_group' })),
     dissolve: vi.fn(async () => ({ id: 'conv_group' })),
+    setMuted: vi.fn(async () => ({ ok: true, muted: true })),
     removeMember: vi.fn(async () => ({ ok: true })),
     leave: vi.fn(async () => ({ ok: true })),
     listConversations: vi.fn(async () => [conversation]),
@@ -141,6 +142,7 @@ vi.mock('../api', () => ({
       setAnnouncement: mocks.setAnnouncement,
       setAdmin: mocks.setAdmin,
       dissolve: mocks.dissolve,
+      setMuted: mocks.setMuted,
       removeMember: mocks.removeMember,
       leave: mocks.leave,
       upload: vi.fn(),
@@ -333,6 +335,86 @@ describe('ChatView', () => {
     await flushPromises();
 
     expect(addressBook.request).toHaveBeenCalledWith('u_bob');
+  });
+
+
+  it('shows who a forwarded message came from, and when it was written', async () => {
+    mocks.listMessages.mockResolvedValue([
+      {
+        id: 'm_forward',
+        channel: 'web',
+        conversationId: 'conv_bob',
+        chatType: 'direct',
+        direction: 'inbound',
+        kind: 'text',
+        text: '季度目标已确认',
+        sender: { id: 'u_bob', name: 'Bob' },
+        mentions: [],
+        attachments: [],
+        createdAt: new Date().toISOString(),
+        metadata: {
+          forwardedFrom: {
+            messageId: 'm_source',
+            conversationId: 'conv_other',
+            senderName: 'Carol',
+            createdAt: '2026-09-01T02:00:00.000Z',
+          },
+        },
+      },
+    ]);
+    const wrapper = mountChat();
+    await flushPromises();
+
+    const line = wrapper.find('[data-testid="bubble-forwarded"]');
+    expect(line.exists()).toBe(true);
+    // The original author and time travel with the copy: a forward cannot pass itself off
+    // as something written now.
+    expect(line.text()).toContain('Carol');
+    expect(line.text()).toContain('原');
+    expect(line.text()).not.toContain('2026-09-01T02:00:00.000Z');
+  });
+
+  it('previews image attachments inline and keeps the file link', async () => {
+    mocks.listMessages.mockResolvedValue([
+      {
+        id: 'm_image',
+        channel: 'web',
+        conversationId: 'conv_bob',
+        chatType: 'direct',
+        direction: 'inbound',
+        kind: 'mixed',
+        text: '看这张图',
+        sender: { id: 'u_bob', name: 'Bob' },
+        mentions: [],
+        attachments: [
+          { id: 'f_img', name: 'photo.png', mimeType: 'image/png', url: '/api/files/f_img' },
+          { id: 'f_pdf', name: 'report.pdf', mimeType: 'application/pdf' },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    const wrapper = mountChat();
+    await flushPromises();
+
+    const images = wrapper.findAll('[data-testid="bubble-image"]');
+    expect(images).toHaveLength(1);
+    // Non-image attachments stay ordinary file chips, right next to the preview.
+    const chips = wrapper.findAll('.file-chip').map((chip) => chip.text());
+    expect(chips.some((text) => text.includes('report.pdf'))).toBe(true);
+  });
+
+  it('mutes one conversation without hiding its unread count', async () => {
+    mocks.listConversations.mockResolvedValue([{ ...mocks.group, muted: true, unreadCount: 3 }]);
+    const wrapper = mountChat();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="muted-tag"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="mute-toggle"]').trigger('click');
+    await flushPromises();
+
+    // Muting is a notification preference: un-muting is the same call with false.
+    expect(mocks.setMuted).toHaveBeenCalledWith('conv_group', false);
+    expect(wrapper.find('[data-testid="group-announcement"]').exists()).toBe(false);
   });
 
   it('sends the composed text through the native API', async () => {

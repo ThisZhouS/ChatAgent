@@ -4,11 +4,14 @@ import type {
   ApprovalRecord,
   ChatMessage,
   ConversationSummary,
+  ForwardedFrom,
   FriendRequestRecord,
   MemberView,
   TaskRecord,
 } from '@chatagent/contracts';
 import { api } from '../api';
+import AccountTierEditor from '../components/AccountTierEditor.vue';
+import { decideNotification } from '../notifications';
 
 const props = defineProps<{ me: MemberView | null }>();
 const emit = defineEmits<{ 'unread-total': [count: number] }>();
@@ -312,6 +315,19 @@ async function publishAnnouncement() {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     groupBusy.value = false;
+  }
+}
+
+/** Mute is per member: it changes notifications, never what other people see. */
+async function toggleMuted() {
+  if (!activeId.value) return;
+  const muted = activeConversation.value?.muted !== true;
+  error.value = '';
+  try {
+    await api.chat.setMuted(activeId.value, muted);
+    await loadConversations(true);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
   }
 }
 
@@ -944,19 +960,48 @@ watch(totalUnread, (count) => {
 
 /** Desktop notification for messages that arrive while the tab is hidden. */
 function notify(conversationId: string, message: ChatMessage) {
-  if (typeof Notification === 'undefined') return;
-  if (document.visibilityState === 'visible') return;
-  if (conversationId === activeId.value) return;
-  if (Notification.permission !== 'granted') return;
   const conversation = conversations.value.find((item) => item.id === conversationId);
+  // The rules live in notifications.ts: muting silences a conversation, but a mention of
+  // the signed-in member still gets through, because being addressed is not noise.
+  const decision = decideNotification({
+    muted: conversation?.muted === true,
+    mentioned: message.mentions.includes(meId.value),
+    isActiveConversation: conversationId === activeId.value,
+    windowVisible: typeof document !== 'undefined' && document.visibilityState === 'visible',
+    permission:
+      typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
+    conversationTitle: titleOf(conversation ?? ({ title: 'ChatAgent' } as ConversationSummary)),
+    senderName: message.sender.name,
+    text: message.text,
+  });
+  if (!decision.notify) return;
   try {
-    new Notification(titleOf(conversation ?? ({ title: 'ChatAgent' } as ConversationSummary)), {
-      body: `${message.sender.name}：${message.text || '（附件）'}`.slice(0, 120),
-      tag: conversationId,
-    });
+    new Notification(decision.title, { body: decision.body, tag: conversationId });
   } catch {
     // Notification construction can fail on restricted platforms; ignore.
   }
+}
+
+/** The `forwardedFrom` block of a message, if it is a forward. */
+function forwardedFromOf(message: ChatMessage): ForwardedFrom | undefined {
+  const forward = message.metadata?.forwardedFrom;
+  if (!forward || typeof forward !== 'object') return undefined;
+  const candidate = forward as ForwardedFrom;
+  return typeof candidate.senderName === 'string' ? candidate : undefined;
+}
+
+/** Attachments that are images, i.e. the ones worth previewing inline. */
+function imageAttachments(message: ChatMessage): ChatMessage['attachments'] {
+  return message.attachments.filter((file) => {
+    if (file.mimeType?.startsWith('image/')) return true;
+    // Some uploads carry no mime type; the extension is the fallback, not the rule.
+    return !file.mimeType && /[.](png|jpe?g|gif|webp|bmp)$/i.test(file.name);
+  });
+}
+
+function formatTime(value: string): string {
+  const at = new Date(value);
+  return Number.isNaN(at.getTime()) ? value : at.toLocaleString();
 }
 
 function requestNotificationPermission() {
@@ -1236,6 +1281,14 @@ onUnmounted(() => {
               <div class="side-item-main">
                 <div class="side-item-title">
                   <span class="ellipsis">{{ titleOf(conversation) }}</span>
+                <el-tag
+                  v-if="conversation.muted"
+                  size="small"
+                  type="info"
+                  data-testid="muted-tag"
+                >
+                  已免打扰
+                </el-tag>
                   <el-badge v-if="conversation.unreadCount > 0" :value="conversation.unreadCount" />
                 </div>
                 <div class="side-item-sub ellipsis">{{ previewOf(conversation) }}</div>
@@ -1370,6 +1423,14 @@ onUnmounted(() => {
                 >
                   改名
                 </el-button>
+                <el-button
+                  size="small"
+                  text
+                  data-testid="mute-toggle"
+                  @click="toggleMuted"
+                >
+                  {{ activeConversation?.muted ? '取消免打扰' : '免打扰' }}
+                </el-button>
                 <el-button size="small" text type="danger" @click="leaveGroup">退出群聊</el-button>
               </span>
               <el-button
@@ -1441,7 +1502,32 @@ onUnmounted(() => {
                       {{ isMine(message) ? '你撤回了一条消息' : '对方撤回了一条消息' }}
                     </div>
                     <div v-else-if="message.text" class="bubble-text">{{ message.text }}</div>
+                    <div
+                      v-if="!message.recalledAt && forwardedFromOf(message) as ForwardedFrom | undefined"
+                      class="bubble-forwarded"
+                      data-testid="bubble-forwarded"
+                    >
+                      转发自 {{ (forwardedFromOf(message) as ForwardedFrom).senderName }}
+                      <template v-if="(forwardedFromOf(message) as ForwardedFrom).createdAt">
+                        · 原 {{ formatTime((forwardedFromOf(message) as ForwardedFrom).createdAt as string) }}
+                      </template>
+                    </div>
                     <div v-if="!message.recalledAt && message.attachments.length" class="bubble-files">
+                      <!-- Images get a thumbnail with a full-size preview; the file link
+                           stays for everything else (and for downloading). -->
+                      <div v-if="imageAttachments(message).length" class="bubble-images">
+                        <el-image
+                          v-for="file in imageAttachments(message)"
+                          :key="file.id"
+                          class="bubble-image"
+                          :src="`/api/files/${file.id}`"
+                          :preview-src-list="imageAttachments(message).map((item) => `/api/files/${item.id}`)"
+                          :initial-index="imageAttachments(message).findIndex((item) => item.id === file.id)"
+                          fit="cover"
+                          preview-teleported
+                          data-testid="bubble-image"
+                        />
+                      </div>
                       <a
                         v-for="file in message.attachments"
                         :key="file.id"

@@ -170,6 +170,10 @@ export const groupAdminSchema = z.object({
   admin: z.boolean(),
 });
 
+export const conversationMuteSchema = z.object({
+  muted: z.boolean(),
+});
+
 export const friendRequestSchema = z.object({
   toMemberId: z.string().min(1).max(128),
   /** Short greeting; kept short so a request cannot be used as a message channel. */

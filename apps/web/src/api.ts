@@ -236,6 +236,13 @@ export const api = {
         body: JSON.stringify({ title }),
       }),
     /** Group governance: announcement, admins and dissolution. */
+    /** Mute one conversation for the caller (notifications only). */
+    setMuted: (conversationId: string, muted: boolean) =>
+      request<{ ok: boolean; muted: boolean }>('/conversations/' + conversationId + '/mute', {
+        method: 'POST',
+        body: JSON.stringify({ muted }),
+      }),
+
     setAnnouncement: (conversationId: string, announcement: string) =>
       request<Conversation>('/conversations/' + conversationId + '/announcement', {
         method: 'POST',

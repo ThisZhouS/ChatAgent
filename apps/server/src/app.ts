@@ -13,6 +13,7 @@ import {
   createGroupSchema,
   createTaskSchema,
   contactPatchSchema,
+  conversationMuteSchema,
   createMemberSchema,
   friendDecisionSchema,
   friendRequestSchema,
@@ -523,6 +524,17 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
   app.post('/api/conversations/:id/read', async (request) =>
     service.markConversationRead(request.principal, (request.params as { id: string }).id),
   );
+
+  /** Mute/unmute one conversation for the caller (notifications only, per member). */
+  app.post('/api/conversations/:id/mute', async (request, reply) => {
+    const parsed = conversationMuteSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.setConversationMuted(
+      request.principal,
+      (request.params as { id: string }).id,
+      parsed.data.muted,
+    );
+  });
 
   // Messages ----------------------------------------------------------------
   app.post('/api/messages', async (request, reply) => {

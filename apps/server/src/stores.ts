@@ -1232,7 +1232,10 @@ export class SessionStore {
 export interface ReadStateRecord {
   memberId: string;
   conversationId: string;
-  lastReadAt: string;
+  /** Absent when a member muted a conversation before ever reading it. */
+  lastReadAt?: string;
+  /** Muted conversations still count unread messages; they do not raise a notification. */
+  muted?: boolean;
 }
 
 /** Per-member read cursor, used for unread badges in the native client. */
@@ -1260,6 +1263,35 @@ export class ReadStateStore {
   async lastReadAt(memberId: string, conversationId: string): Promise<string | undefined> {
     await this.load();
     return this.states.get(`${memberId}:${conversationId}`)?.lastReadAt;
+  }
+
+  /**
+   * Mute is a per-member, per-conversation preference: it lives on the same row as the
+   * read cursor, so muting never touches the conversation everybody else sees.
+   */
+  async isMuted(memberId: string, conversationId: string): Promise<boolean> {
+    await this.load();
+    return this.states.get(`${memberId}:${conversationId}`)?.muted === true;
+  }
+
+  async setMuted(
+    memberId: string,
+    conversationId: string,
+    muted: boolean,
+  ): Promise<ReadStateRecord> {
+    await this.load();
+    const key = `${memberId}:${conversationId}`;
+    const existing = this.states.get(key);
+    const record: ReadStateRecord = {
+      memberId,
+      conversationId,
+      lastReadAt: existing?.lastReadAt,
+      // An explicit false is stored as absence: the default is "not muted".
+      muted: muted ? true : undefined,
+    };
+    this.states.set(key, record);
+    this.persist();
+    return { ...record };
   }
 
   /** Read cursors of everybody who has opened the conversation. */

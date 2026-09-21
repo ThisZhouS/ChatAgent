@@ -204,6 +204,15 @@ export interface InboundMessageInput {
   metadata?: Record<string, unknown>;
 }
 
+/** Shape of `ChatMessage.metadata.forwardedFrom` for a forwarded message. */
+export interface ForwardedFrom {
+  messageId: string;
+  conversationId: string;
+  senderName: string;
+  /** When the original was sent. Forwarding must not reset the clock on it. */
+  createdAt?: string;
+}
+
 /**
  * How much an assistant may do with a message from a given person. `owner` is derived
  * from the account's ownership and cannot be assigned; the rest are set by a human.
@@ -271,6 +280,12 @@ export interface Conversation {
 export interface ConversationSummary extends Conversation {
   /** Messages newer than the caller's read cursor. */
   unreadCount: number;
+  /**
+   * The caller muted this conversation: it still counts unread messages, but it does not
+   * raise a notification. A message that mentions the caller still does (see the client),
+   * because being addressed is not "background noise".
+   */
+  muted?: boolean;
   lastMessage?: {
     id: string;
     text: string;

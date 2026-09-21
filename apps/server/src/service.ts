@@ -458,6 +458,27 @@ export class ChatAgentService {
     return contacts;
   }
 
+  /**
+   * Mutes or unmutes one conversation for the caller only. Unread counts keep working -
+   * muting is about notifications, not about hiding work.
+   */
+  async setConversationMuted(
+    principal: Principal,
+    conversationId: string,
+    muted: boolean,
+  ): Promise<{ ok: boolean; muted: boolean }> {
+    this.requireMember(principal);
+    const conversation = await this.conversations.get(conversationId);
+    if (!conversation || !canReadConversation(principal, conversation)) {
+      throw new ServiceError(404, 'conversation not found');
+    }
+    if (!conversation.participantIds.includes(principal.id)) {
+      throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    await this.readState.setMuted(principal.id, conversationId, muted);
+    return { ok: true, muted };
+  }
+
   /** Opens (or returns) the native direct conversation with a peer. */
   async openConversation(
     principal: Principal,
@@ -833,6 +854,9 @@ export class ChatAgentService {
           messageId: source.id,
           conversationId: source.conversationId,
           senderName: source.sender.name,
+          // The original send time travels with the copy: a forwarded message that says
+          // "just now" when it was written last week is misinformation.
+          createdAt: source.createdAt,
         },
       },
     };
@@ -1362,9 +1386,10 @@ export class ChatAgentService {
     const summaries: ConversationSummary[] = [];
 
     for (const conversation of conversations) {
-      const [messages, lastReadAt] = await Promise.all([
+      const [messages, lastReadAt, muted] = await Promise.all([
         this.messages.list(conversation.id),
         this.readState.lastReadAt(principal.id, conversation.id),
+        this.readState.isMuted(principal.id, conversation.id),
       ]);
       const cursor = lastReadAt ? Date.parse(lastReadAt) : 0;
       const unreadCount = messages.filter(
@@ -1382,6 +1407,8 @@ export class ChatAgentService {
       summaries.push({
         ...conversation,
         unreadCount,
+        // Muting hides the notification, never the message: the count stays honest.
+        muted,
         lastMessage: last
           ? {
               id: last.id,
