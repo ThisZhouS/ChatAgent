@@ -63,3 +63,12 @@
 回一句形如 `1: A, 2: A, 3: C, 4: A, 5: B, 6: A, 7: A+C, 8: B, 9: B+C` 即可；不确定的可以留空，我会保持现状并在文档里标注「未决」。
 
 我会按「答案 → 实现 → 测试与类型检查 → 更新 docs 与 Prompt → 提交推送」的顺序逐条推进，每条都是可独立回退的一小片。
+
+## 事实核对记录（2026-09-21 追加）
+
+写这份备忘时每条现状都按 HEAD 代码核过位置；本轮又把最容易被写错的三条复查了一遍，结果如下（**这三条决定了第 3、5 条怎么选，先确认事实再选**）：
+
+- **撤回不级联（第 3 条的前提）**：`recallMessage`（service.ts 1120-1170）只做四件事——标记撤回、取消**该消息**未投喂的入队项、写审计、广播 `message_recalled`；**没有任何遍历转发副本的逻辑**。`forwardedFrom` 只在发送时写入（981），客户端仅在消息自身被撤回时隐藏转发块（ChatView 1813）。→ 备忘里的「不级联」成立。
+- **上下文与队列上限（第 5 条的前提）**：`CHATAGENT_AGENT_CONTEXT_MESSAGES` 默认 20、范围 1-200（config.ts 165）；澄清回答走 `appendInput`，实现是 `const limit = Math.max(1, options.limit ?? 50)` + `[...history, entry].slice(-limit)`（engine.ts 174-175，**保留最新、丢弃最旧**），且任务处于终态时直接拒绝追加（`isTerminalTaskState`）。→ 「默认 20 条 / 上限 50 条」成立。
+- **公告**：仅群可用、≤500 字（service.ts 678/687），随 `conversation_announcement` 广播。
+
