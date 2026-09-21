@@ -124,7 +124,13 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **可见性**：`status().authorization`（状态/最近复核/失败原因/撤销数/无法确认数/暂缓条数）与设置页「授权复核」提示，避免“任务没动却没有任何解释”。
 
 
-## 审批摘要与审批面（2026-09-21 核对）
+## 审批摘要：强制点在哪里（2026-09-21，含一次探测失误的更正）
+
+- **先纠正我自己的误解**：决策接口 `POST /api/approvals/:id/decision` 只接受 `decision`（闭集 `approved`/`rejected`）与可选 `reason`，**客户端不提交摘要**。我按「客户端带摘要」去探测，请求体里的 `digest: "deadbeef"` 被直接忽略，判定因此成功（返回 `status: approved`、`approverId: dev-owner`）。**这不是漏洞，是我把接口契约假设错了。**
+- **副作用已披露**：该探测在开发实例上真的批准了一条待审批项（`20ba6b03…`，12:39:53，dev 数据、非生产）。教训：探测写接口前先读路由契约，不要凭想象构造请求体——这已经是本会话第三次同类失误（前两次是「两个 undefined 相等」与「检索词不对」）。
+- **摘要真正的强制点在 agent-host**（本轮定位，非穷举）：`packages/agent-host/src/authorization.ts:329` 返回 `{ ok: false, reason: 'approval_digest_mismatch' }`；`authorization.ts:346-361` 用 sha256 计算「这次授权所针对的那个动作」的规范摘要；`host.ts:76` 注释写明「绑定到确切的动作摘要，并在运行前重新校验」；`host.ts:397` 说明即使记录被改写，也会**从存储内容重算摘要**再比对；`types.ts:90` 定义「host 信任的审批，按 id 索引并绑定一个动作摘要」。
+- **仍未验证**：本轮没有端到端复现 `approval_digest_mismatch`（需要构造一次摘要不匹配的真实执行）。这条路径目前只由 `gate7a-verify` 的宿主流程与 authorization 相关用例覆盖，**不要写成已线上验证**。
+
 
 - 线上（开发实例）：`GET /api/approvals` 返回 74 条记录，每条都带 `digest`，以及 `status/expiresAt/approverId/decidedAt/consumedAt/consumedByStepKey` 生命周期字段；决策走 `POST /api/approvals/:id/decision`。
 - 实现侧命中（本轮抽查，非穷举）：
