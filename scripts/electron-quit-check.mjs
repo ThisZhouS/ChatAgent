@@ -142,6 +142,11 @@ async function main() {
     process.exit(0);
   }
 
+  // A previous Electron app in the same sweep may still be shutting down while holding this
+  // profile or the debug port; start from a clean profile instead of racing it (a six-app
+  // back-to-back sweep once produced a 2/5 run for exactly this reason).
+  rmSync(profileDir, { recursive: true, force: true });
+
   const child = spawn(
     command,
     [
@@ -171,7 +176,12 @@ async function main() {
   });
 
   try {
-    const cdp = await connectToPage();
+    let cdp = await connectToPage();
+    if (!cdp) {
+      // One bounded retry: give a straggler from the previous check time to release the port.
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 3000));
+      cdp = await connectToPage(20000);
+    }
     check('the desktop app starts and exposes a debuggable page', Boolean(cdp));
     if (!cdp) throw new Error('no page to drive');
 
