@@ -124,6 +124,11 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **可见性**：`status().authorization`（状态/最近复核/失败原因/撤销数/无法确认数/暂缓条数）与设置页「授权复核」提示，避免“任务没动却没有任何解释”。
 
 
+## 文件签名边界（2026-09-21 线上实测）
+
+- 对运行中的实例执行 POST /api/documents/parse，把纯文本伪装成 .docx：**HTTP 415** {"error":"the file content does not match its extension","detail":"unrecognised_signature"} —— 拒绝理由走闭集原因码，不回显内部信息。
+- 意义：P2-1 的边界在**运行态**（不只是测试里）生效；测试覆盖见 file-signature.test.ts 5 例与 documents-upload.test.ts。
+- 审计已核对（同轮更正）：我起初按 action 名里含 document 去查、只查到 2 条历史行，便在上一版写下「审计里没有这次拒绝」——**那是我的检索词不对，不是审计缺失**。正确的一条是 {"at":"2026-09-21T12:37:19.059Z","action":"upload.rejected","outcome":"denied","actorId":"dev-owner","detail":"unrecognised_signature:bogus.docx","ip":"127.0.0.1"}；源码 app.ts 在两处 415 之前都调用了 audit.record，校验失败发生在落盘之前。
 ## 开发模式的主体注入边界（2026-09-21 实测）
 
 - 凭据顺序：member API token -> native session token -> **开发主体注入（仅 authMode=development，loopback 限定）**（apps/server/src/auth.ts）。
