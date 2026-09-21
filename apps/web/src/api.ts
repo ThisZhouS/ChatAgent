@@ -235,6 +235,16 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ title }),
       }),
+    /** The caller's private labels for one conversation. */
+    setAliases: (
+      conversationId: string,
+      payload: { title?: string; members?: Record<string, string> },
+    ) =>
+      request<{ ok: boolean; aliases?: { title?: string; members?: Record<string, string> } }>(
+        '/conversations/' + conversationId + '/aliases',
+        { method: 'POST', body: JSON.stringify(payload) },
+      ),
+
     /** Conversation appearance: a preset id or a plain hex colour. */
     setAppearance: (
       conversationId: string,

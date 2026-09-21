@@ -8,6 +8,7 @@ import type {
   ContactRelationView,
   ChatMessage,
   Conversation,
+  ConversationAliases,
   ConversationSummary,
   ConversationTargetKind,
   CreateTaskInput,
@@ -697,6 +698,39 @@ export class ChatAgentService {
       at: new Date().toISOString(),
     });
     return updated ?? conversation;
+  }
+
+  /**
+   * Sets the caller's own labels for one conversation: what they call the room, and what they
+   * call each member in it (their own nickname included). Private by construction - it lives on
+   * the caller's read-state row, so nobody renames anybody else and no other member sees it.
+   */
+  async setConversationAliases(
+    principal: Principal,
+    conversationId: string,
+    aliases: { title?: string; members?: Record<string, string> },
+  ): Promise<{ ok: boolean; aliases?: ConversationAliases }> {
+    this.requireMember(principal);
+    const conversation = await this.conversations.get(conversationId);
+    if (!conversation || !canReadConversation(principal, conversation)) {
+      throw new ServiceError(404, 'conversation not found');
+    }
+    if (!conversation.participantIds.includes(principal.id)) {
+      throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    // An alias for somebody who is not in this conversation would be a stray label that can
+    // never be rendered; refuse it instead of storing it.
+    const unknown = Object.keys(aliases.members ?? {}).filter(
+      (id) => !conversation.participantIds.includes(id),
+    );
+    if (unknown.length > 0) {
+      throw new ServiceError(400, 'alias target is not in this conversation', 'unknown_member');
+    }
+    if (Object.keys(aliases.members ?? {}).length > 200) {
+      throw new ServiceError(400, 'too many aliases');
+    }
+    const stored = await this.readState.setAliases(principal.id, conversationId, aliases);
+    return { ok: true, aliases: stored };
   }
 
   /**
@@ -1574,10 +1608,11 @@ export class ChatAgentService {
     const summaries: ConversationSummary[] = [];
 
     for (const conversation of conversations) {
-      const [messages, lastReadAt, muted] = await Promise.all([
+      const [messages, lastReadAt, muted, aliases] = await Promise.all([
         this.messages.list(conversation.id),
         this.readState.lastReadAt(principal.id, conversation.id),
         this.readState.isMuted(principal.id, conversation.id),
+        this.readState.aliases(principal.id, conversation.id),
       ]);
       const cursor = lastReadAt ? Date.parse(lastReadAt) : 0;
       const unreadCount = messages.filter(
@@ -1597,6 +1632,8 @@ export class ChatAgentService {
         unreadCount,
         // Muting hides the notification, never the message: the count stays honest.
         muted,
+        // Private labels: they belong to the viewer, so they travel with their own view only.
+        aliases,
         lastMessage: last
           ? {
               id: last.id,

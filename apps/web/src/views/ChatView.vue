@@ -130,8 +130,25 @@ function peerOf(conversation: ConversationSummary): MemberView | undefined {
 }
 
 function titleOf(conversation: ConversationSummary): string {
+  // The viewer's own label wins: it is what they called the room, and only they see it.
+  if (conversation.aliases?.title) return conversation.aliases.title;
   if (conversation.targetKind === 'group') return conversation.title ?? '群聊';
-  return peerOf(conversation)?.displayName ?? conversation.title ?? conversation.chatId;
+  const peer = peerOf(conversation);
+  // A private label for the person beats their profile name, in the sidebar and the header.
+  return peer ? nameOf(peer) : conversation.title ?? conversation.chatId;
+}
+
+/**
+ * How a member is shown in the active conversation: the viewer's alias for them, else their
+ * own nickname for themselves, else their profile name.
+ */
+function nameOf(contact: MemberView): string {
+  const aliases = activeConversation.value?.aliases?.members;
+  return aliases?.[contact.id] ?? contact.displayName;
+}
+
+function nameOfId(memberId: string, fallback: string): string {
+  return activeConversation.value?.aliases?.members?.[memberId] ?? fallback;
 }
 
 function avatarLabel(conversation: ConversationSummary): string {
@@ -368,6 +385,33 @@ const groupBusy = ref(false);
 const dissolveArmed = ref(false);
 /** Content-hook patterns being edited, one per line. */
 const hooksDraft = ref('');
+/** Private labels for the active conversation: my name for the room and for each member. */
+const aliasDialog = ref(false);
+const aliasTitle = ref('');
+const aliasDraft = ref<Record<string, string>>({});
+
+function openAliasDialog() {
+  aliasTitle.value = activeConversation.value?.aliases?.title ?? '';
+  aliasDraft.value = { ...(activeConversation.value?.aliases?.members ?? {}) };
+  aliasDialog.value = true;
+}
+
+async function saveAliases() {
+  if (!activeId.value) return;
+  error.value = '';
+  try {
+    // Blanks are dropped server-side, so clearing a label is just emptying the field.
+    await api.chat.setAliases(activeId.value, {
+      title: aliasTitle.value.trim(),
+      members: aliasDraft.value,
+    });
+    aliasDialog.value = false;
+    await loadConversations(true);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
 
 /**
  * Publishes the content hooks. Empty lines are dropped here; the server validates what is
@@ -1508,7 +1552,9 @@ onUnmounted(() => {
               </el-badge>
               <div class="side-item-main">
                 <div class="side-item-title">
-                  <span class="ellipsis">{{ contact.relation?.remark || contact.displayName }}</span>
+                  <span class="ellipsis">
+                  {{ activeConversation?.aliases?.members?.[contact.id] ?? contact.relation?.remark ?? contact.displayName }}
+                </span>
                   <el-tag v-if="contact.kind === 'agent'" size="small" type="primary">AI</el-tag>
                   <el-tag
                     v-if="contact.kind === 'member' && contact.relation && contact.relation.state !== 'none'"
@@ -1607,6 +1653,7 @@ onUnmounted(() => {
                   {{ activeConversation.participantIds.length }} 人
                 </el-tag>
                 <el-button size="small" text @click="inviteDialog = true">邀请成员</el-button>
+                <el-button size="small" text data-testid="alias-edit" @click="openAliasDialog">别名</el-button>
                 <el-button
                   size="small"
                   text
@@ -1686,7 +1733,7 @@ onUnmounted(() => {
                   <div v-else class="avatar-spacer" />
                   <div class="bubble" data-testid="message-bubble">
                     <div v-if="!isCompact(index)" class="bubble-meta">
-                      {{ message.sender.name }} ·
+                      {{ nameOfId(message.sender.id, message.sender.name) }} ·
                       {{ new Date(message.createdAt).toLocaleTimeString() }}
                     </div>
                     <div
@@ -1909,6 +1956,28 @@ onUnmounted(() => {
       </section>
     </div>
     <!-- Address book: the request inbox and one contact's private card. -->
+    <!-- Aliases are the viewer's own labels; nothing here is visible to anybody else. -->
+    <el-dialog v-model="aliasDialog" title="别名（只有自己可见）" width="420px">
+      <label class="tier-label">这个会话叫什么</label>
+      <el-input v-model="aliasTitle" maxlength="32" data-testid="alias-title" placeholder="例如：我的周报组" />
+      <label class="tier-label">成员称呼</label>
+      <div class="relation-actions alias-rows">
+        <div v-for="member in participantList" :key="member.id" class="tier-row">
+          <span class="alias-origin">{{ member.displayName }}</span>
+          <el-input
+            :model-value="aliasDraft[member.id] ?? ''"
+            maxlength="32"
+            :placeholder="member.id === meId ? '我在本群的昵称' : '我给他的称呼'"
+            data-testid="alias-member"
+            @update:model-value="aliasDraft = { ...aliasDraft, [member.id]: $event }"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="aliasDialog = false">取消</el-button>
+        <el-button type="primary" data-testid="alias-save" @click="saveAliases">保存</el-button>
+      </template>
+    </el-dialog>
     <el-dialog v-model="requestsOpen" title="好友申请" width="420px">
       <p v-if="friendRequests.incoming.length === 0" class="muted" data-testid="requests-empty">
         没有待处理的申请。

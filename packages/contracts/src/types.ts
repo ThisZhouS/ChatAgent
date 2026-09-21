@@ -296,6 +296,18 @@ export interface Conversation {
   messageIds: string[];
 }
 
+/**
+   * Per-viewer labels for one conversation: how this viewer sees the group and the people in
+   * it. Private by construction - it lives on the viewer's own read-state row, so nobody can
+   * rename anybody else and no other member learns what they are called.
+   */
+export interface ConversationAliases {
+  /** The viewer's own name for this conversation (overrides the title for them only). */
+  title?: string;
+  /** Per-member labels, keyed by member id (including the viewer's own nickname in here). */
+  members?: Record<string, string>;
+}
+
 export interface ConversationSummary extends Conversation {
   /** Messages newer than the caller's read cursor. */
   unreadCount: number;
@@ -305,6 +317,8 @@ export interface ConversationSummary extends Conversation {
    * because being addressed is not "background noise".
    */
   muted?: boolean;
+  /** The caller's private labels for this conversation (absent when they set none). */
+  aliases?: ConversationAliases;
   lastMessage?: {
     id: string;
     text: string;

@@ -69,6 +69,7 @@ const mocks = vi.hoisted(() => {
     setMuted: vi.fn(async () => ({ ok: true, muted: true })),
     setHooks: vi.fn(async () => ({ id: 'conv_group', hooks: [] })),
     setAppearance: vi.fn(async () => ({ id: 'conv_bob' })),
+    setAliases: vi.fn(async () => ({ ok: true })),
     upload: vi.fn(async () => ({ file: { id: 'f_up', name: 'brief.docx' } })),
     removeMember: vi.fn(async () => ({ ok: true })),
     leave: vi.fn(async () => ({ ok: true })),
@@ -148,6 +149,7 @@ vi.mock('../api', () => ({
       setMuted: mocks.setMuted,
       setHooks: mocks.setHooks,
       setAppearance: mocks.setAppearance,
+      setAliases: mocks.setAliases,
       removeMember: mocks.removeMember,
       leave: mocks.leave,
       upload: mocks.upload,
@@ -556,6 +558,64 @@ describe('ChatView', () => {
     expect(room.classes()).toContain('room-dark');
     // Bubbles keep their own surface: message contrast does not depend on the room colour.
     expect(wrapper.find('.bubble-text').exists()).toBe(true);
+  });
+
+
+  it('uses the viewer aliases for the room title and for the people in it', async () => {
+    mocks.listConversations.mockResolvedValue([
+      {
+        ...mocks.group,
+        aliases: { title: '我的周报组', members: { u_bob: '小 Bob' } },
+      },
+    ]);
+    mocks.listMessages.mockResolvedValue([
+      {
+        id: 'm_bob',
+        channel: 'web',
+        conversationId: 'conv_group',
+        chatType: 'group',
+        direction: 'inbound',
+        kind: 'text',
+        text: '收到',
+        sender: { id: 'u_bob', name: 'Bob' },
+        mentions: [],
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    const wrapper = mountChat();
+    await flushPromises();
+
+    // The private label is what the viewer sees; the real title is untouched elsewhere.
+    expect(wrapper.text()).toContain('我的周报组');
+    // The bubble meta shows the private label instead of the profile name.
+    expect(wrapper.find('.bubble-meta').text()).toContain('小 Bob');
+  });
+
+  it('saves aliases and clears them by blanking the fields', async () => {
+    // The entry lives in the group header, so the open conversation has to be a group.
+    mocks.listConversations.mockResolvedValue([mocks.group]);
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="alias-edit"]').trigger('click');
+    await flushPromises();
+
+    const title = document.querySelector('[data-testid="alias-title"]') as HTMLInputElement;
+    expect(title, 'the alias dialog offers a room label').toBeTruthy();
+    title.value = '我的项目组';
+    title.dispatchEvent(new Event('input', { bubbles: true }));
+    await flushPromises();
+
+    // The member rows come from the loaded participant list; this test only needs the room
+    // label, and the alias set it sends must be exactly what the dialog holds.
+    (document.querySelector('[data-testid="alias-save"]') as HTMLElement).click();
+    await flushPromises();
+
+    expect(mocks.setAliases).toHaveBeenCalledWith('conv_group', {
+      title: '我的项目组',
+      members: {},
+    });
   });
 
   it('sends the composed text through the native API', async () => {

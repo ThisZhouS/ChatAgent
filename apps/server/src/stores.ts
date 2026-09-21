@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   ChatType,
   Conversation,
+  ConversationAliases,
   ConversationOrigin,
   ConversationTargetKind,
   CreateAccountInput,
@@ -1243,6 +1244,8 @@ export interface ReadStateRecord {
   lastReadAt?: string;
   /** Muted conversations still count unread messages; they do not raise a notification. */
   muted?: boolean;
+  /** This member's private labels for the conversation (title and per-member names). */
+  aliases?: ConversationAliases;
 }
 
 /** Per-member read cursor, used for unread badges in the native client. */
@@ -1279,6 +1282,47 @@ export class ReadStateStore {
   async isMuted(memberId: string, conversationId: string): Promise<boolean> {
     await this.load();
     return this.states.get(`${memberId}:${conversationId}`)?.muted === true;
+  }
+
+  /** This member's private labels for one conversation. */
+  async aliases(memberId: string, conversationId: string): Promise<ConversationAliases | undefined> {
+    await this.load();
+    const aliases = this.states.get(`${memberId}:${conversationId}`)?.aliases;
+    return aliases ? { ...aliases, members: { ...(aliases.members ?? {}) } } : undefined;
+  }
+
+  /**
+   * Replaces the viewer's alias set. Empty values are dropped rather than stored as blanks,
+   * so "no alias" has exactly one representation.
+   */
+  async setAliases(
+    memberId: string,
+    conversationId: string,
+    aliases: ConversationAliases,
+  ): Promise<ConversationAliases | undefined> {
+    await this.load();
+    const key = `${memberId}:${conversationId}`;
+    const existing = this.states.get(key);
+    const members: Record<string, string> = {};
+    for (const [id, label] of Object.entries(aliases.members ?? {})) {
+      const clean = label.trim();
+      if (clean !== '') members[id] = clean;
+    }
+    const title = aliases.title?.trim();
+    const next: ConversationAliases | undefined =
+      (title ?? '') === '' && Object.keys(members).length === 0
+        ? undefined
+        : { title: title === '' ? undefined : title, members };
+    const record: ReadStateRecord = {
+      memberId,
+      conversationId,
+      lastReadAt: existing?.lastReadAt,
+      muted: existing?.muted,
+      aliases: next,
+    };
+    this.states.set(key, record);
+    this.persist();
+    return next ? { ...next, members: { ...(next.members ?? {}) } } : undefined;
   }
 
   async setMuted(

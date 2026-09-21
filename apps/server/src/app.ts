@@ -13,6 +13,7 @@ import {
   createGroupSchema,
   createTaskSchema,
   contactPatchSchema,
+  conversationAliasSchema,
   conversationAppearanceSchema,
   conversationMuteSchema,
   createMemberSchema,
@@ -970,6 +971,17 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       request.principal,
       (request.params as { id: string }).id,
       parsed.data.announcement,
+    );
+  });
+
+  /** The caller's private labels for one conversation (title and per-member names). */
+  app.post('/api/conversations/:id/aliases', async (request, reply) => {
+    const parsed = conversationAliasSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.setConversationAliases(
+      request.principal,
+      (request.params as { id: string }).id,
+      parsed.data,
     );
   });
 

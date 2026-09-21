@@ -166,6 +166,17 @@ export const groupAnnouncementSchema = z.object({
 
 /** Grants or revokes admin rights inside one group (owner only). */
 /** Appearance is a closed set: a preset id, or a plain hex colour, or nothing. */
+/**
+   * Aliases are labels the viewer writes for themselves: short, printable, and bounded in
+   * number so one row cannot grow without limit.
+   */
+export const conversationAliasSchema = z
+  .object({
+    title: z.string().max(32).optional(),
+    members: z.record(z.string().min(1).max(128), z.string().max(32)).optional(),
+  })
+  .strict();
+
 export const conversationAppearanceSchema = z
   .object({
     background: z
