@@ -321,6 +321,31 @@ const announcementDraft = ref('');
 const groupBusy = ref(false);
 /** Dissolving takes two clicks: the first arms it, the second does it. */
 const dissolveArmed = ref(false);
+/** Content-hook patterns being edited, one per line. */
+const hooksDraft = ref('');
+
+/**
+ * Publishes the content hooks. Empty lines are dropped here; the server validates what is
+ * left (length, compilation, unsafe shapes) and refuses the whole set if one rule is bad.
+ */
+async function publishHooks() {
+  if (!activeId.value) return;
+  groupBusy.value = true;
+  error.value = '';
+  try {
+    const hooks = hooksDraft.value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '');
+    await api.chat.setHooks(activeId.value, hooks);
+    hooksDraft.value = hooks.join('\n');
+    await loadConversations(true);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    groupBusy.value = false;
+  }
+}
 
 /** True when the caller may run this group (owner, admin or org admin). */
 const canManageGroup = computed(() => {
@@ -1140,6 +1165,23 @@ onUnmounted(() => {
 
     <el-dialog v-model="memberPanel" title="群成员与治理" width="420px" data-testid="member-panel">
       <template v-if="canManageGroup">
+        <label class="tier-label">内容规则（每行一个正则；命中即召唤本群助手，无需 @）</label>
+        <el-input
+          v-model="hooksDraft"
+          type="textarea"
+          :rows="2"
+          data-testid="hooks-input"
+          placeholder="例如：周报&#10;^(紧急|加急)[:：]"
+        />
+        <div class="relation-actions">
+          <el-button
+            :loading="groupBusy"
+            data-testid="hooks-publish"
+            @click="publishHooks"
+          >
+            保存内容规则
+          </el-button>
+        </div>
         <label class="tier-label">群公告（所有人可见）</label>
         <el-input
           v-model="announcementDraft"
@@ -1507,6 +1549,7 @@ onUnmounted(() => {
                   data-testid="members"
                   @click="
                     memberPanel = true;
+                    hooksDraft = (activeConversation?.hooks ?? []).join('\n');
                     void loadGroupMembers(activeConversation?.id ?? '');
                   "
                 >

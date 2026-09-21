@@ -268,6 +268,11 @@ export interface Conversation {
   announcement?: string;
   announcementAt?: string;
   /**
+   * Regex hooks that summon the group's assistants by content instead of by mention. Set by
+   * the owner/admin; validated on the server (length, compilation, unsafe shapes).
+   */
+  hooks?: string[];
+  /**
    * Set when a group was dissolved. The history stays readable (it is the record of
    * what was said) but nothing new may be sent into it.
    */

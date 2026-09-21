@@ -67,6 +67,7 @@ const mocks = vi.hoisted(() => {
     setAdmin: vi.fn(async () => ({ id: 'conv_group' })),
     dissolve: vi.fn(async () => ({ id: 'conv_group' })),
     setMuted: vi.fn(async () => ({ ok: true, muted: true })),
+    setHooks: vi.fn(async () => ({ id: 'conv_group', hooks: [] })),
     upload: vi.fn(async () => ({ file: { id: 'f_up', name: 'brief.docx' } })),
     removeMember: vi.fn(async () => ({ ok: true })),
     leave: vi.fn(async () => ({ ok: true })),
@@ -144,6 +145,7 @@ vi.mock('../api', () => ({
       setAdmin: mocks.setAdmin,
       dissolve: mocks.dissolve,
       setMuted: mocks.setMuted,
+      setHooks: mocks.setHooks,
       removeMember: mocks.removeMember,
       leave: mocks.leave,
       upload: mocks.upload,
@@ -491,6 +493,30 @@ describe('ChatView', () => {
     expect(setWindow).toHaveBeenCalledWith('hide');
 
     delete (window as { chatagent?: unknown }).chatagent;
+  });
+
+
+  it('lets a group manager publish content rules that summon the assistant', async () => {
+    mocks.listConversations.mockResolvedValue([{ ...mocks.group, hooks: ['周报'] }]);
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="members"]').trigger('click');
+    await flushPromises();
+
+    // The stored rules are shown for editing, one per line.
+    const field = document.querySelector('[data-testid="hooks-input"]') as HTMLTextAreaElement;
+    expect(field, 'the manager panel offers content rules').toBeTruthy();
+    expect(field.value).toBe('周报');
+
+    field.value = '周报\n^(紧急|加急)[:：]\n';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await flushPromises();
+    (document.querySelector('[data-testid="hooks-publish"]') as HTMLElement).click();
+    await flushPromises();
+
+    // Empty lines are dropped; the server validates what is left.
+    expect(mocks.setHooks).toHaveBeenCalledWith('conv_group', ['周报', '^(紧急|加急)[:：]']);
   });
 
   it('sends the composed text through the native API', async () => {

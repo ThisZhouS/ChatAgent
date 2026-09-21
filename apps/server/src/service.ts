@@ -63,6 +63,7 @@ import type {
   AgentIntakeRecord,
 } from './stores';
 import { AgentIntakeGate, type AgentIntakeStatus } from './agent-intake';
+import { matchContentHooks, validateHookList } from './content-hooks';
 import {
   allowedToolsForTier,
   resolveContactTier,
@@ -678,6 +679,46 @@ export class ChatAgentService {
     return updated ?? conversation;
   }
 
+  /**
+   * Sets the content hooks that summon this group's assistants without a mention. The
+   * patterns are validated here (length, compilation, unsafe shapes) because a rule that
+   * runs on every message is also a way to burn the server's CPU.
+   */
+  async setGroupHooks(
+    principal: Principal,
+    conversationId: string,
+    hooks: string[],
+  ): Promise<Conversation> {
+    this.requireMember(principal);
+    const conversation = await this.conversations.get(conversationId);
+    if (!conversation || !canReadConversation(principal, conversation)) {
+      throw new ServiceError(404, 'conversation not found');
+    }
+    if (conversation.targetKind !== 'group') {
+      throw new ServiceError(400, 'only groups have content hooks');
+    }
+    if (!conversation.participantIds.includes(principal.id)) {
+      throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    this.requireGroupManager(principal, conversation);
+    this.assertGroupAlive(conversation);
+    const validated = validateHookList(hooks);
+    if (!validated.ok) {
+      throw new ServiceError(400, 'invalid hook pattern', validated.reason);
+    }
+    const updated = await this.conversations.updateGovernance(conversation.id, {
+      hooks: validated.hooks,
+    });
+    this.audit?.({
+      action: 'group.hooks_updated',
+      outcome: 'ok',
+      actorId: principal.id,
+      target: conversation.id,
+      detail: `hooks:${validated.hooks.length}`,
+    });
+    return updated ?? conversation;
+  }
+
   /** Grants or revokes admin rights. Owner only: admins cannot create peers. */
   async setGroupAdmin(
     principal: Principal,
@@ -1213,6 +1254,56 @@ export class ChatAgentService {
     // gate waits out the recall window first (see agent-intake.ts).
     const taskIds: string[] = [];
     const intakes: AgentIntakeNotice[] = [];
+    // Content hooks: a group may summon its assistants by what a message says. Mentions win
+    // when both apply (a mention is an explicit request), and the hook path runs the same
+    // intake gate, the same tier check and the same recall window as everything else.
+    if (
+      conversation.targetKind === 'group' &&
+      mentions.length === 0 &&
+      (conversation.hooks?.length ?? 0) > 0
+    ) {
+      const hookResult = matchContentHooks(message.text, conversation.hooks ?? []);
+      if (hookResult.invalid.length > 0) {
+        // A stored rule that no longer compiles is reported rather than silently ignored.
+        this.audit?.({
+          action: 'agent_intake.hook_invalid',
+          outcome: 'denied',
+          actorId: principal.id,
+          target: conversation.id,
+          detail: hookResult.invalid.join(';').slice(0, 200),
+        });
+      }
+      if (hookResult.matched.length > 0) {
+        for (const accountId of conversation.participantIds) {
+          const account = await this.accounts.get(accountId);
+          if (!account || !canUseAccount(principal, account)) continue;
+          const hookTier = await this.tierFor(account, principal.id);
+          if (!tierPolicy(hookTier).intake) continue;
+          const record = await this.intake.defer({
+            conversationId: conversation.id,
+            messageId: message.id,
+            accountId: account.id,
+            organizationId: account.organizationId,
+            requesterId: principal.id,
+            chatType: 'group',
+            // The room asked by rule, so the assistant is told how it was summoned.
+            goal: `（由内容规则触发：${hookResult.matched.join('、').slice(0, 100)}）\n${message.text}`,
+          });
+          intakes.push(toIntakeNotice(record, this.intake.intakeMode));
+          if (record.taskId) taskIds.push(record.taskId);
+          this.audit?.({
+            action: 'agent_intake.hook_matched',
+            outcome: 'ok',
+            actorId: principal.id,
+            target: message.id,
+            detail: hookResult.matched.join(';').slice(0, 200),
+          });
+          // One assistant per message: a second one would duplicate the work.
+          break;
+        }
+      }
+    }
+
     if (conversation.targetKind === 'group' && mentions.length > 0) {
       for (const mentionId of mentions.slice(0, 3)) {
         const account = await this.accounts.get(mentionId);

@@ -165,6 +165,10 @@ export const groupAnnouncementSchema = z.object({
 });
 
 /** Grants or revokes admin rights inside one group (owner only). */
+export const groupHooksSchema = z.object({
+  hooks: z.array(z.string().max(200)).max(20),
+});
+
 export const groupAdminSchema = z.object({
   memberId: z.string().min(1).max(128),
   admin: z.boolean(),

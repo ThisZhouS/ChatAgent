@@ -19,6 +19,7 @@ import {
   friendRequestSchema,
   groupAdminSchema,
   groupAnnouncementSchema,
+  groupHooksSchema,
   generateExcelSchema,
   generateWordSchema,
   inboundMessageSchema,
@@ -968,6 +969,17 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       request.principal,
       (request.params as { id: string }).id,
       parsed.data.announcement,
+    );
+  });
+
+  /** Content hooks: regex rules that summon the group's assistants without a mention. */
+  app.post('/api/conversations/:id/hooks', async (request, reply) => {
+    const parsed = groupHooksSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.setGroupHooks(
+      request.principal,
+      (request.params as { id: string }).id,
+      parsed.data.hooks,
     );
   });
 

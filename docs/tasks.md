@@ -256,6 +256,7 @@ pnpm dev
 - [x] **P1-4 消息呈现**：转发带原作者与**原时间**并渲染；图片内联预览（`el-image` 可放大）；提醒决策抽成 `notifications.ts`（当前会话/可见窗口/无权限静默，**免打扰静默但 @ 突破**）；`muted` 存在每人每会话的已读行上、未读数照常。证据：`presentation.test.ts` 3 例 + `notifications.test.ts` 5 例 + `ChatView.test.ts` 3 例。
 - [x] **P2-1 文件边界与拖入**：按文件签名校验扩展名（ZIP/OLE/PDF/PNG/JPEG/GIF/WEBP/文本，fail-closed），不匹配 415 + 审计；聊天区支持拖入单文件（含类型/大小预检与多文件提示）。证据：`file-signature.test.ts` 5 例、`documents-upload.test.ts` +2 例、`ChatView.test.ts` +2 例。
 - [x] **P2-2 窗口置顶与隐藏**：主进程 `chatagent:window`（固定动词）+ 托盘菜单项（标签实时）+ `status().window` 读窗口真实状态；页面侧仅在桌面壳渲染控件。证据：`electron-nav-check.mjs` +5 项（13/13）、`ChatView.test.ts` +1 例。
-- [ ] **P2 其余**：关键词正则钩子、澄清提问打通、界面风格与背景、表情与贴纸、群成员别名、事件游标与本地存储演进。
+- [x] **P2-3 内容钩子（关键词正则）**：群主/管理员可设每群 ≤20 条正则，命中即召唤助手且目标标注触发规则；走同一闸门/等级/审计；设置时拒绝灾难性回溯形态，匹配时有长度上限与 25ms 预算。证据：`content-hooks.test.ts` 7 例、`content-hooks-wiring.test.ts` 3 例、`ChatView.test.ts` 1 例。
+- [ ] **P2 其余**：澄清提问打通、界面风格与背景、表情与贴纸、群成员别名、事件游标与本地存储演进。
 
 待产品确认的 9 个语义问题见该文档 §4（好友分级的对象、拉黑归属、转发撤回是否级联、公告范围、队列栈粒度、文件安全是否含内容扫描、窗口背景指哪个窗口、个人 ID 含义、目录外授权的形式）。

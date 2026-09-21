@@ -235,6 +235,13 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ title }),
       }),
+    /** Content hooks: regex rules that summon the group's assistants. */
+    setHooks: (conversationId: string, hooks: string[]) =>
+      request<Conversation>('/conversations/' + conversationId + '/hooks', {
+        method: 'POST',
+        body: JSON.stringify({ hooks }),
+      }),
+
     /** Group governance: announcement, admins and dissolution. */
     /** Mute one conversation for the caller (notifications only). */
     setMuted: (conversationId: string, muted: boolean) =>
