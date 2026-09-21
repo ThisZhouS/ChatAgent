@@ -561,4 +561,4 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 改动：新增 `--preflight` 模式（只查前置条件：Hermes 运行时路径存在且是文件、模型三件套 `CHATAGENT_MODEL_*`、临时目录可写；脚本能加载主机 bundle 就说明它已构建）；主跑退出码改为 0=全过 / 1=有失败 / **2=有 BLOCKED（未验证）**，并在摘要下再印一句「BLOCKED 不等于通过」。
 - 预检明确写着「文件存在不等于它是 Hermes」「预检通过不是验证结论」，避免它被当成 Gate 7A.3 的替代证据。
 - 实测：无环境 → 缺 4 项、退出 2；把 `CHATAGENT_HERMES_EXE` 指到目录 → 报「指向的是目录」、退出 2；指到 `which node` 的 POSIX 路径 `E:\box\Node\node`（真实文件是 `node.exe`）→ 也报缺失（说明了这类误配确实会被抓住）；指到真实 `node.exe` + 三个模型变量 → 前置齐备、退出 0。
-- 行为跑（HEAD 复跑，顺带回归）：**21 passed, 0 failed, 1 blocked**，退出码 2（Flow8 真实 Hermes 契约 BLOCKED）——与第四十轮记录的「一次运行就抓到误配」对应。
+- 行为跑（HEAD 复跑，顺带回归）：**21 passed, 0 failed, 1 blocked**，退出码 2（Flow8 真实 Hermes 契约 BLOCKED）。这也顺带回归了第 38 轮改动之后的宿主流程（21 项全过、0 失败）。
