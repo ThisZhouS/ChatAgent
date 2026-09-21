@@ -4,6 +4,7 @@ import type {
   ApprovalRecord,
   ChatMessage,
   ConversationSummary,
+  FriendRequestRecord,
   MemberView,
   TaskRecord,
 } from '@chatagent/contracts';
@@ -480,6 +481,108 @@ async function openSearchHit(hit: { conversationId: string; message: { id: strin
 async function loadContacts() {
   try {
     contacts.value = await api.contacts();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+  // The address book rides along with the contact list: the same view is what makes the
+  // relation state (friend / pending / blocked) visible at a glance.
+  await loadFriendRequests();
+}
+
+/** Incoming and outgoing friend requests, kept next to the contact list. */
+const friendRequests = ref<{
+  incoming: FriendRequestRecord[];
+  outgoing: FriendRequestRecord[];
+}>({ incoming: [], outgoing: [] });
+
+async function loadFriendRequests() {
+  try {
+    friendRequests.value = await api.friends.requests();
+  } catch {
+    // The inbox is optional on screen: a failure must not hide the conversation list.
+  }
+}
+
+async function requestFriend(contact: MemberView) {
+  error.value = '';
+  try {
+    await api.friends.request(contact.id);
+    await loadContacts();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function decideFriendRequest(request: FriendRequestRecord, decision: 'accept' | 'decline') {
+  error.value = '';
+  try {
+    await api.friends.decide(request.id, decision);
+    await loadContacts();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+const requestsOpen = ref(false);
+/** The contact whose address-book card is open, and the remark being edited. */
+const relationTarget = ref<MemberView | null>(null);
+const relationRemark = ref('');
+
+function openRelation(contact: MemberView) {
+  relationTarget.value = contact;
+  relationRemark.value = contact.relation?.remark ?? '';
+}
+
+function relationLabel(contact: MemberView): string {
+  switch (contact.relation?.state) {
+    case 'friend':
+      return '好友';
+    case 'request_in':
+      return '待我确认';
+    case 'request_out':
+      return '待对方确认';
+    case 'blocked':
+      return '已拉黑';
+    default:
+      return '未添加';
+  }
+}
+
+async function saveRelation(patch: { remark?: string | null; blocked?: boolean } = {}) {
+  const target = relationTarget.value;
+  if (!target) return;
+  error.value = '';
+  try {
+    await api.patchContact(target.id, patch);
+    relationTarget.value = null;
+    await loadContacts();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Accepts the incoming request shown on the open contact card. */
+async function relationAccept() {
+  const target = relationTarget.value;
+  const requestId = target?.relation?.requestId;
+  if (!target || !requestId) return;
+  error.value = '';
+  try {
+    await api.friends.decide(requestId, 'accept');
+    relationTarget.value = null;
+    await loadContacts();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function toggleBlock(contact: MemberView) {
+  // Blocking decides delivery, so the button says what will happen, not just the state.
+  const blocked = contact.relation?.state !== 'blocked';
+  error.value = '';
+  try {
+    await api.patchContact(contact.id, { blocked });
+    await loadContacts();
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   }
@@ -1019,6 +1122,29 @@ onUnmounted(() => {
             <div class="side-title">
               <span>联系人</span>
               <el-tag size="small" type="info">{{ visibleContacts.length }}</el-tag>
+              <el-badge
+                v-if="friendRequests.incoming.length > 0"
+                :value="friendRequests.incoming.length"
+                class="request-badge"
+              >
+                <el-button
+                  size="small"
+                  text
+                  data-testid="friend-requests"
+                  @click="requestsOpen = true"
+                >
+                  好友申请
+                </el-button>
+              </el-badge>
+              <el-button
+                v-else
+                size="small"
+                text
+                data-testid="friend-requests"
+                @click="requestsOpen = true"
+              >
+                好友申请
+              </el-button>
             </div>
           </template>
           <div class="side-list">
@@ -1042,8 +1168,25 @@ onUnmounted(() => {
               </el-badge>
               <div class="side-item-main">
                 <div class="side-item-title">
-                  <span class="ellipsis">{{ contact.displayName }}</span>
+                  <span class="ellipsis">{{ contact.relation?.remark || contact.displayName }}</span>
                   <el-tag v-if="contact.kind === 'agent'" size="small" type="primary">AI</el-tag>
+                  <el-tag
+                    v-if="contact.kind === 'member' && contact.relation && contact.relation.state !== 'none'"
+                    size="small"
+                    :type="contact.relation.state === 'blocked' ? 'danger' : contact.relation.state === 'friend' ? 'success' : 'warning'"
+                    data-testid="contact-relation"
+                  >
+                    {{ relationLabel(contact) }}
+                  </el-tag>
+                  <el-button
+                    v-if="contact.kind === 'member'"
+                    size="small"
+                    text
+                    data-testid="contact-settings"
+                    @click.stop="openRelation(contact)"
+                  >
+                    ⋯
+                  </el-button>
                 </div>
                 <div class="side-item-sub ellipsis">
                   {{
@@ -1324,6 +1467,83 @@ onUnmounted(() => {
         </el-card>
       </section>
     </div>
+    <!-- Address book: the request inbox and one contact's private card. -->
+    <el-dialog v-model="requestsOpen" title="好友申请" width="420px">
+      <p v-if="friendRequests.incoming.length === 0" class="muted" data-testid="requests-empty">
+        没有待处理的申请。
+      </p>
+      <div
+        v-for="request in friendRequests.incoming"
+        :key="request.id"
+        class="request-row"
+        data-testid="request-row"
+      >
+        <div class="request-main">
+          <strong>{{ request.fromId }}</strong>
+          <span v-if="request.note" class="muted">：{{ request.note }}</span>
+        </div>
+        <el-button
+          size="small"
+          type="primary"
+          data-testid="request-accept"
+          @click="decideFriendRequest(request, 'accept')"
+        >
+          同意
+        </el-button>
+        <el-button
+          size="small"
+          data-testid="request-decline"
+          @click="decideFriendRequest(request, 'decline')"
+        >
+          拒绝
+        </el-button>
+      </div>
+      <template #footer>
+        <span class="muted">对方同意后才会成为好友；拒绝不会通知对方。</span>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      :model-value="relationTarget !== null"
+      :title="'联系人设置：' + (relationTarget?.displayName ?? '')"
+      width="420px"
+      @close="relationTarget = null"
+    >
+      <p class="muted" data-testid="relation-state">当前状态：{{ relationTarget ? relationLabel(relationTarget) : '' }}</p>
+      <label class="tier-label">备注（只有自己可见）</label>
+      <el-input v-model="relationRemark" data-testid="relation-remark" placeholder="例如：周报小组的 Bob" />
+      <div class="relation-actions">
+        <el-button
+          v-if="relationTarget?.relation?.state === 'none'"
+          type="primary"
+          data-testid="relation-add"
+          @click="relationTarget && requestFriend(relationTarget)"
+        >
+          加为好友
+        </el-button>
+        <el-button
+          v-if="relationTarget?.relation?.state === 'request_in' && relationTarget.relation.requestId"
+          type="primary"
+          data-testid="relation-accept"
+          @click="relationAccept()"
+        >
+          同意对方的申请
+        </el-button>
+        <el-button
+          :type="relationTarget?.relation?.state === 'blocked' ? 'default' : 'danger'"
+          data-testid="relation-block"
+          @click="relationTarget && toggleBlock(relationTarget)"
+        >
+          {{ relationTarget?.relation?.state === 'blocked' ? '解除拉黑' : '拉黑（不再接收对方私聊）' }}
+        </el-button>
+      </div>
+      <template #footer>
+        <el-button @click="relationTarget = null">取消</el-button>
+        <el-button type="primary" data-testid="relation-save" @click="saveRelation({ remark: relationRemark.trim() || null })">
+          保存备注
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 

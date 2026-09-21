@@ -7,6 +7,7 @@ import type {
   ConversationSummary,
   ConversationTargetKind,
   DocumentSummary,
+  FriendRequestRecord,
   LocalTaskReceipt,
   MemberView,
   OutboxRecord,
@@ -161,6 +162,26 @@ export const api = {
   },
 
   contacts: () => request<MemberView[]>('/contacts'),
+
+  /** The caller's own address-book entry for one contact (remark, block). */
+  patchContact: (id: string, payload: { remark?: string | null; blocked?: boolean }) =>
+    request<MemberView>('/contacts/' + id, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  /** Friend requests: the inbox, sending one, and deciding one. */
+  friends: {
+    requests: () =>
+      request<{ incoming: FriendRequestRecord[]; outgoing: FriendRequestRecord[] }>('/friend-requests'),
+    request: (toMemberId: string, note?: string) =>
+      request<FriendRequestRecord>('/friend-requests', {
+        method: 'POST',
+        body: JSON.stringify({ toMemberId, note }),
+      }),
+    decide: (id: string, decision: 'accept' | 'decline') =>
+      request<FriendRequestRecord>('/friend-requests/' + id + '/decision', {
+        method: 'POST',
+        body: JSON.stringify({ decision }),
+      }),
+  },
 
   search: (query: string) =>
     request<

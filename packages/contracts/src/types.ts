@@ -293,6 +293,45 @@ export interface SessionView {
 }
 
 /** Directory entry used by the native client contact list. */
+/** A friend request between two members of the same organization. */
+export type FriendRequestStatus = 'pending' | 'accepted' | 'declined' | 'cancelled';
+
+export interface FriendRequestRecord {
+  id: string;
+  organizationId: string;
+  fromId: string;
+  toId: string;
+  status: FriendRequestStatus;
+  /** Optional greeting shown to the addressee; the addressee may decline silently. */
+  note?: string;
+  createdAt: string;
+  decidedAt?: string;
+}
+
+/**
+ * One row per (owner, peer) pair: the owner's own view of a contact. `remark` and
+ * `blocked` belong to the owner alone - the peer never sees them, and a remark is never
+ * used to address the peer.
+ */
+export interface ContactRelation {
+  ownerId: string;
+  peerId: string;
+  friend: boolean;
+  remark?: string;
+  blocked?: boolean;
+  updatedAt: string;
+}
+
+/** How a contact appears to the caller: their own address book, not the directory. */
+export type ContactState = 'none' | 'request_out' | 'request_in' | 'friend' | 'blocked';
+
+export interface ContactRelationView {
+  state: ContactState;
+  remark?: string;
+  /** Pending request id, so the client can accept or decline it directly. */
+  requestId?: string;
+}
+
 export interface MemberView {
   /** True while the member has at least one authenticated event stream open. */
   online?: boolean;
@@ -304,6 +343,8 @@ export interface MemberView {
   /** Present for `agent` entries. */
   accountId?: string;
   accountStatus?: AccountStatus;
+  /** The caller's own relation to this contact (absent for AI accounts). */
+  relation?: ContactRelationView;
 }
 
 /**

@@ -85,6 +85,12 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+const addressBook = vi.hoisted(() => ({
+  requests: vi.fn(),
+  request: vi.fn(),
+  decide: vi.fn(),
+  patchContact: vi.fn(),
+}));
 vi.mock('../api', () => ({
   api: {
     contacts: vi.fn(async () => [
@@ -95,6 +101,7 @@ vi.mock('../api', () => ({
         roles: ['member'],
         kind: 'member' as const,
         online: true,
+        relation: { state: 'none' as const },
       },
       {
         id: 'agent_1',
@@ -104,6 +111,12 @@ vi.mock('../api', () => ({
         kind: 'agent' as const,
       },
     ]),
+    patchContact: addressBook.patchContact,
+    friends: {
+      requests: addressBook.requests,
+      request: addressBook.request,
+      decide: addressBook.decide,
+    },
     chat: {
       conversations: mocks.listConversations,
       messages: mocks.listMessages,
@@ -153,6 +166,15 @@ class FakeEventSource {
 beforeEach(() => {
   vi.stubGlobal('EventSource', FakeEventSource);
   streamInstances.length = 0;
+  // The address book is optional on screen: default to "nothing pending, nothing changed".
+  addressBook.requests.mockReset();
+  addressBook.requests.mockResolvedValue({ incoming: [], outgoing: [] });
+  addressBook.request.mockReset();
+  addressBook.request.mockResolvedValue({ id: 'req_new', status: 'pending' });
+  addressBook.decide.mockReset();
+  addressBook.decide.mockResolvedValue({ id: 'req_1', status: 'accepted' });
+  addressBook.patchContact.mockReset();
+  addressBook.patchContact.mockResolvedValue({ id: 'u_bob', relation: { state: 'friend' } });
   mocks.markRead.mockClear();
   mocks.send.mockClear();
   mocks.listMessages.mockClear();
@@ -238,6 +260,68 @@ describe('ChatView', () => {
 
     expect(mocks.listMessages).toHaveBeenCalled();
   });
+
+  it('shows the friend-request inbox and answers a request', async () => {
+    addressBook.requests.mockResolvedValue({
+      incoming: [{ id: 'req_1', fromId: 'u_carol', toId: 'u_alice', status: 'pending', note: '一起做周报' }],
+      outgoing: [],
+    });
+    const wrapper = mountChat();
+    await flushPromises();
+
+    const entry = wrapper.find('[data-testid="friend-requests"]');
+    expect(entry.exists()).toBe(true);
+    await entry.trigger('click');
+    await flushPromises();
+
+    const row = wrapper.find('[data-testid="request-row"]');
+    expect(row.text()).toContain('u_carol');
+    expect(row.text()).toContain('一起做周报');
+
+    // Accepting is the addressee's decision, and it goes through the API with the request id.
+    await wrapper.find('[data-testid="request-accept"]').trigger('click');
+    await flushPromises();
+    expect(addressBook.decide).toHaveBeenCalledWith('req_1', 'accept');
+  });
+
+  it('lets a member name and block a contact from their own address book', async () => {
+    const wrapper = mountChat();
+    await flushPromises();
+
+    // Only member rows get the address-book card; AI accounts have a tier instead.
+    await wrapper.find('[data-testid="contact-settings"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="relation-state"]').text()).toContain('未添加');
+
+    // Element Plus forwards the test id to the inner input, so this is the field itself.
+    const remark = wrapper.find('[data-testid="relation-remark"]');
+    await remark.setValue('周报小组的 Bob');
+    await wrapper.find('[data-testid="relation-save"]').trigger('click');
+    await flushPromises();
+    expect(addressBook.patchContact).toHaveBeenCalledWith('u_bob', { remark: '周报小组的 Bob' });
+
+    // Blocking is about delivery, and the button says so.
+    await wrapper.find('[data-testid="contact-settings"]').trigger('click');
+    await flushPromises();
+    const block = wrapper.find('[data-testid="relation-block"]');
+    expect(block.text()).toContain('不再接收对方私聊');
+    await block.trigger('click');
+    await flushPromises();
+    expect(addressBook.patchContact).toHaveBeenCalledWith('u_bob', { blocked: true });
+  });
+
+  it('asks a stranger to become a contact instead of silently adding them', async () => {
+    const wrapper = mountChat();
+    await flushPromises();
+
+    await wrapper.find('[data-testid="contact-settings"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="relation-add"]').trigger('click');
+    await flushPromises();
+
+    expect(addressBook.request).toHaveBeenCalledWith('u_bob');
+  });
+
   it('sends the composed text through the native API', async () => {
     const wrapper = mountChat();
     await flushPromises();

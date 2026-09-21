@@ -12,10 +12,13 @@ import {
   createAccountSchema,
   createGroupSchema,
   createTaskSchema,
+  contactPatchSchema,
+  createMemberSchema,
+  friendDecisionSchema,
+  friendRequestSchema,
   generateExcelSchema,
   generateWordSchema,
   inboundMessageSchema,
-  createMemberSchema,
   localTaskSyncSchema,
   loginSchema,
   nativeMessageSchema,
@@ -60,6 +63,7 @@ import {
   ConversationStore,
   LocalTaskReceiptStore,
   MessageStore,
+  RelationStore,
   ReadStateStore,
   SessionStore,
   UploadedFileStore,
@@ -140,6 +144,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     config.native.sessionTtlSeconds,
   );
   const localTasks = new LocalTaskReceiptStore();
+  const relations = new RelationStore(join(config.dataDir, 'relations.json'), onStoreError);
   const agentIntakeStore = new AgentIntakeStore(
     join(config.dataDir, 'agent-intake.json'),
     onStoreError,
@@ -249,6 +254,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     sessions,
     events,
     readState,
+    relations,
     new AgentIntakeGate({
       store: agentIntakeStore,
       mode: config.agentIntake.mode,
@@ -654,6 +660,37 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
   app.get('/api/auth/me', async (request) => service.me(request.principal));
 
   app.get('/api/contacts', async (request) => service.listContacts(request.principal));
+
+  // Address book -------------------------------------------------------------
+  app.get('/api/friend-requests', async (request) => service.listFriendRequests(request.principal));
+
+  app.post('/api/friend-requests', async (request, reply) => {
+    const parsed = friendRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const created = await service.sendFriendRequest(request.principal, parsed.data);
+    return reply.code(201).send(created);
+  });
+
+  app.post('/api/friend-requests/:id/decision', async (request, reply) => {
+    const parsed = friendDecisionSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.decideFriendRequest(
+      request.principal,
+      (request.params as { id: string }).id,
+      parsed.data.decision,
+    );
+  });
+
+  /** The caller's own address-book entry: a private remark and a delivery block. */
+  app.patch('/api/contacts/:id', async (request, reply) => {
+    const parsed = contactPatchSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.patchContact(
+      request.principal,
+      (request.params as { id: string }).id,
+      parsed.data,
+    );
+  });
 
   // Member administration (org admin only; tokens are returned once) --------
   app.get('/api/members', async (request) => service.listMembers(request.principal));

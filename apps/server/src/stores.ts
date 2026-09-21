@@ -2,6 +2,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   AgentAccount,
+  ContactRelation,
+  FriendRequestRecord,
   ChatMessage,
   ChatType,
   Conversation,
@@ -847,6 +849,142 @@ export interface AgentIntakeRecord {
   lastError?: string;
 }
 
+export interface RelationFile {
+  requests: FriendRequestRecord[];
+  relations: ContactRelation[];
+}
+
+/**
+ * Address book: friend requests plus one relation row per (owner, peer).
+ *
+ * Deliberately separate from the member directory: the directory is who exists in the
+ * organization, this is who the caller has accepted, named and (possibly) blocked. Both
+ * stores are bounded so neither can grow with traffic.
+ */
+export class RelationStore {
+  private readonly requests = new Map<string, FriendRequestRecord>();
+  private readonly relations = new Map<string, ContactRelation>();
+  private readonly writer: JsonFileWriter<RelationFile>;
+  private loaded = false;
+
+  constructor(
+    filePath: string,
+    onError?: (error: unknown) => void,
+    /** Terminal requests kept per organization; pending ones are never pruned. */
+    private readonly terminalRetention = 2000,
+    private readonly maxRelations = 5000,
+  ) {
+    this.writer = new JsonFileWriter<RelationFile>(filePath, 150, onError);
+  }
+
+  get health(): StorageHealth {
+    return this.writer.health;
+  }
+
+  async load(): Promise<void> {
+    if (this.loaded) return;
+    this.loaded = true;
+    const data = await readJson<RelationFile>(this.writerPath(), { requests: [], relations: [] });
+    for (const request of Array.isArray(data?.requests) ? data.requests : []) {
+      if (request && typeof request.id === 'string') this.requests.set(request.id, request);
+    }
+    for (const relation of Array.isArray(data?.relations) ? data.relations : []) {
+      if (relation && typeof relation.ownerId === 'string') {
+        this.relations.set(relationKey(relation.ownerId, relation.peerId), relation);
+      }
+    }
+  }
+
+  private writerPath(): string {
+    return (this.writer as unknown as { filePath: string }).filePath;
+  }
+
+  private async persist(): Promise<void> {
+    this.writer.schedule({
+      requests: [...this.requests.values()],
+      relations: [...this.relations.values()],
+    });
+    await this.writer.flush();
+  }
+
+  async findPending(fromId: string, toId: string): Promise<FriendRequestRecord | undefined> {
+    await this.load();
+    return [...this.requests.values()].find(
+      (request) =>
+        request.status === 'pending' &&
+        ((request.fromId === fromId && request.toId === toId) ||
+          (request.fromId === toId && request.toId === fromId)),
+    );
+  }
+
+  async getRequest(id: string): Promise<FriendRequestRecord | undefined> {
+    await this.load();
+    return this.requests.get(id);
+  }
+
+  async listRequests(organizationId: string): Promise<FriendRequestRecord[]> {
+    await this.load();
+    return [...this.requests.values()].filter(
+      (request) => request.organizationId === organizationId,
+    );
+  }
+
+  async saveRequest(request: FriendRequestRecord): Promise<void> {
+    await this.load();
+    this.requests.set(request.id, request);
+    this.pruneRequests(request.organizationId);
+    await this.persist();
+  }
+
+  private pruneRequests(organizationId: string): void {
+    const terminal = [...this.requests.values()]
+      .filter((request) => request.organizationId === organizationId && request.status !== 'pending')
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    for (const request of terminal.slice(this.terminalRetention)) this.requests.delete(request.id);
+  }
+
+  async getRelation(ownerId: string, peerId: string): Promise<ContactRelation | undefined> {
+    await this.load();
+    const relation = this.relations.get(relationKey(ownerId, peerId));
+    return relation ? { ...relation } : undefined;
+  }
+
+  async listRelations(ownerId: string): Promise<ContactRelation[]> {
+    await this.load();
+    return [...this.relations.values()]
+      .filter((relation) => relation.ownerId === ownerId)
+      .map((relation) => ({ ...relation }));
+  }
+
+  /** Owner-scoped block lookup used on the delivery path. */
+  async isBlocked(ownerId: string, peerId: string): Promise<boolean> {
+    const relation = await this.getRelation(ownerId, peerId);
+    return relation?.blocked === true;
+  }
+
+  async saveRelation(relation: ContactRelation): Promise<void> {
+    await this.load();
+    this.relations.set(relationKey(relation.ownerId, relation.peerId), relation);
+    while (this.relations.size > this.maxRelations) {
+      const oldest = [...this.relations.values()].sort(
+        (a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt),
+      )[0];
+      if (!oldest) break;
+      this.relations.delete(relationKey(oldest.ownerId, oldest.peerId));
+    }
+    await this.persist();
+  }
+
+  async removeRelation(ownerId: string, peerId: string): Promise<void> {
+    await this.load();
+    if (!this.relations.delete(relationKey(ownerId, peerId))) return;
+    await this.persist();
+  }
+}
+
+function relationKey(ownerId: string, peerId: string): string {
+  return `${ownerId}\u0000${peerId}`;
+}
 /**
  * Queue of messages that are waiting for the recall window to elapse before they
  * are handed to an agent. Persisted so a restart neither drops a request nor

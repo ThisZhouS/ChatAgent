@@ -159,6 +159,27 @@ export const createGroupSchema = z.object({
   memberIds: z.array(z.string().min(1).max(64)).min(1).max(20),
 });
 
+export const friendRequestSchema = z.object({
+  toMemberId: z.string().min(1).max(128),
+  /** Short greeting; kept short so a request cannot be used as a message channel. */
+  note: z.string().max(200).optional(),
+});
+
+export const friendDecisionSchema = z.object({
+  decision: z.enum(['accept', 'decline']),
+});
+
+/**
+ * Address-book fields a member controls for one contact. `remark: null` clears it, and
+ * `blocked` is a delivery rule, not just a label (see service.sendNativeMessage).
+ */
+export const contactPatchSchema = z
+  .object({
+    remark: z.string().max(64).nullable().optional(),
+    blocked: z.boolean().optional(),
+  })
+  .strict();
+
 export const nativeMessageSchema = z.object({
   text: z.string().max(8000).default(''),
   /** Id of the message being quoted; must belong to the same conversation. */
@@ -192,6 +213,9 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export type OpenConversationInput = z.infer<typeof openConversationSchema>;
 export type CreateGroupInput = z.infer<typeof createGroupSchema>;
 export type NativeMessageInput = z.infer<typeof nativeMessageSchema>;
+export type FriendRequestInput = z.infer<typeof friendRequestSchema>;
+export type FriendDecisionInput = z.infer<typeof friendDecisionSchema>;
+export type ContactPatchInput = z.infer<typeof contactPatchSchema>;
 export type CreateAccountInput = z.infer<typeof createAccountSchema>;
 export type UpdateAccountInput = z.infer<typeof updateAccountSchema>;
 export type InboundMessagePayload = z.infer<typeof inboundMessageSchema>;

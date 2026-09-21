@@ -5,6 +5,7 @@ import type {
   AgentAccount,
   AgentIntakeNotice,
   ApprovalRecord,
+  ContactRelationView,
   ChatMessage,
   Conversation,
   ConversationSummary,
@@ -13,6 +14,8 @@ import type {
   GenerateExcelInput,
   GenerateWordInput,
   InboundMessageInput,
+  FriendRequestRecord,
+  MemberRecord,
   MemberView,
   NativeEvent,
   OutboxRecord,
@@ -54,6 +57,7 @@ import type {
   StoredFileMeta,
   UploadedFileStore,
   ReadStateStore,
+  RelationStore,
   SessionStore,
   WebhookDedupeStore,
   AgentIntakeRecord,
@@ -175,6 +179,8 @@ export class ChatAgentService {
     private readonly sessions: SessionStore,
     private readonly events: NativeEventHub,
     private readonly readState: ReadStateStore,
+    /** Address book: friend requests, private remarks and blocks. */
+    private readonly relations: RelationStore,
     /** Queue that holds a message until its recall window has elapsed. */
     private readonly intake: AgentIntakeGate,
     /**
@@ -424,9 +430,18 @@ export class ChatAgentService {
     const accounts = await this.accounts.list();
 
     const online = new Set(this.events.onlinePrincipals());
-    const contacts: MemberView[] = members
-      .filter((member) => member.organizationId === principal.organizationId)
-      .map((member) => ({ ...toMemberView(member), online: online.has(member.id) }));
+    const contacts: MemberView[] = [];
+    for (const member of members) {
+      if (member.organizationId !== principal.organizationId) continue;
+      if (member.id === principal.id) {
+        contacts.push({ ...toMemberView(member), online: online.has(member.id) });
+        continue;
+      }
+      // The directory still lists the whole organization; the relation says what the caller
+      // has accepted, named or blocked, and is private to the caller.
+      const view = await this.contactView(principal.id, member);
+      contacts.push({ ...view, online: online.has(member.id) });
+    }
 
     for (const account of accounts) {
       if (!canReadAccount(principal, account)) continue;
@@ -874,6 +889,28 @@ export class ChatAgentService {
     }
 
     const kind = input.attachments.length > 0 ? 'mixed' : 'text';
+
+    // Blocking is a delivery rule, not a label: a member who blocked the sender does not
+    // receive their direct messages. It is deliberately scoped to direct conversations -
+    // applying it to a group would let one member silence a room for everybody in it.
+    if (conversation.targetKind === 'member') {
+      const peers = conversation.participantIds.filter((id) => id !== principal.id);
+      for (const peerId of peers) {
+        if (!(await this.relations.isBlocked(peerId, principal.id))) continue;
+        this.audit?.({
+          action: 'message.blocked',
+          outcome: 'denied',
+          actorId: principal.id,
+          target: conversationId,
+          detail: 'recipient_blocked_sender',
+        });
+        throw new ServiceError(
+          403,
+          'the recipient is not accepting messages from you',
+          'blocked_by_recipient',
+        );
+      }
+    }
 
     if (conversation.targetKind === 'agent') {
       const account = conversation.accountId
@@ -1440,6 +1477,183 @@ export class ChatAgentService {
     });
   }
 
+  // Address book: friend requests, remarks and blocking ---------------------
+
+  /** The caller's own requests, split so the UI can show a badge and a sent list. */
+  async listFriendRequests(
+    principal: Principal,
+  ): Promise<{ incoming: FriendRequestRecord[]; outgoing: FriendRequestRecord[] }> {
+    this.requireMember(principal);
+    const all = await this.relations.listRequests(principal.organizationId);
+    const byCreated = (a: FriendRequestRecord, b: FriendRequestRecord) =>
+      Date.parse(b.createdAt) - Date.parse(a.createdAt);
+    return {
+      incoming: all.filter((r) => r.toId === principal.id && r.status === 'pending').sort(byCreated),
+      outgoing: all.filter((r) => r.fromId === principal.id).sort(byCreated),
+    };
+  }
+
+  /**
+   * Asks a colleague to become a contact. A blocked target is refused, and a second
+   * request while one is pending returns the pending one instead of stacking up.
+   */
+  async sendFriendRequest(
+    principal: Principal,
+    input: { toMemberId: string; note?: string },
+  ): Promise<FriendRequestRecord> {
+    this.requireMember(principal);
+    const peerId = input.toMemberId.trim();
+    if (peerId === principal.id) {
+      throw new ServiceError(400, 'cannot add yourself', 'self_request');
+    }
+    const target = await this.directory.get(peerId);
+    if (!target || target.organizationId !== principal.organizationId) {
+      throw new ServiceError(404, 'member not found');
+    }
+    if (await this.relations.isBlocked(peerId, principal.id)) {
+      // Deliberately the same answer a stranger gets: a block is not reported back to the
+      // person who was blocked.
+      throw new ServiceError(403, 'forbidden', 'blocked_by_recipient');
+    }
+    const existing = await this.relations.findPending(principal.id, peerId);
+    if (existing) return existing;
+    const relation = await this.relations.getRelation(principal.id, peerId);
+    if (relation?.friend) {
+      throw new ServiceError(400, 'already a contact', 'already_friends');
+    }
+    const request: FriendRequestRecord = {
+      id: crypto.randomUUID(),
+      organizationId: principal.organizationId,
+      fromId: principal.id,
+      toId: peerId,
+      status: 'pending',
+      note: input.note?.trim() || undefined,
+      createdAt: new Date().toISOString(),
+    };
+    await this.relations.saveRequest(request);
+    this.audit?.({
+      action: 'contact.requested',
+      outcome: 'ok',
+      actorId: principal.id,
+      target: peerId,
+      detail: `request:${request.id}`,
+    });
+    return request;
+  }
+
+  /**
+   * Only the addressee decides. Accepting creates the contact on both sides (a friendship
+   * is mutual by construction, so neither side can claim one the other did not agree to).
+   */
+  async decideFriendRequest(
+    principal: Principal,
+    requestId: string,
+    decision: 'accept' | 'decline',
+  ): Promise<FriendRequestRecord> {
+    this.requireMember(principal);
+    const request = await this.relations.getRequest(requestId);
+    if (!request || request.organizationId !== principal.organizationId) {
+      throw new ServiceError(404, 'request not found');
+    }
+    if (request.toId !== principal.id) {
+      throw new ServiceError(403, 'forbidden', 'addressee_only');
+    }
+    if (request.status !== 'pending') return request;
+    const now = new Date().toISOString();
+    const updated: FriendRequestRecord = {
+      ...request,
+      status: decision === 'accept' ? 'accepted' : 'declined',
+      decidedAt: now,
+    };
+    await this.relations.saveRequest(updated);
+    if (decision === 'accept') {
+      for (const [ownerId, peerId] of [
+        [request.toId, request.fromId],
+        [request.fromId, request.toId],
+      ] as const) {
+        const existing = await this.relations.getRelation(ownerId, peerId);
+        await this.relations.saveRelation({
+          ownerId,
+          peerId,
+          friend: true,
+          remark: existing?.remark,
+          blocked: existing?.blocked,
+          updatedAt: now,
+        });
+      }
+    }
+    this.audit?.({
+      action: decision === 'accept' ? 'contact.accepted' : 'contact.declined',
+      outcome: 'ok',
+      actorId: principal.id,
+      target: request.fromId,
+      detail: `request:${request.id}`,
+    });
+    return updated;
+  }
+
+  /**
+   * The caller's own view of one contact: a private remark and a block flag. `blocked`
+   * changes delivery (see sendNativeMessage) - it is a rule, not a label.
+   */
+  async patchContact(
+    principal: Principal,
+    peerId: string,
+    patch: { remark?: string | null; blocked?: boolean },
+  ): Promise<MemberView> {
+    this.requireMember(principal);
+    const target = await this.directory.get(peerId);
+    if (!target || target.organizationId !== principal.organizationId) {
+      throw new ServiceError(404, 'member not found');
+    }
+    if (peerId === principal.id) {
+      throw new ServiceError(400, 'cannot edit your own contact card', 'self_contact');
+    }
+    const existing = await this.relations.getRelation(principal.id, peerId);
+    const remark =
+      patch.remark === undefined ? existing?.remark : patch.remark === null ? undefined : patch.remark.trim() || undefined;
+    const blocked = patch.blocked === undefined ? existing?.blocked : patch.blocked;
+    const now = new Date().toISOString();
+    if (remark === undefined && blocked !== true && existing === undefined) {
+      // Nothing to store: an empty row would only make "no relation" ambiguous.
+      return toMemberView(target);
+    }
+    await this.relations.saveRelation({
+      ownerId: principal.id,
+      peerId,
+      friend: existing?.friend === true,
+      remark,
+      blocked: blocked === true,
+      updatedAt: now,
+    });
+    if (patch.blocked !== undefined && patch.blocked !== existing?.blocked) {
+      this.audit?.({
+        action: patch.blocked ? 'contact.blocked' : 'contact.unblocked',
+        outcome: 'ok',
+        actorId: principal.id,
+        target: peerId,
+        detail: patch.blocked ? 'delivery from this member is refused' : 'delivery restored',
+      });
+    }
+    return this.contactView(principal.id, target);
+  }
+
+  /** One member view plus the caller's relation to them. */
+  private async contactView(ownerId: string, member: MemberRecord): Promise<MemberView> {
+    const relation = await this.relations.getRelation(ownerId, member.id);
+    const pending = await this.relations.findPending(ownerId, member.id);
+    return {
+      ...toMemberView(member),
+      relation: relationView({
+        ownerId,
+        memberId: member.id,
+        friend: relation?.friend === true,
+        remark: relation?.remark,
+        blocked: relation?.blocked === true,
+        pending,
+      }),
+    };
+  }
   async submitTask(principal: Principal, input: CreateTaskInput): Promise<TaskRecord> {
     this.requireMember(principal);
     const account = await this.requireUsableAccount(principal, input.accountId);
@@ -2703,6 +2917,30 @@ function generateToken(): string {
   return `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, '');
 }
 
+/**
+ * How one contact appears to one viewer. `blocked` wins over `friend`: a blocked contact
+ * is shown as blocked even if the friendship row still exists, so the UI cannot imply
+ * delivery that the server refuses.
+ */
+function relationView(input: {
+  ownerId: string;
+  memberId: string;
+  friend: boolean;
+  remark?: string;
+  blocked: boolean;
+  pending?: FriendRequestRecord;
+}): ContactRelationView {
+  if (input.blocked) return { state: 'blocked', remark: input.remark };
+  if (input.pending) {
+    return {
+      state: input.pending.fromId === input.ownerId ? 'request_out' : 'request_in',
+      remark: input.remark,
+      requestId: input.pending.id,
+    };
+  }
+  if (input.friend) return { state: 'friend', remark: input.remark };
+  return { state: 'none', remark: input.remark };
+}
 function toMemberView(member: {
   id: string;
   displayName: string;
