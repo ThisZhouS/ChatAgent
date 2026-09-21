@@ -160,3 +160,15 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 - 本机 Agent 的 Gate 7A.3（真实 Hermes + 真实模型的安全办公闭环）未验收；打包 exe 需重跑 `pnpm build:desktop`（本机无网络，electron-builder 无法下载依赖）。
 - UI 证据：`pnpm build` + 组件测试（20 例）+ **真实客户端 E2E 34/34**（`scripts/ui-e2e.mjs` 经 CDP 驱动打包 exe，含截图与 WCAG 对比度实测）；CSP 的实际拦截效果已用内联脚本载荷验证（`scripts/electron-csp-check.mjs` 5/5：注入策略下内联脚本不执行、同源外链脚本正常；服务端自带 CSP 不被覆盖），完整 XSS 利用链未构造。
 - 详细清单见 `docs/security-checklist.md` 第 7 节与 `docs/tasks.md` 的未完成项。
+
+
+## 客户端 E2E 与投喂闸门（2026-09-18 起）
+
+服务端默认**过撤回窗口才把消息交给助手**（`CHATAGENT_AGENT_INTAKE_MODE=deferred`），所以客户端 E2E 里「AI 回复」不是即时的：
+
+```bash
+CHATAGENT_RECALL_WINDOW_SECONDS=20 node scripts/restart-server.mjs
+node scripts/ui-e2e.mjs          # 脚本会读取 intake.deferMs 并相应放宽等待
+```
+
+窗口选择有取舍：窗口越短，助手回复越快（脚本等得起）；窗口越长，越接近生产默认，但「回复之后仍能撤回自己那条消息」就越不可能——因为撤回窗口一过，消息已经交给助手，这正是设计意图。脚本中依赖撤回的断言应当使用**不经过助手**的消息。

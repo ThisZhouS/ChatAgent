@@ -677,6 +677,13 @@ async function main() {
 
     // Bubbles are addressed by unique markers instead of by count: the client
     // keeps only the newest page, so a counter is not a stable baseline.
+    // The host hands a message to an assistant only after the recall window has elapsed, so the
+    // greeting reply is not immediate by design. Read the policy and allow for it, and assert
+    // that a queued message is explained to the user rather than looking stuck.
+    const policy = await cdp
+      .evaluate('window.fetch("/api/agent/status").then((r) => r.json()).then((s) => s.intake ?? null)')
+      .catch(() => null);
+    const deferMs = Number(policy?.deferMs ?? 0);
     const stamp = Date.now().toString(36);
     const greetingMarker = `E2E-HELLO-${stamp}`;
     const greeting = await cdp.evaluate(setFieldExpr('composer', `你好 ${greetingMarker}`));
@@ -687,11 +694,21 @@ async function main() {
       `marker ${greetingMarker}`,
     );
 
+    // The handoff is queued until the recall window has elapsed: the user must be told, not
+    // left wondering why the assistant is silent (only observable while it is still queued).
+    if (deferMs >= 5000) {
+      const notice = await cdp
+        .evaluate('Boolean(document.querySelector(\'[data-testid=intake-notice]\'))')
+        .catch(() => undefined);
+      record('a queued handoff is explained instead of looking stuck', notice === true, `deferMs=${deferMs}`);
+    }
+
     const replyText = await waitForBubbleAfter(
       cdp,
       greetingMarker,
       /我是 ChatAgent/,
-      40000,
+      // Generous when the host defers the handoff: a long recall window is a policy, not a hang.
+      Math.max(40000, deferMs + 30000),
       'AI greeting reply',
     );
     record('AI replied to the greeting in the UI', replyText !== '', normaliseText(replyText).slice(0, 100));
