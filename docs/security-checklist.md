@@ -124,6 +124,20 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **可见性**：`status().authorization`（状态/最近复核/失败原因/撤销数/无法确认数/暂缓条数）与设置页「授权复核」提示，避免“任务没动却没有任何解释”。
 
 
+## 安全不变量：强制点与测试覆盖核对（2026-09-21 静态核对）
+
+方法：对每条不变量的强制标识在 `apps/`、`packages/` 内做符号统计，比较「实现文件」与「测试文件」的命中数。**命中不等于证明**，但一处都没命中就必须解释清楚。
+
+| 不变量 | 强制标识 | 实现 / 测试 命中文件数 |
+| --- | --- | --- |
+| 能力下限 | `capability_not_granted` | 4 / 3 |
+| 工作目录限制 | `assertInsideWorkRoot`、`isInside` | 2 / 1、1 / 1 |
+| 审批摘要 | `approval`、`digest` | 26 / 16、12 / 8 |
+| 发送幂等 | `idempot`、`clientMsgId` | 7 / 5、5 / 1 |
+| 终态 CAS 与迟到结果 | `lateResultsDropped` | 2 / 2 |
+| 授权复核 fail-closed | `TrustedAuthorizationRegistry` | 2 / 3 |
+
+三处「实现里有、测试文件里没出现」的标识已逐个查证，**都不是缺口**：`fail-closed` 只是注释用词（真正强制点是 `TrustedAuthorizationRegistry`，3 个测试文件覆盖）；`workdir` 是参数/注释用词（真正的校验是 `assertInsideWorkRoot`，已有覆盖）；`requiresApproval` 是 `agent-tier.ts` 等级策略表的字段，它描述的行为（需要审批 → 任务停在 `waiting_approval`）由 `approval-outbox.test.ts`、`security-regression.test.ts`、`task-engine/engine.test.ts` 断言，另有 12 个测试文件涉及审批路径。
 ## 仓库与本地凭据边界（2026-09-21 核对）
 
 - **受控文件里没有密钥形态字面量**：`git grep` 扫过全部受控文件，未命中 `sk-…`、`AKIA…`、私钥块，或 `api_key / access_token / client_secret = "<16 位以上长串>"` 这类形态。
