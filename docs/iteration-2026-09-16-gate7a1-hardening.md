@@ -562,3 +562,9 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 预检明确写着「文件存在不等于它是 Hermes」「预检通过不是验证结论」，避免它被当成 Gate 7A.3 的替代证据。
 - 实测：无环境 → 缺 4 项、退出 2；把 `CHATAGENT_HERMES_EXE` 指到目录 → 报「指向的是目录」、退出 2；指到 `which node` 的 POSIX 路径 `E:\box\Node\node`（真实文件是 `node.exe`）→ 也报缺失（说明了这类误配确实会被抓住）；指到真实 `node.exe` + 三个模型变量 → 前置齐备、退出 0。
 - 行为跑（HEAD 复跑，顺带回归）：**21 passed, 0 failed, 1 blocked**，退出码 2（Flow8 真实 Hermes 契约 BLOCKED）。这也顺带回归了第 38 轮改动之后的宿主流程（21 项全过、0 失败）。
+
+## 第四十轮（2026-09-21）：Electron 七项的「跳过」不再算通过
+
+- 同一类问题的另五个出口：`electron-csp-check`/`electron-lock-check`/`electron-nav-check`/`electron-quit-check`/`electron-receipt-sync-check` 在找不到 Electron 运行时的时候打印一句 `SKIP` 然后 `process.exit(0)`——在没有 Electron 的机器上，一次「全部通过」的巡检其实是**一项都没跑**；`scripts/acceptance.mjs` 只按退出码判定，于是这条也会被计成 PASS。
+- 改动：五处跳过路径改为 `process.exit(2)`，并多印一行 `0 checks ran — 未验证，退出码 2（不是通过）`；正常路径（Electron 存在）行为完全不变。
+- 验证：用既有覆盖位 `CHATAGENT_ELECTRON_BIN=/nonexistent/electron.exe` 强制走跳过路径，五个脚本**全部退出 2** 且打印未验证说明；不设覆盖位跑真实路径，`csp 5/5`、`nav 13/13` 均退出 0，未受影响。（本轮只改脚本与文档，未触碰 TS/源码，故未重跑类型检查与用例套件。）

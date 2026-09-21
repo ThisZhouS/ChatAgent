@@ -178,6 +178,7 @@ node scripts/gate7a-verify.mjs               # 行为流程；0 = 全过，1 = �
 
 - 预检通过**只代表前置条件齐备**，不代表 Gate 7A.3 通过；脚本自己会印出这句话。行为验证仍需真实 Hermes 运行时 + 模型凭据跑通办公闭环。
 - **BLOCKED 一律以退出码 2 结束**：脚本化验收不得把「没跑到 / 没法跑」当成成功。
+- 五份 Electron 检查（csp / lock / nav / quit / receipt-sync）同样遵守这条：机器上**没有 Electron 运行时**时它们会打印 `SKIP ... 未验证` 并以 **2** 退出，而不是伪装成通过。要真正跑它们，先构建好 `apps/desktop/node_modules/electron`（或用 `CHATAGENT_ELECTRON_BIN` 指向别的运行时）。
 - 2026-09-21 在本机实测（未配置运行时而模型）：`21 passed, 0 failed, 1 blocked`，退出码 2，BLOCKED 的是 Flow8「真实 Hermes 运行时契约」。
 node scripts/ui-e2e.mjs          # 38/38
 ```

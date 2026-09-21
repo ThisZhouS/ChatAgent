@@ -139,7 +139,10 @@ async function main() {
   const command = usePackaged ? packagedExe : devElectron;
   if (!existsSync(command)) {
     console.log('SKIP  no Electron runtime available');
-    process.exit(0);
+    // A skip verified nothing. Exit 2 (unverified), never 0: otherwise a sweep on a machine
+    // without Electron reports success for checks that never ran.
+    console.log(`[${'gate7a-quit'}] 0 checks ran — 未验证，退出码 2（不是通过）`);
+    process.exit(2);
   }
 
   // A previous Electron app in the same sweep may still be shutting down while holding this
