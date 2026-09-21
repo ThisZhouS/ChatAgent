@@ -387,3 +387,12 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - **实现 P0-1 消息投喂闸门**：一切消息默认在过撤回时间后再交给 agent（硬编码，无参数可绕过）；撤回取消未投喂项并可审计；上下文改为可配置窗口（默认最近 20 条）；提示词新增不可绕过规则（辅助层）。验证：`agent-intake.test.ts` 9 例 + `agent-intake-wiring.test.ts` 4 例 + `ChatView.test.ts` 文案 1 例。
 - **顺带修复**：锁心跳允许重叠，`releaseLock()` 只 await 最新一次心跳，旧心跳可在释放后把锁文件写回（第三方审查 PR-01 的现象）。改为串行链 + rename 前校验，`electron-lock-check` 18/18。
 - 验证：根套件 35 文件 / 337 用例、`apps/web` 43 用例、`tsc`/`vue-tsc` 0 错；`.env.example`、本文件、`docs/tasks.md`、`docs/security-checklist.md`、`Tree/Tree.md` 与本记录同步更新。
+
+## 第二十轮（2026-09-17 深夜）：Agent 联系人权限分级（P0-2）
+
+规格里「权限分级：用户（主权限）/ 用户好友（手动设定与默认设定：确认级/聊天级/忽略级）」直接对应本轮的实现。
+
+- 四档语义：`owner`（派生，不可配置）> `confirm`（默认）> `chat` > `ignore`；未知值回退 `confirm`。
+- 三处硬门：入站闸门（`ignore` 不投喂、写审计、不告知发送者）、运行时按次 `allowedTools`（不广播 + 执行处拒绝，`chat` 只留 `parse_document`）、`POST /api/tasks` 403。
+- 契约/存储：`AgentAccount.contactTiers` + `defaultTier`，zod 校验与存储克隆/迁移齐备；账号编辑弹窗内新增 `AccountTierEditor`（默认等级 + 逐联系人等级），列表显示「默认等级（N 人单独设定）」。
+- 验证：根套件 37 文件 / **349 用例**、apps/web **48 用例**、`tsc`/`vue-tsc` 0 错；新增 17 例（服务端 8 + 运行时 4 + 前端 5）。

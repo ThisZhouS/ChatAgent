@@ -14,6 +14,20 @@ export const channelTypeSchema = z.enum([
 
 export const accountStatusSchema = z.enum(['online', 'offline', 'busy']);
 
+/** Tiers a human may assign to a contact (`owner` is derived, never assigned). */
+export const agentContactTierSchema = z.enum(['confirm', 'chat', 'ignore']);
+
+/**
+ * Per-contact tiers are a capability map, so they are validated as data: bounded size,
+ * member-id-shaped keys, known tiers only. An unknown tier must never fall back to a
+ * permissive default.
+ */
+export const agentContactTiersSchema = z
+  .record(z.string().min(1).max(128), agentContactTierSchema)
+  .refine((value) => Object.keys(value).length <= 1000, {
+    message: 'too many contact tiers (max 1000)',
+  });
+
 export const createAccountSchema = z.object({
   name: z.string().min(1).max(64),
   displayName: z.string().min(1).max(64),
@@ -21,6 +35,8 @@ export const createAccountSchema = z.object({
   channelUserId: z.string().max(128).optional(),
   persona: z.string().max(4000).default('You are a diligent enterprise assistant.'),
   allowlist: z.array(z.string()).default([]),
+  defaultTier: agentContactTierSchema.optional(),
+  contactTiers: agentContactTiersSchema.optional(),
 });
 
 export const updateAccountSchema = createAccountSchema.partial().extend({

@@ -41,11 +41,20 @@ export class HermesAgentRuntime {
     };
 
     const account = request.account ?? { displayName: 'ChatAgent', persona: '' };
+    // The run's tool surface is decided here, once. A tier that switches tools off must
+    // be unrepresentable to the model (not merely discouraged), so the same filtered list
+    // is used for the prompt, for what the provider is offered, and for execution.
+    const allowlist = request.allowedTools ? new Set(request.allowedTools) : undefined;
+    const toolDefinitions = this.registry
+      .listDefinitions()
+      .filter((tool) => !allowlist || allowlist.has(tool.name));
     const systemPrompt = buildSystemPrompt({
       displayName: account.displayName,
       persona: account.persona || 'Be concise and complete real work.',
-      tools: this.registry.listDefinitions(),
-      extra: this.config.extraSystemPrompt,
+      tools: toolDefinitions,
+      extra: [this.config.extraSystemPrompt, request.extraSystemPrompt]
+        .filter((value): value is string => Boolean(value && value.trim() !== ''))
+        .join('\n\n'),
     });
 
     const messages: ModelMessage[] = [
@@ -65,7 +74,7 @@ export class HermesAgentRuntime {
           response = await this.provider.complete(
             {
               messages,
-              tools: this.registry.listDefinitions(),
+              tools: toolDefinitions,
               temperature: this.config.temperature,
               maxTokens: this.config.maxTokens,
             },
@@ -144,7 +153,7 @@ export class HermesAgentRuntime {
 
         for (const call of response.toolCalls) {
           request.signal?.throwIfAborted();
-          const record = await this.executeToolCall(call, request, runId, emit);
+          const record = await this.executeToolCall(call, request, runId, emit, allowlist);
           toolCalls.push(record);
           messages.push({
             role: 'tool',
@@ -206,6 +215,7 @@ export class HermesAgentRuntime {
     request: RunRequest,
     runId: string,
     emit: (event: AgentEvent) => void,
+    allowlist?: Set<string>,
   ): Promise<ToolCallRecord> {
     const toolName = call.function.name;
     const parsed = parseToolArguments(call.function.arguments);
@@ -243,6 +253,22 @@ export class HermesAgentRuntime {
       args: parsed.args,
       at: new Date().toISOString(),
     });
+
+    // Second half of the hard boundary: a model that names a switched-off tool anyway
+    // gets a refusal, not the effect. The prompt told it not to; this is what makes it
+    // impossible.
+    if (allowlist && !allowlist.has(toolName)) {
+      const summary = `Tool ${toolName} is not available in this run`;
+      emit({
+        type: 'tool_call_result',
+        runId,
+        tool: toolName,
+        ok: false,
+        summary,
+        at: new Date().toISOString(),
+      });
+      return { tool: toolName, args: parsed.args, ok: false, summary, output: null };
+    }
 
     const result = await this.registry.execute(toolName, parsed.args, {
       runId,

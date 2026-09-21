@@ -59,6 +59,13 @@ import type {
   AgentIntakeRecord,
 } from './stores';
 import { AgentIntakeGate, type AgentIntakeStatus } from './agent-intake';
+import {
+  allowedToolsForTier,
+  resolveContactTier,
+  tierPolicy,
+  tierPromptRule,
+  type EffectiveContactTier,
+} from './agent-tier';
 
 function toIntakeNotice(
   record: AgentIntakeRecord,
@@ -915,6 +922,19 @@ export class ChatAgentService {
         const account = await this.accounts.get(mentionId);
         if (!account || !canUseAccount(principal, account)) continue;
         if (!conversation.participantIds.includes(account.id)) continue;
+        // A mention is a request; the tier decides whether it is accepted (see
+        // agent-tier.ts). Ignored senders just do not summon the assistant.
+        const mentionTier = await this.tierFor(account, principal.id);
+        if (!tierPolicy(mentionTier).intake) {
+          this.audit?.({
+            action: 'agent_intake.ignored',
+            outcome: 'denied',
+            actorId: principal.id,
+            target: message.id,
+            detail: `tier:${mentionTier};account:${account.id}`,
+          });
+          continue;
+        }
         // The client inserts "@<displayName>"; strip it so the model sees the
         // instruction alone rather than the mention prefix.
         const goal = stripMention(input.text, [account.displayName, account.name]).trim();
@@ -1329,9 +1349,38 @@ export class ChatAgentService {
 
   // Tasks ------------------------------------------------------------------
 
+  /**
+   * Which contact tier applies to this sender. Ownership and org-admin status are read
+   * from the directory (never from the request), and an unknown contact falls back to
+   * the account's default - which is `confirm` unless an operator chose otherwise.
+   */
+  private async tierFor(
+    account: AgentAccount,
+    senderId: string | undefined,
+  ): Promise<EffectiveContactTier> {
+    const sender = senderId ? await this.directory.get(senderId) : undefined;
+    const isOrgAdmin = sender
+      ? sender.roles.includes('owner') || sender.roles.includes('admin')
+      : false;
+    return resolveContactTier(account, senderId, { isOrgAdmin });
+  }
+
   async submitTask(principal: Principal, input: CreateTaskInput): Promise<TaskRecord> {
     this.requireMember(principal);
     const account = await this.requireUsableAccount(principal, input.accountId);
+    // Hard cage: a contact at the ignore tier cannot start work on this account, by
+    // chat or by API.
+    const tier = await this.tierFor(account, principal.id);
+    if (!tierPolicy(tier).intake) {
+      this.audit?.({
+        action: 'agent_task.refused',
+        outcome: 'denied',
+        actorId: principal.id,
+        target: account.id,
+        detail: `contact_tier:${tier}`,
+      });
+      throw new ServiceError(403, 'this assistant does not accept requests from you', 'contact_tier_ignored');
+    }
 
     // Model history is always rebuilt server-side; callers cannot inject
     // system turns or fabricated tool output into another account's run.
@@ -1344,7 +1393,7 @@ export class ChatAgentService {
       if (conversation.accountId !== account.id) {
         throw new ServiceError(400, 'conversation does not belong to account');
       }
-      history = await this.buildHistory(conversation.id);
+      history = await this.buildHistory(conversation.id, this.config.agentIntake.contextMessages);
     }
 
     return this.taskEngine.submit({
@@ -2214,6 +2263,24 @@ export class ChatAgentService {
       at: inbound.createdAt,
     });
 
+    // Contact tier decides whether this message is handed over at all. `ignore` is
+    // enforced here, in code: the message is still stored and delivered to the humans
+    // in the conversation, but no assistant ever sees it. The sender is deliberately
+    // not told (the tier is the owner's policy, not the sender's business); the audit
+    // log records the decision for the owner.
+    const senderId = input.senderPrincipalId ?? input.requesterId;
+    const tier = await this.tierFor(input.account, senderId);
+    if (!tierPolicy(tier).intake) {
+      this.audit?.({
+        action: 'agent_intake.ignored',
+        outcome: 'denied',
+        actorId: senderId,
+        target: inbound.id,
+        detail: `tier:${tier}`,
+      });
+      return { authorized: true, conversationId: conversation.id, message: inbound };
+    }
+
     // The handoff goes through the intake gate: nothing is submitted before the recall
     // window has elapsed, so a withdrawn message is never read by an agent.
     const record = await this.intake.defer({
@@ -2351,7 +2418,19 @@ export class ChatAgentService {
       : false;
 
     const taskWithHistory = await this.withRedactedHistory(task);
+    // The requester's contact tier decides the tool surface and is stated in the prompt.
+    // `allowedTools` is a hard allowlist inside the runtime: tools outside it are neither
+    // advertised nor executable, so a chat-tier run cannot send or write anything even if
+    // the model asks for it.
+    const tier = await this.tierFor(account, task.requesterId);
+    const policy = tierPolicy(tier);
+    const allowedTools = allowedToolsForTier(
+      tier,
+      this.runtime.registry.listDefinitions().map((tool) => tool.name),
+    );
     const result: RunResult = await this.runtime.run({
+      allowedTools,
+      extraSystemPrompt: tierPromptRule(tier, requester?.displayName ?? task.requesterId),
       // The redacted goal: a recalled body must not reach the model on a re-run.
       goal: taskWithHistory.goal,
       history: (taskWithHistory.input?.history as ModelMessage[] | undefined) ?? [],

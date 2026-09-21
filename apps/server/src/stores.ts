@@ -126,7 +126,13 @@ export const DEFAULT_STORE_DEFAULTS: StoreDefaults = {
 };
 
 function cloneAccount(account: AgentAccount): AgentAccount {
-  return { ...account, allowlist: [...account.allowlist] };
+  return {
+    ...account,
+    allowlist: [...account.allowlist],
+    // The tier map is a capability decision: never hand out a shared reference that a
+    // caller could mutate to widen its own permissions.
+    contactTiers: account.contactTiers ? { ...account.contactTiers } : undefined,
+  };
 }
 
 export class AccountStore {
@@ -171,6 +177,10 @@ export class AccountStore {
       allowlist: input.allowlist,
       organizationId: scope.organizationId,
       ownerId: scope.ownerId,
+      // The cautious default: a new contact needs the owner's confirmation before the
+      // assistant does anything with side effects (see agent-tier.ts).
+      defaultTier: input.defaultTier ?? 'confirm',
+      contactTiers: input.contactTiers ? { ...input.contactTiers } : {},
       createdAt: now,
       updatedAt: now,
     };
@@ -187,6 +197,12 @@ export class AccountStore {
       ...existing,
       ...patch,
       allowlist: patch.allowlist ?? existing.allowlist,
+      defaultTier: patch.defaultTier ?? existing.defaultTier ?? 'confirm',
+      // A patch replaces the map wholesale (removing an entry restores the default),
+      // which is what an operator expects from a capability table.
+      contactTiers: patch.contactTiers
+        ? { ...patch.contactTiers }
+        : { ...(existing.contactTiers ?? {}) },
       updatedAt: new Date().toISOString(),
     };
     this.accounts.set(id, updated);
@@ -215,6 +231,10 @@ function migrateAccount(account: AgentAccount, defaults: StoreDefaults): AgentAc
     allowlist: account.allowlist ?? [],
     organizationId: account.organizationId ?? defaults.organizationId,
     ownerId: account.ownerId ?? defaults.legacyOwnerId,
+    // Rows written before contact tiers existed get the cautious default rather than
+    // being treated as "no restriction".
+    defaultTier: account.defaultTier ?? 'confirm',
+    contactTiers: account.contactTiers ? { ...account.contactTiers } : {},
   };
 }
 

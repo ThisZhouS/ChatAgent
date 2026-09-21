@@ -95,6 +95,14 @@ export interface HermesRuntimeConfig {
 export interface RunRequest {
   goal: string;
   history?: ModelMessage[];
+  /**
+   * Hard allowlist for this run. When present, tools outside it are neither advertised
+   * to the model nor executable - the tier decision is enforced here, not by asking the
+   * model to behave.
+   */
+  allowedTools?: string[];
+  /** Per-run rule text appended to the system prompt (e.g. the contact tier). */
+  extraSystemPrompt?: string;
   account?: {
     displayName: string;
     persona: string;

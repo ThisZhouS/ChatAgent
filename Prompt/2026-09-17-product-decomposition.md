@@ -94,3 +94,10 @@
 - 顺带修复：锁心跳重叠导致「释放后被旧心跳写回」的竞争（`packages/agent-host/src/store.ts`）。
 - 验证：根套件 **35 文件 / 337 用例**通过、`tsc` 与 `vue-tsc` 0 错、`apps/web` 43 用例通过、`electron-lock-check` 18/18（`.env.example` 已同步新增两个变量）。
 - 未做：P0-2/P0-3 与 P1/P2 全部条目（见文档 §2）；§4 的 9 个产品语义问题需要用户确认后再实现。
+
+## 追加交付（同日，第二轮）：P0-2 联系人权限分级
+
+- 实现 `owner/confirm/chat/ignore` 四档，硬编码判定分布在入站闸门、运行时工具白名单与任务 API 三处；提示词只做声明。
+- 数据：`AgentAccount.contactTiers`/`defaultTier` + zod 校验 + 存储迁移；界面：`AccountTierEditor.vue`（账号编辑弹窗）。
+- 验证：根套件 37 文件 / 349 用例、web 48 用例、`tsc`/`vue-tsc` 0 错（新增 17 例）。
+- 仍未做：P0-3（工具开关单一来源 + 拒绝原因回灌）、P1-1..P1-4、P2；§4 的 9 个产品语义问题仍待确认。

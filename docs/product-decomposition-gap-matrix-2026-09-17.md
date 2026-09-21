@@ -93,7 +93,7 @@
 
 ### P0-1 消息投喂闸门 —— 本轮已实现（见 §3）
 
-### P0-2 Agent 联系人级权限分级（确认级 / 聊天级 / 忽略级）
+### P0-2 Agent 联系人级权限分级（确认级 / 聊天级 / 忽略级）—— 已实现（见 §3.2）
 
 - 目标：员工能按联系人（含 AI 账号）设定等级。`ignore` 在代码层直接拒绝入站、不建任务；`chat` 只允许会话性回复（不产生副作用）；`confirm` 允许规划，但副作用必须走审批；默认等级由配置决定，并把当前等级注入提示词。
 - 改动点：`packages/contracts/src/types.ts`（账号/联系人策略字段 + zod `.strict()`）、`packages/contracts/src/schemas.ts`、`apps/server/src/auth.ts`（纯函数 `resolveContactTier`）、`apps/server/src/service.ts`（`service.ts:2026` 附近的入站判定与拒绝点）、`apps/web/src/views/AccountsView.vue`（等级设置）、`packages/hermes/src/system-prompt.ts`（等级作为规则注入）。
@@ -133,7 +133,7 @@
 
 文件拖入与类型/魔数校验、关键词正则钩子、澄清提问（waiting_input 打通到聊天）、窗口置顶/隐藏命令（需新增 Electron 检查）、界面风格与背景、表情与贴纸、群成员别名表、事件游标与本地存储演进（SQLite 评估）。
 
-## 3. 本轮实际交付：消息投喂闸门
+## 3. 已交付切片：消息投喂闸门
 
 - 规则（用户原话）：**一切消息默认在过撤回时间后再交给 agent**。实现：`apps/server/src/agent-intake.ts` 的 `AgentIntakeGate` + 持久队列（`AgentIntakeStore`，落 `data/agent-intake.json`）。
 - 链路：发消息 → 立即落库并广播 → **入队**（`dueAt = 现在 + 撤回窗口`）→ 到期 tick 重新读消息 → 已撤回则取消，否则用**窗口化历史**建任务。
@@ -143,6 +143,18 @@
 - 可见性：`status().intake`（模式/延迟/队列计数）、`/api/agent/status`、SSE `agent_intake` 事件、聊天输入框上方「助手待读：撤回窗口结束后才会交给助手，撤回即取消」。
 - 验证：`apps/server/src/agent-intake.test.ts`（9 例：窗口前不投喂、撤回取消、消息已被撤回时丢弃、重启不重放不丢失、失败退避重试、窗口化历史、immediate 模式、状态、停表）、`apps/server/src/agent-intake-wiring.test.ts`（4 例真实 HTTP：排队→到期建任务、窗口内撤回→永不建任务且审计可查、群 @ 撤回取消、状态回报策略）、`apps/web/src/views/ChatView.test.ts`（排队提示文案）。
 - 顺带修掉一个真实缺陷：**锁心跳与释放的竞争**。`packages/agent-host/src/store.ts` 的心跳原先允许重叠，而 `releaseLock()` 只 await 最新一次心跳，旧心跳可能在释放之后把锁文件写回（这正是第三方审查 PR-01 观察到的现象）。现改为心跳串行链 + rename 前二次校验；`electron-lock-check` 18/18，全量并行下不再复现。
+
+### 3.2 联系人权限分级（P0-2，同日第二轮）
+
+- 语义：`owner`（账号负责人与组织管理员，派生、不可配置）> `confirm`（默认：可规划与回复，副作用需负责人批准）> `chat`（仅会话与读文档）> `ignore`（消息根本不到助手）。
+- 硬编码判定点（三处，都是代码而不是提示词）：
+  1. **入站闸门**：`service.ts` 在 1:1 与群 @ 两条路径上先算等级，`ignore` 直接不投喂（消息照常落库与投递给人，写审计 `agent_intake.ignored`，**不告知发送者**——这是负责人的策略）；
+  2. **运行时工具面**：`packages/hermes/src/runtime.ts` 新增按次 `allowedTools`，被关掉的工具既不出现在提示词与 provider 的工具表里，模型万一仍点名它也会在执行处被拒（`Tool X is not available in this run`），执行器一次都不会被调用；`chat` 级只保留 `parse_document`；
+  3. **API 门**：`POST /api/tasks` 对 `ignore` 级直接 403（`contact_tier_ignored`），聊天不是唯一的入口。
+- 数据模型：`AgentAccount.contactTiers`（按成员 ID）+ `defaultTier`，zod 校验（未知等级/超大表直接 400），存储层克隆与迁移都补齐（历史行按 `confirm` 处理，而不是“无限制”）。
+- 提示词（辅助）：按次注入一行规则（`tierPromptRule`），说明本次请求来自谁、等级意味着什么。
+- 界面：`apps/web/src/components/AccountTierEditor.vue`（账号编辑弹窗内）设置默认等级与逐联系人等级，列表列显示「默认等级（N 人单独设定）」。
+- 验证：`apps/server/src/contact-tier.test.ts` 8 例（解析与回退、工具面、HTTP：忽略级不投喂且审计可查、忽略级 API 403、聊天级负责人仍能出文档而联系人不能）、`packages/hermes/src/runtime-allowlist.test.ts` 4 例（不广播 + 执行处拒绝 + 无白名单时不受影响 + 提示词含规则）、`apps/web/src/components/AccountTierEditor.test.ts` 5 例。根套件 37 文件 / 349 用例、web 48 用例、`tsc`/`vue-tsc` 0 错。
 
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 

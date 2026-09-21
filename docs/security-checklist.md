@@ -131,3 +131,10 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **入队与投喂都持久化**：队列落 `data/agent-intake.json`，重启不重放已投喂项、不丢失已到期项；投喂失败按指数退避重试而不是丢弃。
 - **上下文窗口有上限**：交给模型的会话历史默认最近 20 条（`CHATAGENT_AGENT_CONTEXT_MESSAGES`，1-200），撤回内容不在其中。
 - **提示词只是辅助**：`packages/hermes/src/system-prompt.ts` 的 `OPERATING_RULES` 声明「撤回内容不可索要/重建、目录外访问被拒即终局、关闭的工具不存在、授权由代码判定」，真正的边界仍在代码（闸门、能力下限、审批摘要、工作目录校验）。
+
+## 联系人权限分级（2026-09-17）
+
+- **等级由负责人设定，能力由代码裁剪**：`owner`（派生）> `confirm` > `chat` > `ignore`。未知值一律回退 `confirm`，绝不回退到更宽松的一档。
+- **三处硬门**：入站闸门（`ignore` 不投喂、写审计、不告知发送者）、运行时 `allowedTools`（被关的工具不广播、执行处拒绝）、`POST /api/tasks` 403。提示词只声明等级，不承担边界。
+- **`chat` 级是白名单而不是黑名单**：只保留显式列出的只读工具（`parse_document`），新工具默认对该等级不可用——新增能力不会自动对低等级开放。
+- **负责人与组织管理员不可被降级**：`owner` 等级由账号 `ownerId` 与目录角色派生，`contactTiers` 里无法表示。

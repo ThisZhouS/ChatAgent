@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue';
 import type { AgentAccount } from '@chatagent/contracts';
 import { api } from '../api';
+import AccountTierEditor from '../components/AccountTierEditor.vue';
 
 const CHANNELS = ['memory', 'qq', 'wechat-work', 'dingtalk', 'feishu', 'web', 'cli'];
 
@@ -43,12 +44,30 @@ const editing = ref<AgentAccount | null>(null);
 const editName = ref('');
 const editPersona = ref('');
 const editAllowlist = ref('');
+/** Tiers live in AccountTierEditor; this view only loads and saves them. */
+const editDefaultTier = ref<'confirm' | 'chat' | 'ignore'>('confirm');
+const editTiers = ref<Array<{ memberId: string; tier: 'confirm' | 'chat' | 'ignore' }>>([]);
+
+const TIER_LABELS: Record<string, string> = {
+  confirm: '确认级',
+  chat: '聊天级',
+  ignore: '忽略级',
+};
+
+function tierLabel(tier: string | undefined): string {
+  return (tier && TIER_LABELS[tier]) || '确认级';
+}
 
 function openEdit(account: AgentAccount) {
   editing.value = account;
   editName.value = account.displayName;
   editPersona.value = account.persona;
   editAllowlist.value = account.allowlist.join(', ');
+  editDefaultTier.value = account.defaultTier ?? 'confirm';
+  editTiers.value = Object.entries(account.contactTiers ?? {}).map(([memberId, tier]) => ({
+    memberId,
+    tier,
+  }));
 }
 
 async function saveEdit() {
@@ -62,6 +81,14 @@ async function saveEdit() {
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean),
+      defaultTier: editDefaultTier.value,
+      // Empty rows are dropped instead of being sent as a tier for a nameless contact;
+      // the server replaces the whole map, so removing a row restores the default.
+      contactTiers: Object.fromEntries(
+        editTiers.value
+          .map((row) => [row.memberId.trim(), row.tier] as const)
+          .filter(([memberId]) => memberId !== ''),
+      ),
     });
     editing.value = null;
     await load();
@@ -136,6 +163,20 @@ const tagType = (status: string) => (status === 'online' ? 'success' : status ==
             <el-table-column prop="name" label="账号名" min-width="120" />
             <el-table-column prop="channel" label="平台" width="110" />
             <el-table-column prop="ownerId" label="负责人" width="120" />
+            <el-table-column label="默认等级" width="120">
+              <template #default="{ row }">
+                <el-tag size="small" type="info" data-testid="account-default-tier">
+                  {{ tierLabel(row.defaultTier) }}
+                </el-tag>
+                <span
+                  v-if="Object.keys(row.contactTiers ?? {}).length > 0"
+                  class="muted"
+                  data-testid="account-tier-overrides"
+                >
+                  （{{ Object.keys(row.contactTiers ?? {}).length }} 人单独设定）
+                </span>
+              </template>
+            </el-table-column>
             <el-table-column label="状态" width="110">
               <template #default="{ row }">
                 <el-tag :type="tagType(row.status)">{{ row.status }}</el-tag>
@@ -169,6 +210,8 @@ const tagType = (status: string) => (status === 'online' ? 'success' : status ==
         <el-form-item label="可用成员白名单（成员 ID，逗号分隔；留空 = 全组织可用）">
           <el-input v-model="editAllowlist" placeholder="u_alice, u_bob" />
         </el-form-item>
+        <el-divider content-position="left">联系人权限等级（决定助手能对该人的消息做什么）</el-divider>
+        <AccountTierEditor v-model:default-tier="editDefaultTier" v-model:tiers="editTiers" />
       </el-form>
       <template #footer>
         <el-button @click="editing = null">取消</el-button>

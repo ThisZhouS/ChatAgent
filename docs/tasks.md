@@ -248,7 +248,7 @@ pnpm dev
 用户给出六域功能树（聊天/好友/群聊/UI/Agent/服务器），目标是「把 agent 与自建聊天工具整合、把能力关在笼子里」。四个只读子代理完成差距审计，结论与分阶段计划见 `docs/product-decomposition-gap-matrix-2026-09-17.md`。
 
 - [x] **P0-1 消息投喂闸门**：消息默认在过撤回时间后再交给 agent；撤回取消未投喂项；上下文窗口化；提示词注入不可绕过规则。实现 `apps/server/src/agent-intake.ts` + `AgentIntakeStore`；验证 9 + 4 + 1 例。
-- [ ] **P0-2 Agent 联系人级权限分级**（确认级/聊天级/忽略级，硬编码判定）。
+- [x] **P0-2 Agent 联系人级权限分级**：`owner/confirm/chat/ignore` 四档，三处硬门（入站闸门、运行时 `allowedTools`、`POST /api/tasks` 403），账号编辑弹窗可设默认与逐联系人等级。证据：`contact-tier.test.ts` 8 例、`runtime-allowlist.test.ts` 4 例、`AccountTierEditor.test.ts` 5 例。
 - [ ] **P0-3 工具开关单一来源 + 拒绝原因回灌提示词**（两份 FORBIDDEN 列表不一致）。
 - [ ] **P1-1 断线补差与消息幂等**（SSE 事件 id/游标 + clientMsgId）。
 - [ ] **P1-2 好友关系与验证**（申请/同意/备注/拉黑/删除 + 投递拦截）。

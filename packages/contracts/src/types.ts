@@ -204,6 +204,19 @@ export interface InboundMessageInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * How much an assistant may do with a message from a given person. `owner` is derived
+ * from the account's ownership and cannot be assigned; the rest are set by a human.
+ */
+export type AgentContactTier = 'confirm' | 'chat' | 'ignore';
+
+/** Tiers a human may assign (documented separately from the derived owner tier). */
+export const ASSIGNABLE_AGENT_CONTACT_TIERS: readonly AgentContactTier[] = [
+  'confirm',
+  'chat',
+  'ignore',
+];
+
 export interface AgentAccount {
   id: string;
   name: string;
@@ -216,6 +229,10 @@ export interface AgentAccount {
   organizationId: string;
   /** Member id accountable for this AI account (owner or delegating owner). */
   ownerId: string;
+  /** Per-contact tier, keyed by member id. Absent means the default applies. */
+  contactTiers?: Record<string, AgentContactTier>;
+  /** Tier for contacts without an explicit entry (default `confirm`). */
+  defaultTier?: AgentContactTier;
   createdAt: string;
   updatedAt: string;
 }
