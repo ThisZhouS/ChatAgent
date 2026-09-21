@@ -136,15 +136,23 @@ const me: MemberView = {
   kind: 'member',
 };
 
+/** Instances are kept so a test can simulate a drop and a reconnect. */
+const streamInstances: FakeEventSource[] = [];
+
 class FakeEventSource {
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
   addEventListener(): void {}
   close(): void {}
+
+  constructor() {
+    streamInstances.push(this);
+  }
 }
 
 beforeEach(() => {
   vi.stubGlobal('EventSource', FakeEventSource);
+  streamInstances.length = 0;
   mocks.markRead.mockClear();
   mocks.send.mockClear();
   mocks.listMessages.mockClear();
@@ -213,6 +221,22 @@ describe('ChatView', () => {
     // know that withdrawing the message cancels the handoff.
     expect(notice.text()).toContain('撤回窗口结束后才会交给助手');
     expect(notice.text()).toContain('撤回即取消');
+  });
+
+  it('resynchronises the thread when the event stream reconnects', async () => {
+    mountChat();
+    await flushPromises();
+    mocks.listMessages.mockClear();
+
+    const stream = streamInstances.at(-1);
+    expect(stream, 'the view subscribes to the native event stream').toBeTruthy();
+    // The connection dropped and EventSource came back: the server replays what it holds,
+    // and the view re-reads the visible page so a gap can never become a silent hole.
+    stream?.onerror?.();
+    stream?.onopen?.();
+    await flushPromises();
+
+    expect(mocks.listMessages).toHaveBeenCalled();
   });
   it('sends the composed text through the native API', async () => {
     const wrapper = mountChat();

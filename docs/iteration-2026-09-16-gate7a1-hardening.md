@@ -405,3 +405,12 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 门口拒绝：`side_effect + browser` 现在提交即 `failed` + `capability_not_granted`（attempts=0）；空名单/空字符串仍 fail-closed，省略名单才落显式 `['document']`。
 - 边界入提示词：`capabilityBrief()` 与检查共用同一名单，注入本机 Hermes 的 goal；拒绝信息区分「被关闭」与「不是能力」。
 - 验证：根套件 38 文件 / **358 用例**、`tsc` 0 错、Electron 锁 18/18、回执 21/21、冒烟 6/6、工作台 13/13；`authorization-refresh.test.ts` 的两处 `browser` 断言改为可授予能力（`messages.send`），以免它们被能力政策而非授权刷新所左右。
+
+## 第二十二轮（2026-09-18）：断线补差与消息幂等（P1-1）
+
+审计结论是「断线不补差、发送不幂等」。本轮把两件事都补上，并保持既有鉴权不变量。
+
+- 事件流：`NativeEventHub` 为每个事件分配递增 `seq`，保留 500 条有界重放缓冲；SSE 写 `id: <seq>`，浏览器重连自动带 `Last-Event-ID`（也支持 `?since=`），服务端回放仍持有的新事件并**逐条重新鉴权**。
+- 客户端：`ChatView` 在重连时重拉当前会话最新一页并按 id 合并（与回放重叠也不重复），随后刷新会话列表。
+- 幂等：发送新增 `clientMsgId`，服务端按（发送者, 会话, key）记 10 分钟 TTL 的有界台账，重试同 key 返回首次那条消息与其 intake/任务；客户端失败重试复用同一 key。
+- 验证：根套件 39 文件 / **362 用例**、web 49 用例、`tsc`/`vue-tsc` 0 错；新增 `event-replay.test.ts` 4 例。

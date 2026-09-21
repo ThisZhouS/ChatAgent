@@ -1,6 +1,15 @@
 import type { NativeEvent } from '@chatagent/contracts';
 
-export type NativeEventListener = (event: NativeEvent) => void;
+/**
+ * A published event with its position in the stream. The sequence number is what lets a
+ * reconnect ask for "everything after N" instead of silently missing the gap.
+ */
+export interface SequencedNativeEvent {
+  seq: number;
+  event: NativeEvent;
+}
+
+export type NativeEventListener = (event: NativeEvent, seq: number) => void;
 
 export type Subscription =
   | { ok: true; unsubscribe: () => void }
@@ -9,6 +18,8 @@ export type Subscription =
 export interface NativeEventHubOptions {
   maxSubscribers?: number;
   maxSubscribersPerPrincipal?: number;
+  /** Events kept for replay after a reconnect. Bounded: memory, not an audit log. */
+  replayBufferSize?: number;
 }
 
 /**
@@ -23,10 +34,19 @@ export class NativeEventHub {
   private readonly perPrincipal = new Map<string, number>();
   private readonly maxSubscribers: number;
   private readonly maxSubscribersPerPrincipal: number;
+  private readonly replayBufferSize: number;
+  private readonly recent: SequencedNativeEvent[] = [];
+  private sequence = 0;
 
   constructor(options: NativeEventHubOptions = {}) {
     this.maxSubscribers = options.maxSubscribers ?? 200;
     this.maxSubscribersPerPrincipal = options.maxSubscribersPerPrincipal ?? 5;
+    this.replayBufferSize = Math.max(0, options.replayBufferSize ?? 500);
+  }
+
+  /** Position of the newest published event (0 before anything was published). */
+  get latestSeq(): number {
+    return this.sequence;
   }
 
   get subscriberCount(): number {
@@ -43,13 +63,30 @@ export class NativeEventHub {
   }
 
   publish(event: NativeEvent): void {
+    const seq = (this.sequence += 1);
+    if (this.replayBufferSize > 0) {
+      this.recent.push({ seq, event });
+      // Keep the newest entries only: this is a reconnect buffer, not an audit log.
+      if (this.recent.length > this.replayBufferSize) {
+        this.recent.splice(0, this.recent.length - this.replayBufferSize);
+      }
+    }
     for (const listener of this.listeners) {
       try {
-        listener(event);
+        listener(event, seq);
       } catch {
         // A broken subscriber must not break the request that published.
       }
     }
+  }
+
+  /**
+   * Events published after `afterSeq`, oldest first. Callers re-authorize each one before
+   * writing it: a reconnect must not become a way to read what the stream would refuse.
+   */
+  since(afterSeq: number): SequencedNativeEvent[] {
+    if (!Number.isFinite(afterSeq) || afterSeq < 0) return [];
+    return this.recent.filter((entry) => entry.seq > afterSeq);
   }
 
   subscribe(listener: NativeEventListener, principalId = 'anonymous'): Subscription {

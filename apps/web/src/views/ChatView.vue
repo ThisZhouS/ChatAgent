@@ -24,6 +24,9 @@ const sending = ref(false);
    * Set while this conversation has a message waiting for the recall window. The
    * assistant has not read it yet, and a recall cancels the handoff entirely.
    */
+/** Idempotency key of the last failed send, so a retry reuses it (see send()). */
+let lastDraft: { key: string; id: string } | undefined;
+
 const intakeNotice = ref<{ dueAt?: string; count: number; cancelled?: boolean } | null>(null);
 const uploading = ref(false);
 const loadingMessages = ref(false);
@@ -577,13 +580,20 @@ async function send() {
   if (text.value.trim() === '' && attachments.value.length === 0) return;
   sending.value = true;
   error.value = '';
+  // One key per logical message. If this attempt fails (timeout, dropped response, the
+  // user pressing send again) the same key is reused, so the server cannot store it twice.
+  const draftKey = `${activeId.value}:${text.value}`;
+  const clientMsgId =
+    lastDraft?.key === draftKey ? lastDraft.id : (globalThis.crypto?.randomUUID?.() ?? String(Date.now()));
   try {
     const result = await api.chat.send(activeId.value, {
       text: text.value,
       attachments: attachments.value,
       mentions: mentions.value,
       replyTo: quoted.value?.id,
+      clientMsgId,
     });
+    lastDraft = undefined;
     // The host hands a message to an assistant only after the recall window has
     // elapsed. Say so, otherwise "why is the AI not answering" is the user's problem.
     const pending = [result?.intake, ...(result?.intakes ?? [])].filter(
@@ -601,6 +611,8 @@ async function send() {
     await loadConversations(false);
     await loadActiveTask();
   } catch (err) {
+    // Keep the key with the draft: retrying the same text reuses it instead of posting twice.
+    lastDraft = { key: draftKey, id: clientMsgId };
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     sending.value = false;
@@ -653,14 +665,45 @@ function taskTagType(state: string): 'success' | 'danger' | 'warning' | 'info' |
   return 'info';
 }
 
+/** True once the stream has dropped, so a reconnect knows to resynchronise. */
+let streamWasDown = false;
+
+/**
+ * Merges the newest page back in after a reconnect. Messages are keyed by id, so the
+ * replay and this re-read can overlap without duplicating bubbles.
+ */
+async function resyncAfterReconnect() {
+  if (!activeId.value) return;
+  try {
+    const latest = await api.chat.messages(activeId.value, { limit: PAGE_SIZE });
+    const merged = new Map(messages.value.map((item) => [item.id, item]));
+    for (const item of latest) merged.set(item.id, item);
+    if (merged.size !== messages.value.length) {
+      messages.value = [...merged.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      await scrollToBottom();
+    }
+    void loadConversations(true);
+  } catch {
+    // Best effort: EventSource keeps retrying, and the next reconnect tries again.
+  }
+}
+
 function connectStream() {
   stream = new EventSource('/api/events/stream');
   stream.onopen = () => {
     streamState.value = 'open';
+    // The server replays what it still holds (Last-Event-ID) and this re-reads the visible
+    // page: after a gap the thread must not keep a silent hole, whatever the reason the
+    // stream dropped.
+    if (streamWasDown) {
+      streamWasDown = false;
+      void resyncAfterReconnect();
+    }
   };
   stream.onerror = () => {
     // EventSource reconnects on its own; surface the gap to the user.
     streamState.value = 'closed';
+    streamWasDown = true;
   };
   stream.addEventListener('message', (raw) => {
     const event = JSON.parse((raw as MessageEvent).data) as {

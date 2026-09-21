@@ -105,7 +105,7 @@
 - 改动点：抽出 `packages/agent-host/src/policy.ts` 作为唯一的允许/禁止来源（`host.ts:797` 与 `adapter.ts:50` 都改为引用它）、`packages/agent-host/src/host.ts`（拒绝时写 `blockedReason`）、`packages/hermes/src/runtime.ts`（把拒绝记录注入一次）。
 - 验收：`packages/agent-host/src/host-security.test.ts` 增加一例 `kind:'side_effect', toolsets:['browser']` → 提交期即 `capability_not_granted`。
 
-### P1-1 断线补差与消息幂等
+### P1-1 断线补差与消息幂等 —— 已实现（见 §3.4）
 
 - 目标：SSE 带事件 id 与游标，重连后按 since 补拉；发送带 `clientMsgId` 幂等键。
 - 改动点：`apps/server/src/app.ts:1437`（写 `id:`）、`apps/web/src/views/ChatView.vue:645`（重连重新拉取并去重）、`packages/contracts`（发送输入加幂等键）。
@@ -164,6 +164,15 @@
 - 边界进提示词（为辅）：`capabilityBrief(granted)` 由**同一份名单**生成，随本机 Hermes 调用的 goal 一起注入：可用工具集、被关闭的清单、以及「关闭即不存在：不得模拟、不得手写其输出、不得寻找等价路径；缺少能力就停下并报告缺哪一个」。
 - 拒绝信息可归因：执行器失败信息区分「switched off: …」与「not a capability: …」，运维与任务卡都能看懂为什么没跑。
 - 验证：`policy.test.ts` 5 例（含两份旧名单漂移的 6 个名字逐一在提交期被拒）、`host-security.test.ts` +2 例（提交期拒绝 / 空名与省略名单的区别）、`adapter.test.ts` +1 例（goal 里确实带上了边界文案与关闭清单）与拒绝信息断言。根套件 38 文件 / **358 用例**、Electron 检查（锁 18/18、回执 21/21、冒烟 6/6、工作台 13/13）全绿。
+
+### 3.4 断线补差与消息幂等（P1-1）
+
+- 问题：SSE 只写 `data:`，没有事件 id；客户端重连只把状态改回 open，断线期间的消息只能靠整页刷新找回；发送也没有幂等键，超时重试会多发一条。
+- 事件带序号：`NativeEventHub.publish()` 给每个事件分配递增 `seq`，并保留**有界**重放缓冲（默认 500 条，内存不是日志）；`since(afterSeq)` 返回更新的事件。
+- 重连即补差：SSE 每条事件写 `id: <seq>`，浏览器重连时自动带上 `Last-Event-ID`（也支持显式 `?since=`），服务端把仍持有的新事件**逐条重新鉴权后**回放——游标不是通行证（测试里非参与者用 `since=0` 什么都拿不到）。
+- 客户端兜底：`ChatView` 在重连时重新拉取当前会话的最新一页并按 id 合并（回放与重拉重叠也不会重复气泡），之后刷新会话列表。
+- 发送幂等：`nativeMessageSchema` 新增 `clientMsgId`；服务端维护**按（发送者, 会话, key）**的有界、10 分钟 TTL 台账，重试同一个 key 返回首次那条消息（含其 intake/任务），不同 key 仍是新消息。客户端每次发送生成一个 key，失败后重试同一文本会复用该 key。
+- 验证：`apps/server/src/event-replay.test.ts` 4 例（hub 序号与有界缓冲、`Last-Event-ID` 回放带 id、回放逐条鉴权、重试同 key 只落一条且不同 key 不受影响）、`ChatView.test.ts` 新增重连补拉一例。根套件 39 文件 / **362 用例**、web 49 用例、`tsc`/`vue-tsc` 0 错。
 
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 

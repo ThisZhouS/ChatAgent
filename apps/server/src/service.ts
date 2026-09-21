@@ -138,8 +138,26 @@ interface GatewayItemContext {
   item: NormalizedInbound;
 }
 
+/** How long a client send key stays usable for a retry (10 minutes). */
+const CLIENT_MESSAGE_TTL_MS = 10 * 60_000;
+/** Bounded: this is a retry ledger, not a message index. */
+const CLIENT_MESSAGE_LEDGER_MAX = 5000;
+
 export class ChatAgentService {
   readonly taskEngine: TaskEngine;
+  /**
+   * (sender, conversation, clientMsgId) → what the first attempt produced. Bounded and
+   * time-limited so it can never grow with traffic.
+   */
+  private readonly clientMessageLedger = new Map<
+    string,
+    {
+      at: number;
+      messageId: string;
+      taskId?: string;
+      intake?: AgentIntakeNotice;
+    }
+  >();
 
   constructor(
     private readonly config: ServerConfig,
@@ -806,6 +824,8 @@ export class ChatAgentService {
       attachments: ChatMessage['attachments'];
       mentions?: string[];
       replyTo?: string;
+      /** Idempotency key for this send attempt (see nativeMessageSchema). */
+      clientMsgId?: string;
     },
   ): Promise<{
     message: ChatMessage;
@@ -817,6 +837,24 @@ export class ChatAgentService {
     intakes?: AgentIntakeNotice[];
   }> {
     this.requireMember(principal);
+    // Idempotent send: the client's key is scoped to (sender, conversation, key), so a
+    // retried request returns the message that already exists instead of posting twice.
+    // The ledger is per-process and bounded; a restart can lose it, which is why the
+    // client also de-duplicates by message id when it renders.
+    const clientMsgId = input.clientMsgId?.trim();
+    if (clientMsgId) {
+      const seen = this.clientMessageLedger.get(`${principal.id}:${conversationId}:${clientMsgId}`);
+      if (seen && Date.now() - seen.at < CLIENT_MESSAGE_TTL_MS) {
+        const existing = await this.messages.findById(seen.messageId);
+        if (existing && !existing.recalledAt) {
+          return {
+            message: existing,
+            taskId: seen.taskId,
+            intake: seen.intake,
+          };
+        }
+      }
+    }
     await this.assertAttachmentsOwned(principal, input.attachments);
     const conversation = await this.conversations.get(conversationId);
     if (!conversation || !canReadConversation(principal, conversation)) {
@@ -868,11 +906,13 @@ export class ChatAgentService {
       if (!delivered.message) {
         throw new ServiceError(500, 'message was not persisted');
       }
-      return {
+      const result = {
         message: delivered.message,
         taskId: delivered.taskId,
         intake: delivered.intake,
       };
+      this.rememberClientMessage(principal.id, conversationId, clientMsgId, result);
+      return result;
     }
 
     if (conversation.targetKind === 'member') {
@@ -952,7 +992,13 @@ export class ChatAgentService {
       }
     }
 
-    return { message, taskId: taskIds[0], taskIds, intakes };
+    const memberResult = { message, taskId: taskIds[0], taskIds, intakes };
+    this.rememberClientMessage(principal.id, conversationId, clientMsgId, {
+      message,
+      taskId: taskIds[0],
+      intake: intakes[0],
+    });
+    return memberResult;
   }
 
   /** True when the principal may see this approval (requester or decider). */
@@ -1363,6 +1409,35 @@ export class ChatAgentService {
       ? sender.roles.includes('owner') || sender.roles.includes('admin')
       : false;
     return resolveContactTier(account, senderId, { isOrgAdmin });
+  }
+
+  /**
+   * Remembers what a send produced so a retry with the same key returns it. Bounded and
+   * time-limited; entries for a different sender or conversation can never collide because
+   * the sender and conversation are part of the key.
+   */
+  private rememberClientMessage(
+    senderId: string,
+    conversationId: string,
+    clientMsgId: string | undefined,
+    result: { message: ChatMessage; taskId?: string; intake?: AgentIntakeNotice },
+  ): void {
+    if (!clientMsgId) return;
+    const now = Date.now();
+    for (const [key, entry] of this.clientMessageLedger) {
+      if (now - entry.at > CLIENT_MESSAGE_TTL_MS) this.clientMessageLedger.delete(key);
+    }
+    while (this.clientMessageLedger.size >= CLIENT_MESSAGE_LEDGER_MAX) {
+      const oldest = this.clientMessageLedger.keys().next().value;
+      if (oldest === undefined) break;
+      this.clientMessageLedger.delete(oldest);
+    }
+    this.clientMessageLedger.set(`${senderId}:${conversationId}:${clientMsgId}`, {
+      at: now,
+      messageId: result.message.id,
+      taskId: result.taskId,
+      intake: result.intake,
+    });
   }
 
   async submitTask(principal: Principal, input: CreateTaskInput): Promise<TaskRecord> {

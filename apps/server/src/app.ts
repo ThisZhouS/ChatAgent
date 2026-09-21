@@ -894,6 +894,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       attachments: parsed.data.attachments as ChatMessage['attachments'],
       mentions: parsed.data.mentions,
       replyTo: parsed.data.replyTo,
+      clientMsgId: parsed.data.clientMsgId,
     });
     audit.record({
       action: 'message.sent',
@@ -1363,7 +1364,7 @@ async function streamTaskEvents(
  * Native SSE stream. Every event is re-authorized per subscriber, so a member
  * never receives messages or task updates they cannot read.
  */
-function streamNativeEvents(
+async function streamNativeEvents(
   reply: FastifyReply,
   service: ChatAgentService,
   hub: NativeEventHub,
@@ -1376,8 +1377,8 @@ function streamNativeEvents(
     reply.code(503).send({ error: 'too many concurrent event streams' });
     return reply;
   }
-  const subscription = hub.subscribe((event) => {
-    void deliverIfAuthorized(reply.raw, service, principal, event);
+  const subscription = hub.subscribe((event, seq) => {
+    void deliverIfAuthorized(reply.raw, service, principal, event, seq);
   }, principal.id);
   if (!subscription.ok) {
     limiter.release(principal.id);
@@ -1395,6 +1396,17 @@ function streamNativeEvents(
   });
   reply.raw.write(': connected\n\n');
 
+  // Reconnect gap: EventSource replays the `Last-Event-ID` it last saw, and a client may
+  // also ask explicitly with `?since=`. Whatever we still hold is re-authorised per event
+  // (same rule as live delivery) and written oldest first, so a dropped connection no
+  // longer means "reload the page to see what you missed".
+  const lastEventId = Number(reply.request.headers['last-event-id']);
+  const sinceQuery = Number((reply.request.query as Record<string, unknown> | undefined)?.since);
+  const resumeFrom = Number.isFinite(lastEventId)
+    ? lastEventId
+    : Number.isFinite(sinceQuery)
+      ? sinceQuery
+      : undefined;
   // Heartbeat keeps proxies from dropping idle streams and detects dead peers.
   const heartbeat = setInterval(() => {
     if (!writeAndCheck(reply.raw, ': ping\n\n')) closeStream();
@@ -1424,6 +1436,16 @@ function streamNativeEvents(
 
   reply.raw.on('close', closeStream);
   reply.raw.on('error', closeStream);
+
+  // Replay after the handlers are wired, so a client that vanished mid-replay is noticed
+  // through the normal close path. Each entry is authorized on its own - a reconnect must
+  // never hand out what live delivery would have refused.
+  if (resumeFrom !== undefined) {
+    for (const entry of hub.since(resumeFrom)) {
+      if (closed) break;
+      await deliverIfAuthorized(reply.raw, service, principal, entry.event, entry.seq);
+    }
+  }
   return reply;
 }
 
@@ -1461,6 +1483,7 @@ async function deliverIfAuthorized(
   service: ChatAgentService,
   principal: Principal,
   event: NativeEvent,
+  seq?: number,
 ): Promise<void> {
   try {
     if (
@@ -1479,7 +1502,10 @@ async function deliverIfAuthorized(
     // Not authorized for this event: drop it silently.
     return;
   }
-  if (!writeAndCheck(raw, `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)) {
+  // `id:` is what lets the browser tell us where to resume; without it a reconnect is a
+  // fresh start and the gap stays silent.
+  const id = seq === undefined ? '' : `id: ${seq}\n`;
+  if (!writeAndCheck(raw, `${id}event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)) {
     raw.end();
   }
 }

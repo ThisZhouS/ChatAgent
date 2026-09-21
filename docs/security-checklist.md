@@ -144,3 +144,9 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **唯一名单**：`packages/agent-host/src/policy.ts` 是禁止工具集的唯一来源（host 提交期与 adapter 执行期都引用它）。历史上两份名单漂移过，导致 `browser`/`computer_use`/`cronjob`/`delegation`/`homeassistant`/`spotify` 能过提交门、只在执行期失败。新增能力必须改这一处，并同时被两个检查点覆盖。
 - **门口拒绝**：禁止项在 `submit()` 即返回 `capability_not_granted`（attempts=0，不建工作目录、不调用执行器）；空名单与空字符串同样拒绝，省略名单才会落到显式 `['document']`。
 - **提示词只是声明**：`capabilityBrief()` 与检查用同一份名单生成，注入本机 Hermes 调用的目标文本，明确「关闭即不存在、不得模拟或手写其输出、缺少能力要报告而不是绕路」。
+
+## 事件流的重连语义（2026-09-17，P1-1）
+
+- **回放也要鉴权**：SSE 回放（`Last-Event-ID` / `?since=`）逐条走与实时投递相同的授权判定，游标不是访问凭据；非参与者用任意游标都拿不到内容。
+- **缓冲有界**：重放缓冲默认 500 条，只为断线补差；过老的游标只会拿到仍持有的部分，客户端另有一次按 id 合并的重拉兜底，不会把缺失当成“没有新消息”。
+- **发送幂等键**：`clientMsgId` 的作用域是（发送者, 会话, key），台账有上限与 10 分钟 TTL；跨用户/跨会话不可碰撞，key 不构成全局去重。

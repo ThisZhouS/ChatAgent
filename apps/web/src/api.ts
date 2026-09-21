@@ -246,6 +246,8 @@ export const api = {
         attachments?: ChatMessage['attachments'];
         mentions?: string[];
         replyTo?: string;
+        /** Retry key: the server returns the existing message for a repeated id. */
+        clientMsgId?: string;
       },
     ) =>
       request<{
