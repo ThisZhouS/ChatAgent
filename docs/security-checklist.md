@@ -124,6 +124,11 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **可见性**：`status().authorization`（状态/最近复核/失败原因/撤销数/无法确认数/暂缓条数）与设置页「授权复核」提示，避免“任务没动却没有任何解释”。
 
 
+## 成员边界（发送）线上实测（2026-09-21）
+
+- 以开发主体向一个自己**不是参与者**的会话发消息：服务端返回 `{"error":"forbidden","detail":"not_a_participant"}`（403），并且该会话里**没有新增任何消息**（实测总数 1、目标文本出现 0 次）。成员资格在发送路径上是硬门，不是靠界面隐藏。
+- **本轮没做成的**：想顺便线上核对发送幂等（同一 `clientMsgId` 发两次应只落一条），但我挑的会话正是上面那个非参与者会话，两次请求都是 403。**幂等只由测试覆盖（dedupe 相关用例），本轮没有线上证据**——不要把它写成已线上验证。
+- **方法教训（已写进流程）**：第一次探测幂等时，我用 `a.message && a.message.id === b.message && b.message.id` 得出 `sameId: true`，而两次响应其实都是错误对象——**两个 `undefined` 相等被当成了通过**。教训：探测脚本必须打印原始响应（键名 + 截断正文），不要只打印派生布尔值，否则错误形状会伪装成成功。这与此前「退出码 0」「空审计报告当干净」是同一类问题。
 ## 文件签名边界（2026-09-21 线上实测）
 
 - 对运行中的实例执行 POST /api/documents/parse，把纯文本伪装成 .docx：**HTTP 415** {"error":"the file content does not match its extension","detail":"unrecognised_signature"} —— 拒绝理由走闭集原因码，不回显内部信息。
