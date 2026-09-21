@@ -576,3 +576,4 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 改对变量后又暴露出**第三个、也更严重的同类缺陷**：pnpm 面对不可达的 registry 会返回 `{"error": …}` **且退出码 0**，脚本把它当报告解析，于是打印 `0 advisories` 并以 0 退出——**一条依赖都没扫到却给出「干净」结论**。新增守卫：报告缺 `metadata.totalDependencies`（或本身带 `error`）即视为未验证、退出 2。
 - 实测：不可达 registry → 退出 **2** + 未验证文案；真实 registry（本次连上，`totalDependencies=614`、2 条 high）→ 解析成功、`0 at or above "critical"`、退出 **0**，正常路径未变。
 - **本轮的真实发现**：审计报告里有 2 条 HIGH（`extract-zip@<=2.0.1 -> >=2.0.2`，标记 `[app]`），critical 为 0，所以既有的 `--level critical` 门是绿的。也就是说：**「critical gate 通过」不等于「没有高危依赖」**。已记入 `docs/tasks.md` 待办（升级该传递依赖需要联网安装并重跑打包，本轮上下文不足以完成全量复验，故不动）。
+- **审计收口（第四十二轮，只读复核）**：`scripts/` 下其余验收脚本的退出路径已逐个核对——`smoke.mjs` 用 `process.exitCode = 1` 保证「未全过即失败」，`ui-e2e.mjs` 在前置条件缺失与断言失败处一律 `exit 1`，`restart-server.mjs` 的 `exit 0` 只出现在 `/health` 真的返回之后（先检查再报成功），`ensure-e2e-member.mjs` 用退出码 2/3 区分参数错误与服务未就绪。至此**全部验收脚本完成「不许把没跑到说成通过」的核对，未发现新的静默成功路径**；约定以 `docs/handoff-2026-09-18.md` 的「退出码约定」为准（0 通过 / 1 失败 / 2 未验证）。
