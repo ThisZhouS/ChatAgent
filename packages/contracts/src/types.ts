@@ -246,6 +246,18 @@ export interface AgentAccount {
   updatedAt: string;
 }
 
+/**
+ * Per-conversation appearance. Deliberately a closed set of values: a free-form style string
+ * from the network is a CSS-injection surface (`url(...)` can make the client issue a request),
+ * so the server stores a preset id or a plain hex colour and nothing else.
+ */
+export interface ConversationAppearance {
+  /** Preset background id, e.g. `paper`; the client owns the actual colour. */
+  background?: string;
+  /** Optional plain hex colour (#rrggbb) overriding the preset. */
+  color?: string;
+}
+
 export interface Conversation {
   id: string;
   /** Set when the conversation targets an AI account. */
@@ -272,6 +284,8 @@ export interface Conversation {
    * the owner/admin; validated on the server (length, compilation, unsafe shapes).
    */
   hooks?: string[];
+  /** Appearance chosen for this conversation (a conversation-level setting, like the title). */
+  appearance?: ConversationAppearance;
   /**
    * Set when a group was dissolved. The history stays readable (it is the record of
    * what was said) but nothing new may be sent into it.

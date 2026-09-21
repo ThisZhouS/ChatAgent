@@ -700,6 +700,35 @@ export class ChatAgentService {
   }
 
   /**
+   * Chooses the appearance of one conversation. The stored value is a preset id or a hex
+   * colour - never a style string - because whatever is stored is rendered by every client.
+   * Any participant may set it: an appearance is a shared room setting, like the title for
+   * groups; it carries no authority and no data.
+   */
+  async setConversationAppearance(
+    principal: Principal,
+    conversationId: string,
+    appearance: { background?: string; color?: string },
+  ): Promise<Conversation> {
+    this.requireMember(principal);
+    const conversation = await this.conversations.get(conversationId);
+    if (!conversation || !canReadConversation(principal, conversation)) {
+      throw new ServiceError(404, 'conversation not found');
+    }
+    if (!conversation.participantIds.includes(principal.id)) {
+      throw new ServiceError(403, 'forbidden', 'not_a_participant');
+    }
+    const clean = {
+      background: appearance.background,
+      color: appearance.color?.toLowerCase(),
+    };
+    const updated = await this.conversations.updateGovernance(conversation.id, {
+      appearance: clean.background === undefined && clean.color === undefined ? null : clean,
+    });
+    return updated ?? conversation;
+  }
+
+  /**
    * Sets the content hooks that summon this group's assistants without a mention. The
    * patterns are validated here (length, compilation, unsafe shapes) because a rule that
    * runs on every message is also a way to burn the server's CPU.

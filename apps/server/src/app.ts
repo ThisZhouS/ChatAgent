@@ -13,6 +13,7 @@ import {
   createGroupSchema,
   createTaskSchema,
   contactPatchSchema,
+  conversationAppearanceSchema,
   conversationMuteSchema,
   createMemberSchema,
   friendDecisionSchema,
@@ -969,6 +970,17 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       request.principal,
       (request.params as { id: string }).id,
       parsed.data.announcement,
+    );
+  });
+
+  /** Per-conversation appearance: a preset id or a plain hex colour, nothing else. */
+  app.post('/api/conversations/:id/appearance', async (request, reply) => {
+    const parsed = conversationAppearanceSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.setConversationAppearance(
+      request.principal,
+      (request.params as { id: string }).id,
+      parsed.data,
     );
   });
 

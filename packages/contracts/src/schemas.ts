@@ -165,6 +165,21 @@ export const groupAnnouncementSchema = z.object({
 });
 
 /** Grants or revokes admin rights inside one group (owner only). */
+/** Appearance is a closed set: a preset id, or a plain hex colour, or nothing. */
+export const conversationAppearanceSchema = z
+  .object({
+    background: z
+      .string()
+      .max(32)
+      .regex(/^[a-z][a-z0-9-]*$/)
+      .optional(),
+    color: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .optional(),
+  })
+  .strict();
+
 export const groupHooksSchema = z.object({
   hooks: z.array(z.string().max(200)).max(20),
 });

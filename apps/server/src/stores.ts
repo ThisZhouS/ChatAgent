@@ -407,6 +407,7 @@ export class ConversationStore {
       adminIds?: string[];
       announcement?: string | null;
       hooks?: string[];
+      appearance?: Conversation['appearance'] | null;
       dissolvedAt?: string;
     },
   ): Promise<Conversation | undefined> {
@@ -425,6 +426,10 @@ export class ConversationStore {
       }
     }
     if (patch.hooks !== undefined) conversation.hooks = [...patch.hooks];
+    if (patch.appearance !== undefined) {
+      if (patch.appearance === null) delete conversation.appearance;
+      else conversation.appearance = { ...patch.appearance };
+    }
     if (patch.dissolvedAt !== undefined) conversation.dissolvedAt = patch.dissolvedAt;
     conversation.updatedAt = new Date().toISOString();
     await this.persist();

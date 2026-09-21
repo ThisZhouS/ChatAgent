@@ -318,6 +318,51 @@ function openRenameDialog() {
 }
 
 const announcementDraft = ref('');
+/**
+ * Appearance presets. The client owns the colours, the server only stores the id: that keeps a
+ * background from ever being a style string coming off the network.
+ */
+const APPEARANCES: Array<{ id: string; label: string; background: string }> = [
+  { id: 'default', label: '默认', background: '' },
+  { id: 'paper', label: '纸张', background: '#f7f4ec' },
+  { id: 'mint', label: '薄荷', background: '#eef7f1' },
+  { id: 'sky', label: '天蓝', background: '#eef3fb' },
+  { id: 'slate', label: '石板', background: '#2b2f36' },
+];
+
+/** The inline background style for the active conversation, if it has one. */
+const conversationBackground = computed(() => {
+  const appearance = activeConversation.value?.appearance;
+  if (!appearance) return undefined;
+  const preset = APPEARANCES.find((item) => item.id === appearance.background);
+  // A hex colour wins over the preset; both are validated server-side before they arrive.
+  const color = appearance.color ?? preset?.background;
+  return color ? { background: color } : undefined;
+});
+
+/** True when the chosen background is dark, so the room can switch text to light. */
+const conversationBackgroundIsDark = computed(() => {
+  const color = activeConversation.value?.appearance?.color;
+  if (!color) return activeConversation.value?.appearance?.background === 'slate';
+  const value = Number.parseInt(color.slice(1), 16);
+  const [r, g, b] = [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+  // Perceived luminance, the same weighting the contrast checks use.
+  return 0.299 * r + 0.587 * g + 0.114 * b < 128;
+});
+
+async function setAppearance(background: string) {
+  if (!activeId.value) return;
+  error.value = '';
+  try {
+    await api.chat.setAppearance(
+      activeId.value,
+      background === 'default' ? {} : { background },
+    );
+    await loadConversations(true);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
 const groupBusy = ref(false);
 /** Dissolving takes two clicks: the first arms it, the second does it. */
 const dissolveArmed = ref(false);
@@ -1498,6 +1543,9 @@ onUnmounted(() => {
 
       <section
         class="chat-main"
+        :class="{ 'room-dark': conversationBackgroundIsDark }"
+        :style="conversationBackground"
+        data-testid="chat-room"
         @dragenter.prevent="activeId && (draggingFile = true)"
         @dragover.prevent
         @drop.prevent="onDropFiles"
@@ -1516,6 +1564,22 @@ onUnmounted(() => {
             <div class="side-title">
               <span>{{ activeConversation ? titleOf(activeConversation) : '选择会话' }}</span>
               <el-tag v-if="isAgentConversation" size="small" type="primary">AI 助手</el-tag>
+              <!-- Room appearance: a preset, so the stored value is never a style string. -->
+              <el-dropdown trigger="click" @command="setAppearance">
+                <el-button size="small" text data-testid="appearance-trigger">外观</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      v-for="item in APPEARANCES"
+                      :key="item.id"
+                      :command="item.id"
+                      :data-testid="`appearance-${item.id}`"
+                    >
+                      {{ item.label }}
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <!-- Desktop-only window controls; the browser has no such window. -->
               <span v-if="desktopWindow" class="side-actions">
                 <el-button
@@ -2235,6 +2299,17 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--ca-muted);
   margin-bottom: 4px;
+}
+
+/* A dark room switches the room text to light; bubbles keep their own solid surfaces, so
+   message contrast never depends on the background someone picked. */
+.room-dark {
+  color: #f5f5f5;
+}
+
+.room-dark .side-title,
+.room-dark .muted {
+  color: #d8d8d8;
 }
 
 .drop-overlay {

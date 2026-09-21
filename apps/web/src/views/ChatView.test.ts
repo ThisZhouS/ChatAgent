@@ -68,6 +68,7 @@ const mocks = vi.hoisted(() => {
     dissolve: vi.fn(async () => ({ id: 'conv_group' })),
     setMuted: vi.fn(async () => ({ ok: true, muted: true })),
     setHooks: vi.fn(async () => ({ id: 'conv_group', hooks: [] })),
+    setAppearance: vi.fn(async () => ({ id: 'conv_bob' })),
     upload: vi.fn(async () => ({ file: { id: 'f_up', name: 'brief.docx' } })),
     removeMember: vi.fn(async () => ({ ok: true })),
     leave: vi.fn(async () => ({ ok: true })),
@@ -146,6 +147,7 @@ vi.mock('../api', () => ({
       dissolve: mocks.dissolve,
       setMuted: mocks.setMuted,
       setHooks: mocks.setHooks,
+      setAppearance: mocks.setAppearance,
       removeMember: mocks.removeMember,
       leave: mocks.leave,
       upload: mocks.upload,
@@ -517,6 +519,43 @@ describe('ChatView', () => {
 
     // Empty lines are dropped; the server validates what is left.
     expect(mocks.setHooks).toHaveBeenCalledWith('conv_group', ['周报', '^(紧急|加急)[:：]']);
+  });
+
+
+  it('applies the conversation background and sends the chosen preset', async () => {
+    mocks.listConversations.mockResolvedValue([
+      { ...mocks.conversation, appearance: { background: 'paper' } },
+    ]);
+    // The dropdown renders into a popper attached to the body, so the wrapper must be attached.
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+
+    // A preset is rendered from the client's own palette, never from a style string.
+    const room = wrapper.find('[data-testid="chat-room"]');
+    expect(room.attributes('style')).toContain('rgb(247, 244, 236)');
+    expect(room.classes()).not.toContain('room-dark');
+
+    await wrapper.find('[data-testid="appearance-trigger"]').trigger('click');
+    await flushPromises();
+    const dark = document.querySelector('[data-testid="appearance-slate"]') as HTMLElement | null;
+    expect(dark, 'the picker lists the presets').toBeTruthy();
+    dark?.click();
+    await flushPromises();
+
+    expect(mocks.setAppearance).toHaveBeenCalledWith('conv_bob', { background: 'slate' });
+  });
+
+  it('switches a dark room to light text without touching the bubbles', async () => {
+    mocks.listConversations.mockResolvedValue([
+      { ...mocks.conversation, appearance: { background: 'slate' } },
+    ]);
+    const wrapper = mountChat();
+    await flushPromises();
+
+    const room = wrapper.find('[data-testid="chat-room"]');
+    expect(room.classes()).toContain('room-dark');
+    // Bubbles keep their own surface: message contrast does not depend on the room colour.
+    expect(wrapper.find('.bubble-text').exists()).toBe(true);
   });
 
   it('sends the composed text through the native API', async () => {

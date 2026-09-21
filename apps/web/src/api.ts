@@ -235,6 +235,16 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ title }),
       }),
+    /** Conversation appearance: a preset id or a plain hex colour. */
+    setAppearance: (
+      conversationId: string,
+      payload: { background?: string; color?: string },
+    ) =>
+      request<Conversation>('/conversations/' + conversationId + '/appearance', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+
     /** Content hooks: regex rules that summon the group's assistants. */
     setHooks: (conversationId: string, hooks: string[]) =>
       request<Conversation>('/conversations/' + conversationId + '/hooks', {
