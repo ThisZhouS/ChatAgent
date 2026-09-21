@@ -168,6 +168,17 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 
 ```bash
 CHATAGENT_AGENT_INTAKE_MODE=immediate CHATAGENT_RECALL_WINDOW_SECONDS=120 node scripts/restart-server.mjs
+
+### Gate 7A：先自检前置条件，再看行为结果
+
+```bash
+node scripts/gate7a-verify.mjs --preflight   # 只查环境齐备度；退出码 2 = 有缺失项（会逐条列出）
+node scripts/gate7a-verify.mjs               # 行为流程；0 = 全过，1 = 有失败，2 = 有 BLOCKED（未验证）
+```
+
+- 预检通过**只代表前置条件齐备**，不代表 Gate 7A.3 通过；脚本自己会印出这句话。行为验证仍需真实 Hermes 运行时 + 模型凭据跑通办公闭环。
+- **BLOCKED 一律以退出码 2 结束**：脚本化验收不得把「没跑到 / 没法跑」当成成功。
+- 2026-09-21 在本机实测（未配置运行时而模型）：`21 passed, 0 failed, 1 blocked`，退出码 2，BLOCKED 的是 Flow8「真实 Hermes 运行时契约」。
 node scripts/ui-e2e.mjs          # 38/38
 ```
 

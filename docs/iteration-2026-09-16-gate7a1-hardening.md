@@ -554,3 +554,11 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 改动：`agent-intake.ts` 增 `DEFAULT_MAX_ATTEMPTS = 8` 与终态 `failed`；`config.ts` 增 `CHATAGENT_AGENT_INTAKE_MAX_ATTEMPTS`（1-100）；`stores.ts` 与 contracts 类型增 `maxAttempts`/`failed`/`attempts`；`app.ts` 传预算并在终态失败时写审计 `agent_intake.failed`；`service.ts` 的 notice 仅在失败时携带 attempts；`ChatView.vue` 增失败提示（含 `data-testid="intake-failed"`）。
 - 不变量：等待撤回窗口不算尝试、不消耗预算；`failed` 是终态（不再重试，行保留可查）；原始错误文本不上客户端可见事件；撤回/已投喂语义不变。
 - 验证：根套件 50 文件 / **410 用例**、web **74 用例**、`tsc`/`vue-tsc` 0 错（新增 3 例）。
+
+## 第三十九轮（2026-09-21）：Gate 7A 自检与退出码诚实性
+
+- 发现的问题（都在既有验收脚本 `scripts/gate7a-verify.mjs` 里）：**BLOCKED 的流程让脚本以退出码 0 结束**——脚本化验收会把「没跑到 / 没法跑」读成「通过了」；而且脚本只在 Flow8 深处打印一句「CHATAGENT_HERMES_EXE 未设置」，没人知道 Gate 7A.3 到底还缺什么。
+- 改动：新增 `--preflight` 模式（只查前置条件：Hermes 运行时路径存在且是文件、模型三件套 `CHATAGENT_MODEL_*`、临时目录可写；脚本能加载主机 bundle 就说明它已构建）；主跑退出码改为 0=全过 / 1=有失败 / **2=有 BLOCKED（未验证）**，并在摘要下再印一句「BLOCKED 不等于通过」。
+- 预检明确写着「文件存在不等于它是 Hermes」「预检通过不是验证结论」，避免它被当成 Gate 7A.3 的替代证据。
+- 实测：无环境 → 缺 4 项、退出 2；把 `CHATAGENT_HERMES_EXE` 指到目录 → 报「指向的是目录」、退出 2；指到 `which node` 的 POSIX 路径 `E:\box\Node\node`（真实文件是 `node.exe`）→ 也报缺失（说明了这类误配确实会被抓住）；指到真实 `node.exe` + 三个模型变量 → 前置齐备、退出 0。
+- 行为跑（HEAD 复跑，顺带回归）：**21 passed, 0 failed, 1 blocked**，退出码 2（Flow8 真实 Hermes 契约 BLOCKED）——与第四十轮记录的「一次运行就抓到误配」对应。

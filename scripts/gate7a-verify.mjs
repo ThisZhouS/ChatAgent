@@ -3,7 +3,10 @@
 // Drives the real classes (store, sandbox, adapter, IPC handler) exactly as the
 // desktop main process does, and prints a PASS/BLOCKED line per required flow.
 //
-// Run: node scripts/gate7a-verify.mjs
+// Run: node scripts/gate7a-verify.mjs          (行为流程；BLOCKED 会以退出码 2 结束)
+//      node scripts/gate7a-verify.mjs --preflight  (只检查环境是否齐备，不做行为验证)
+//
+// Exit codes: 0 = 全部流程通过且无 BLOCKED；1 = 有流程失败；2 = 无失败但有 BLOCKED（未验证）。
 import { mkdtemp, rm, readFile, mkdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -24,6 +27,67 @@ function check(name, ok, detail = '') {
 function blocked(name, detail) {
   results.push({ name, ok: 'blocked', detail });
   console.log(`BLOCKED ${name} — ${detail}`);
+}
+
+// ---- Preflight: presence only, for whoever has to arrange a real Gate 7A.3 run ----
+// Answers one question: could this box even try? It starts no runtime and proves no
+// behaviour, so a green preflight is never evidence that Gate 7A.3 passed.
+if (process.argv.includes('--preflight')) {
+  const required = [
+    'CHATAGENT_HERMES_EXE',
+    'CHATAGENT_MODEL_BASE_URL',
+    'CHATAGENT_MODEL_API_KEY',
+    'CHATAGENT_MODEL_NAME',
+  ];
+  const missing = [];
+  for (const name of required) {
+    if (process.env[name]?.trim()) {
+      console.log(`PASS    ${name} 已设置`);
+    } else {
+      missing.push(name);
+      console.log(`MISSING ${name}`);
+    }
+  }
+
+  const exe = process.env.CHATAGENT_HERMES_EXE?.trim();
+  if (exe) {
+    const absolute = resolve(exe);
+    try {
+      const info = await stat(absolute);
+      if (info.isFile()) {
+        console.log(`PASS    Hermes 运行时文件存在：${absolute}（${info.size} 字节）`);
+        console.log('NOTE    文件存在不等于它是 Hermes；预检不启动它，也不证明模型可用。');
+      } else {
+        missing.push('CHATAGENT_HERMES_EXE 指向的是一个目录');
+        console.log(`MISSING CHATAGENT_HERMES_EXE 指向的是目录而不是可执行文件：${absolute}`);
+      }
+    } catch {
+      missing.push('CHATAGENT_HERMES_EXE 指向的文件');
+      console.log(`MISSING CHATAGENT_HERMES_EXE 指向的文件不存在：${absolute}`);
+    }
+  }
+
+  try {
+    const probe = join(tmpdir(), `gate7a-preflight-${process.pid}`);
+    await mkdir(probe, { recursive: true });
+    await writeFile(join(probe, 'probe.txt'), 'ok', 'utf8');
+    await rm(probe, { recursive: true, force: true });
+    console.log(`PASS    临时目录可写：${tmpdir()}`);
+  } catch {
+    missing.push('可写的临时目录');
+    console.log(`MISSING 临时目录不可写：${tmpdir()}`);
+  }
+
+  // Reaching this point already proves the built host bundle resolved (it is imported
+  // above), so the only remaining prerequisite worth naming is the one nobody remembers.
+  console.log('PASS    主机 bundle 已构建（脚本能加载它就说明 apps/desktop/agent-host.bundle.cjs 存在）');
+  console.log('');
+  if (missing.length === 0) {
+    console.log('[gate7a-preflight] 环境齐备：可以尝试真实 Gate 7A.3。注意——这只是前置条件，不是验证结论。');
+    process.exit(0);
+  }
+  console.log(`[gate7a-preflight] 缺 ${missing.length} 项，Gate 7A.3 现在无法开始：${missing.join('、')}`);
+  process.exit(2);
 }
 
 const ROOT = await mkdtemp(join(tmpdir(), 'gate7a-verify-'));
@@ -314,9 +378,14 @@ const passed = results.filter((r) => r.ok === true).length;
 const failed = results.filter((r) => r.ok === false).length;
 const blockedN = results.filter((r) => r.ok === 'blocked').length;
 console.log(`[gate7a-verify] ${passed} passed, ${failed} failed, ${blockedN} blocked`);
+if (blockedN > 0) {
+  // Exit 2 rather than 0: a BLOCKED flow was not verified, and a scripted acceptance run
+  // that reads "exit 0" as success would turn "we could not check this" into "this passed".
+  console.log('[gate7a-verify] BLOCKED 不等于通过：本次运行没有走完全部流程，退出码 2。');
+}
 try {
   await rm(ROOT, { recursive: true, force: true });
 } catch {
   // Windows may hold handles from the Hermes child briefly; cleanup is best-effort.
 }
-process.exit(failed === 0 ? 0 : 1);
+process.exit(failed > 0 ? 1 : blockedN > 0 ? 2 : 0);
