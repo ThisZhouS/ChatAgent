@@ -2,7 +2,8 @@
 /** Live boundary check against a running ChatAgent server.
  * Read-only, or a refusal that must store nothing.
  * Usage: node scripts/live-boundary-check.mjs [--server URL]
- * Exit: 0 = as documented, 1 = a boundary differed, 2 = server unreachable.
+ * Exit: 0 = as documented, 1 = a boundary differed, 2 = server unreachable. All three paths have been exercised: 0 against a live server (7/7), 1 against a wrong
+ * base path such as --server http://127.0.0.1:8787/api (7 FAIL lines), 2 against a dead port.
  * The event-stream probe is deliberately absent (it left a socket open and made the exit code
  * untrustworthy: round 44 in docs/iteration-2026-09-16-gate7a1-hardening.md). */
 async function main() {
