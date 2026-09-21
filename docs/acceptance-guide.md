@@ -164,11 +164,12 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 
 ## 客户端 E2E 与投喂闸门（2026-09-18 起）
 
-服务端默认**过撤回窗口才把消息交给助手**（`CHATAGENT_AGENT_INTAKE_MODE=deferred`），所以客户端 E2E 里「AI 回复」不是即时的：
+服务端默认**过撤回窗口才把消息交给助手**（`CHATAGENT_AGENT_INTAKE_MODE=deferred`）。客户端 E2E 验证的是**界面流程**（登录/会话/AI 回复/文档生成与下载/转发/撤回/主题/响应式），因此它用**即时投喂**跑，否则「撤回自己的消息」这条断言与投喂闸门在语义上互斥（窗口一过消息已交给助手，本就不该再撤）：
 
 ```bash
-CHATAGENT_RECALL_WINDOW_SECONDS=20 node scripts/restart-server.mjs
-node scripts/ui-e2e.mjs          # 脚本会读取 intake.deferMs 并相应放宽等待
+CHATAGENT_AGENT_INTAKE_MODE=immediate CHATAGENT_RECALL_WINDOW_SECONDS=120 node scripts/restart-server.mjs
+node scripts/ui-e2e.mjs          # 38/38
 ```
 
-窗口选择有取舍：窗口越短，助手回复越快（脚本等得起）；窗口越长，越接近生产默认，但「回复之后仍能撤回自己那条消息」就越不可能——因为撤回窗口一过，消息已经交给助手，这正是设计意图。脚本中依赖撤回的断言应当使用**不经过助手**的消息。
+- 脚本会读取 `/api/agent/status` 的 `intake.mode` 与 `deferMs`：deferred 模式下自动放宽 AI 回复等待（`max(40s, deferMs+30s)`），并在窗口足够长时**额外断言「排队中的投喂有解释」**（输入框上方的「助手待读」提示）。
+- **deferred 策略本身的覆盖在服务端套件**（`agent-intake.test.ts` 9 例、`agent-intake-wiring.test.ts` 4 例、`cursor-expiry.test.ts` 3 例）；客户端 E2E 不再重复验证该策略，避免用界面测试承担策略测试的职责。

@@ -684,6 +684,9 @@ async function main() {
       .evaluate('window.fetch("/api/agent/status").then((r) => r.json()).then((s) => s.intake ?? null)')
       .catch(() => null);
     const deferMs = Number(policy?.deferMs ?? 0);
+    // `deferMs` is the recall window; whether anything is actually queued is the mode. In
+    // immediate mode nothing waits, so there is no notice to look for.
+    const deferred = policy?.mode === 'deferred';
     const stamp = Date.now().toString(36);
     const greetingMarker = `E2E-HELLO-${stamp}`;
     const greeting = await cdp.evaluate(setFieldExpr('composer', `你好 ${greetingMarker}`));
@@ -696,7 +699,7 @@ async function main() {
 
     // The handoff is queued until the recall window has elapsed: the user must be told, not
     // left wondering why the assistant is silent (only observable while it is still queued).
-    if (deferMs >= 5000) {
+    if (deferred && deferMs >= 5000) {
       const notice = await cdp
         .evaluate('Boolean(document.querySelector(\'[data-testid=intake-notice]\'))')
         .catch(() => undefined);
