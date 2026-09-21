@@ -59,6 +59,7 @@ import type { ServerConfig } from './config';
 import { loadConfig } from './config';
 import { ChatAgentService, ServiceError } from './service';
 import { AgentIntakeGate } from './agent-intake';
+import { verifyFileSignature } from './file-signature';
 import {
   AccountStore,
   AgentIntakeStore,
@@ -1323,6 +1324,22 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       return reply.code(413).send({ error: 'file too large' });
     }
     const buffer = await file.toBuffer();
+    // The extension list is a naming convention, not a check: verify the bytes really are
+    // what the name claims before the parser (and later the download) trusts either.
+    const signature = verifyFileSignature(file.filename, buffer, ALLOWED_UPLOAD_EXTENSIONS);
+    if (!signature.ok) {
+      audit.record({
+        action: 'upload.rejected',
+        outcome: 'denied',
+        actorId: request.principal?.id,
+        detail: `${signature.reason ?? 'signature'}:${file.filename}`,
+        ip: request.ip,
+      });
+      return reply.code(415).send({
+        error: 'the file content does not match its extension',
+        detail: signature.reason ?? 'signature_mismatch',
+      });
+    }
     return service.parseUploaded(request.principal, buffer, file.filename, file.mimetype);
   });
 

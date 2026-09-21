@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { createWordBuffer } from '@chatagent/document';
 import { createTestApp, ownerHeaders, poll } from './test-helpers';
 
 /**
@@ -170,6 +171,41 @@ describe('document upload route controls', () => {
     expect(entry?.detail).toBe('payload.exe');
   });
 
+
+/** A small but real docx container: a ZIP with the OOXML parts the parser looks for. */
+function zipBombSafe(): Buffer {
+  const { deflateRawSync } = require('node:zlib') as typeof import('node:zlib');
+  const content = Buffer.from(
+    '<?xml version="1.0"?><w:document><w:body><w:p><w:r><w:t>项目 预算</w:t></w:r></w:p></w:body></w:document>',
+    'utf8',
+  );
+  const compressed = deflateRawSync(content, { level: 9 });
+  const name = Buffer.from('word/document.xml', 'utf8');
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(8, 8);
+  local.writeUInt32LE(compressed.length, 18);
+  local.writeUInt32LE(content.length, 22);
+  local.writeUInt16LE(name.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(8, 10);
+  central.writeUInt32LE(compressed.length, 20);
+  central.writeUInt32LE(content.length, 24);
+  central.writeUInt16LE(name.length, 28);
+  central.writeUInt32LE(0, 42);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + name.length, 12);
+  end.writeUInt32LE(local.length + name.length + compressed.length, 16);
+  return Buffer.concat([local, name, compressed, central, name, end]);
+}
+
   it('refuses a decompression bomb before storing it', async () => {
     const test = await boot();
     const upload = multipart(
@@ -194,6 +230,98 @@ describe('document upload route controls', () => {
     });
     const listed = files.json() as { uploads: Array<{ name: string }> };
     expect(listed.uploads.some((item) => item.name === 'bomb.docx')).toBe(false);
+  });
+
+
+  it('refuses a renamed file whose bytes do not match its extension', async () => {
+    const test = await boot();
+    // A PDF renamed to .docx: the extension list alone would have let it through to the
+    // parser, and the download would later serve it under a name that implies Word.
+    const upload = multipart(
+      'quarterly-report.docx',
+      Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3', 'binary'),
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+
+    const response = await test.app.inject({
+      method: 'POST',
+      url: '/api/documents/parse',
+      headers: { ...upload.headers, authorization: 'Bearer alice-token' },
+      payload: upload.body,
+    });
+
+    expect(response.statusCode).toBe(415);
+    expect(response.json().detail).toBe('extension_content_mismatch');
+    // Nothing was stored, and the denial is auditable with the reason.
+    const rows = await poll(
+      async () => {
+        const audit = await test.app.inject({
+          method: 'GET',
+          url: '/api/audit?limit=50',
+          headers: ownerHeaders(),
+        });
+        return audit.json() as Array<{ action: string; detail?: string }>;
+      },
+      (entries) =>
+        entries.some(
+          (row) =>
+            row.action === 'upload.rejected' &&
+            (row.detail ?? '').startsWith('extension_content_mismatch'),
+        ),
+    );
+    expect(
+      rows.some((row) => (row.detail ?? '').includes('quarterly-report.docx')),
+      'the denial names the file',
+    ).toBe(true);
+
+    const documents = await test.app.inject({
+      method: 'GET',
+      url: '/api/documents',
+      headers: { authorization: 'Bearer alice-token' },
+    });
+    const listed = documents.json() as { documents?: unknown[] } | unknown[];
+    expect(Array.isArray(listed) ? listed.length : (listed.documents ?? []).length).toBe(0);
+  });
+
+  it('accepts a real docx and a utf-8 csv, and refuses binary renamed as text', async () => {
+    const test = await boot();
+    // A real OOXML container, built by the same code that produces documents.
+    const docx = multipart(
+      'brief.docx',
+      await createWordBuffer({ title: '简报', paragraphs: ['预算：差旅 12000'] }),
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    const accepted = await test.app.inject({
+      method: 'POST',
+      url: '/api/documents/parse',
+      headers: { ...docx.headers, authorization: 'Bearer alice-token' },
+      payload: docx.body,
+    });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+
+    const csv = multipart('rows.csv', Buffer.from('项目,预算\n差旅,12000\n', 'utf8'), 'text/csv');
+    const csvAccepted = await test.app.inject({
+      method: 'POST',
+      url: '/api/documents/parse',
+      headers: { ...csv.headers, authorization: 'Bearer alice-token' },
+      payload: csv.body,
+    });
+    expect(csvAccepted.statusCode, csvAccepted.body).toBe(200);
+
+    // A PNG renamed to .txt is not text, whatever the client said its content type was.
+    const disguised = multipart(
+      'notes.txt',
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      'text/plain',
+    );
+    const refused = await test.app.inject({
+      method: 'POST',
+      url: '/api/documents/parse',
+      headers: { ...disguised.headers, authorization: 'Bearer alice-token' },
+      payload: disguised.body,
+    });
+    expect(refused.statusCode).toBe(415);
+    expect(refused.json().detail).toBe('extension_content_mismatch');
   });
 
   it('rejects an oversized upload instead of truncating it', async () => {

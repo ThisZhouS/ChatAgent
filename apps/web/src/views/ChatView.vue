@@ -797,6 +797,48 @@ function usePrompt(prompt: string) {
   text.value = prompt;
 }
 
+/** Upload limits mirrored from the server, so an obvious mistake fails before the round trip. */
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const DROP_EXTENSIONS = ['docx', 'doc', 'xlsx', 'xls', 'csv', 'txt', 'md', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'zip'];
+
+/** True while a file is being dragged over the chat, to show the drop target. */
+const draggingFile = ref(false);
+/** Set when the app is fullscreen, so Esc can leave it (the browser blocks programmatic exit). */
+const fullscreenHint = ref(false);
+
+function isProbablyAllowedFile(file: File): boolean {
+  const dot = file.name.lastIndexOf('.');
+  if (dot < 0) return false;
+  return DROP_EXTENSIONS.includes(file.name.slice(dot + 1).toLowerCase());
+}
+
+/** Shared entry point for the picker and for a drop: the server validates the bytes. */
+async function acceptFile(file: File) {
+  if (!isProbablyAllowedFile(file)) {
+    error.value = `不支持的文件类型：${file.name}（允许：${DROP_EXTENSIONS.join('、')}）`;
+    return;
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    error.value = `文件超过 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB：${file.name}`;
+    return;
+  }
+  await onFileChange({ raw: file });
+}
+
+function onDropFiles(event: DragEvent) {
+  draggingFile.value = false;
+  const files = event.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  // The server accepts one file per request; extra files are refused with a reason
+  // instead of being silently dropped.
+  if (files.length > 1) {
+    error.value = '一次只能发送一个文件（当前拖入了 ' + files.length + ' 个）';
+    return;
+  }
+  const [file] = Array.from(files);
+  if (file) void acceptFile(file);
+}
+
 async function onFileChange(uploadFile: { raw?: File }) {
   const file = uploadFile.raw;
   if (!file) return;
@@ -1381,7 +1423,12 @@ onUnmounted(() => {
         </el-card>
       </aside>
 
-      <section class="chat-main">
+      <section
+        class="chat-main"
+        @dragenter.prevent="activeId && (draggingFile = true)"
+        @dragover.prevent
+        @drop.prevent="onDropFiles"
+      >
         <el-alert
           v-if="notice"
           :title="notice"
@@ -1672,7 +1719,12 @@ onUnmounted(() => {
               </template>
             </p>
             <div class="composer-row">
-              <el-upload :auto-upload="false" :show-file-list="false" :on-change="onFileChange">
+              <el-upload
+                :auto-upload="false"
+                :show-file-list="false"
+                :on-change="onFileChange"
+                :accept="DROP_EXTENSIONS.map((item) => '.' + item).join(',')"
+              >
                 <el-button :loading="uploading" :disabled="!activeId">附件</el-button>
               </el-upload>
               <el-input
@@ -1776,6 +1828,19 @@ onUnmounted(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- Drop target: dragging a file over the chat offers to attach it. The server still
+         validates the bytes, so this only saves a round trip on an obvious mistake. -->
+    <div
+      v-if="draggingFile"
+      class="drop-overlay"
+      data-testid="drop-overlay"
+      @dragover.prevent
+      @dragleave.self="draggingFile = false"
+      @drop.prevent="onDropFiles"
+    >
+      <div class="drop-hint">松手即可作为附件发送（单文件，≤20MB）</div>
+    </div>
   </div>
 </template>
 
@@ -2077,6 +2142,24 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--ca-muted);
   margin-bottom: 4px;
+}
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(64, 158, 255, 0.08);
+  border: 2px dashed var(--el-color-primary);
+}
+
+.drop-hint {
+  padding: 12px 20px;
+  border-radius: 8px;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
 }
 
 .bubble-text {

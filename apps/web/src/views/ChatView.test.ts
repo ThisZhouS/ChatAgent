@@ -67,6 +67,7 @@ const mocks = vi.hoisted(() => {
     setAdmin: vi.fn(async () => ({ id: 'conv_group' })),
     dissolve: vi.fn(async () => ({ id: 'conv_group' })),
     setMuted: vi.fn(async () => ({ ok: true, muted: true })),
+    upload: vi.fn(async () => ({ file: { id: 'f_up', name: 'brief.docx' } })),
     removeMember: vi.fn(async () => ({ ok: true })),
     leave: vi.fn(async () => ({ ok: true })),
     listConversations: vi.fn(async () => [conversation]),
@@ -145,7 +146,7 @@ vi.mock('../api', () => ({
       setMuted: mocks.setMuted,
       removeMember: mocks.removeMember,
       leave: mocks.leave,
-      upload: vi.fn(),
+      upload: mocks.upload,
     },
     tasks: { list: vi.fn(async () => []) },
     approvals: { list: vi.fn(async () => []), decide: vi.fn() },
@@ -189,6 +190,7 @@ beforeEach(() => {
   addressBook.decide.mockReset();
   addressBook.decide.mockResolvedValue({ id: 'req_1', status: 'accepted' });
   addressBook.patchContact.mockReset();
+  mocks.upload.mockClear();
   addressBook.patchContact.mockResolvedValue({ id: 'u_bob', relation: { state: 'friend' } });
   mocks.markRead.mockClear();
   mocks.send.mockClear();
@@ -415,6 +417,51 @@ describe('ChatView', () => {
     // Muting is a notification preference: un-muting is the same call with false.
     expect(mocks.setMuted).toHaveBeenCalledWith('conv_group', false);
     expect(wrapper.find('[data-testid="group-announcement"]').exists()).toBe(false);
+  });
+
+
+  it('attaches a file dropped onto the chat, and refuses the obvious mistakes locally', async () => {
+    const wrapper = mountChat();
+    await flushPromises();
+
+    const section = wrapper.find('.chat-main');
+    expect(section.exists()).toBe(true);
+
+    // Dragging shows the drop target...
+    await section.trigger('dragenter');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="drop-overlay"]').exists()).toBe(true);
+
+    // ...and dropping a supported file uploads it through the same path as the picker.
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'brief.docx', {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    await section.trigger('drop', { dataTransfer: { files: [file] } });
+    await flushPromises();
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="drop-overlay"]').exists()).toBe(false);
+  });
+
+  it('refuses an unsupported or oversized drop without calling the server', async () => {
+    const wrapper = mountChat();
+    await flushPromises();
+    const section = wrapper.find('.chat-main');
+
+    await section.trigger('drop', {
+      dataTransfer: { files: [new File(['MZ'], 'payload.exe')] },
+    });
+    await flushPromises();
+    expect(mocks.upload).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain('不支持的文件类型');
+
+    // The size guard mirrors the server's cap; a mistake this obvious should not need a
+    // round trip (the server still enforces it).
+    const big = new File([new Uint8Array(1)], 'huge.txt');
+    Object.defineProperty(big, 'size', { value: 21 * 1024 * 1024 });
+    await section.trigger('drop', { dataTransfer: { files: [big] } });
+    await flushPromises();
+    expect(mocks.upload).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain('超过 20MB');
   });
 
   it('sends the composed text through the native API', async () => {

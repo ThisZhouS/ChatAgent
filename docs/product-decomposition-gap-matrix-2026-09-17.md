@@ -204,6 +204,13 @@
 - 会话免打扰：`muted` 存在**每人每会话**的已读状态行上（`ReadStateStore`），接口 `POST /api/conversations/:id/mute`，会话摘要里返回 `muted`；**未读数照常统计**——免打扰只影响提醒，不影响事实。
 - 验证：`apps/server/src/presentation.test.ts` 3 例（转发携带原作者与原时间、免打扰只影响本人且未读数照常、未认证 401 与非法载荷 400）+ `apps/web/src/notifications.test.ts` 5 例（普通提醒、当前会话/可见窗口/无权限静默、免打扰静默、**@ 突破免打扰**、纯附件文案）+ `ChatView.test.ts` 3 例（转发署名与时间、图片预览与文件链接并存、免打扰标签与切换）。根套件 42 文件 / **377 用例**、web 62 用例、`tsc`/`vue-tsc` 0 错。
 
+### 3.8 文件发送边界与快速拖入（P2 第一项）
+
+- 问题（审计）：上传只看**扩展名**，不看字节；聊天窗口没有拖入落点。
+- 新增 `apps/server/src/file-signature.ts`：按**文件签名**校验声明的扩展名——docx/xlsx/zip 必须是 ZIP 容器、doc/xls 必须是 OLE 复合文档、pdf/png/jpeg/gif/webp 各自签名、csv/txt/md 必须是可读 UTF-8 且不含 NUL。不匹配一律 **415**（`extension_content_mismatch` 等机器可读原因），并写审计 `upload.rejected`（含原因与文件名）。fail-closed：空文件、未知扩展名、无法识别的容器都拒绝，`.exe` 改名成 `.docx` 不再能进入解析器，也不会以「Word 文档」的名义被下载。
+- 界面：聊天区支持**拖入单文件**（拖入时显示落点提示），与「附件」按钮走同一条上传路径；客户端先做明显的类型/大小（20MB）检查以免白跑一趟，并提供 `accept` 白名单；多文件拖入直接说明「一次只能一个文件」而不是静默丢弃。**服务端仍然独立校验字节**——前端检查只是体验。
+- 验证：`file-signature.test.ts` 5 例（各家族接受、改名拒绝、OOXML 容器不通用、未知容器/空文件/超范围扩展名、文本正反例）+ `documents-upload.test.ts` +2 例（PDF 改名 .docx → 415 且审计与零落库；真 docx/UTF-8 csv 接受、PNG 改名 .txt 拒绝）+ `ChatView.test.ts` +2 例（拖入上传、明显错误本地拒绝且不打扰服务端）。根套件 43 文件 / **384 用例**、web 64 用例、`tsc`/`vue-tsc` 0 错。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。

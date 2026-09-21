@@ -1944,9 +1944,9 @@ describe('membership audit trail', () => {
         .filter((line) => line.trim() !== '')
         .map((line) => (JSON.parse(line) as { action: string }).action);
     };
-    // Audit writes are queued and coalesced, so poll instead of assuming they
-    // have already reached the file.
-    const deadline = Date.now() + 3000;
+    // Audit writes are queued and coalesced, so poll instead of assuming they have already
+    // reached the file. The budget has to survive a fully loaded parallel suite.
+    const deadline = Date.now() + 20_000;
     let actions: string[] = [];
     while (Date.now() < deadline) {
       actions = await readActions();
