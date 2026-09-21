@@ -156,6 +156,27 @@ export class TaskEngine {
    * Re-queues a task that is blocked on an external condition (approval or
    * missing input). Terminal tasks are never revived.
    */
+  /**
+   * Appends one entry to the task's stored history, so a resumed run sees what happened in
+   * between (a clarification answer, typically). Bounded: the history is context, not a log.
+   */
+  async appendInput(
+    id: string,
+    entry: Record<string, unknown>,
+    options: { limit?: number } = {},
+  ): Promise<boolean> {
+    const task = await this.store.get(id);
+    if (!task) return false;
+    if (isTerminalTaskState(task.state)) return false;
+    const history = Array.isArray((task.input as { history?: unknown }).history)
+      ? ((task.input as { history: Record<string, unknown>[] }).history ?? [])
+      : [];
+    const limit = Math.max(1, options.limit ?? 50);
+    const next = [...history, entry].slice(-limit);
+    const committed = await this.commit(id, { input: { ...task.input, history: next } });
+    return committed !== undefined;
+  }
+
   async resume(id: string): Promise<CancelResult> {
     const task = await this.store.get(id);
     if (!task) return { ok: false, reason: 'not_found' };

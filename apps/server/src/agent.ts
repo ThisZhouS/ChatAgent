@@ -77,6 +77,42 @@ export interface MessageToolDependencies {
 export function buildMessageTools(deps: MessageToolDependencies): Tool[] {
   const { accounts, gateways, uploads, artifacts, approvals, outbox, directory } = deps;
 
+  /**
+   * Asking the human instead of guessing.
+   *
+   * The product rule is "if the intent cannot be determined, ask in the conversation". This
+   * tool has no side effect: it reports the question, the host posts it as the assistant's
+   * message and the task waits for the reply (see service.runTask / sendNativeMessage).
+   */
+  const ask = makeTool(
+    {
+      name: 'ask_user',
+      description:
+        'Ask the requester one clarifying question when the request cannot be carried out without more information. Use it instead of guessing; the task waits for the answer in the conversation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: 'One concrete question the requester can answer in one message.',
+          },
+        },
+        required: ['question'],
+      },
+    },
+    async (args) => {
+      const question = readNonEmptyString(args.question);
+      if (!question) return failure('ask_user 需要非空的 question。');
+      return {
+        ok: false,
+        // `ok: false` stops the model from treating the question as a completed step; the
+        // output is the marker the host looks for.
+        output: { clarificationRequired: { question: question.slice(0, 500) } },
+        summary: `需要补充信息：${question.slice(0, 200)}`,
+      };
+    },
+  );
+
   const send = makeTool(
     {
       name: 'send_message',
@@ -218,7 +254,7 @@ export function buildMessageTools(deps: MessageToolDependencies): Tool[] {
     },
   );
 
-  return [send, forward];
+  return [send, forward, ask];
 }
 
 type Prepared =

@@ -460,6 +460,26 @@ export class ChatAgentService {
   }
 
   /**
+   * The open question this requester is expected to answer, if any. One at a time per
+   * (account, conversation, requester): the next message is the answer, and a second open
+   * question would make that ambiguous.
+   */
+  private async openQuestionFor(
+    conversationId: string,
+    accountId: string,
+    requesterId: string,
+  ): Promise<TaskRecord | undefined> {
+    const tasks = await this.taskEngine.list();
+    return tasks.find(
+      (task) =>
+        task.state === 'waiting_input' &&
+        task.conversationId === conversationId &&
+        task.accountId === accountId &&
+        task.requesterId === requesterId,
+    );
+  }
+
+  /**
    * Mutes or unmutes one conversation for the caller only. Unread counts keep working -
    * muting is about notifications, not about hiding work.
    */
@@ -1181,6 +1201,52 @@ export class ChatAgentService {
         throw new ServiceError(403, 'forbidden', 'account_not_granted');
       }
 
+      // The assistant asked a question and this is the answer: the message is delivered as
+      // usual, and the waiting task continues with the answer in its history. Without this,
+      // a reply would silently start a second task that has no idea what was asked.
+      const openQuestion = await this.openQuestionFor(conversation.id, account.id, principal.id);
+      if (openQuestion) {
+        const answer = input.text.trim();
+        if (answer !== '' || input.attachments.length > 0) {
+          await this.taskEngine.appendInput(openQuestion.id, {
+            role: 'user',
+            content:
+              answer !== ''
+                ? `补充信息：${answer}`
+                : `补充信息：${input.attachments.map((file) => file.name).join('、')}`,
+          });
+          const resumed = await this.taskEngine.resume(openQuestion.id);
+          if (resumed.ok) {
+            // The waiting task is the task this message belongs to; no new handoff is queued.
+            const delivered = await this.deliver(
+              {
+                account,
+                organizationId: conversation.organizationId,
+                requesterId: principal.id,
+                chatId: conversation.chatId,
+                chatType: 'direct',
+                participantId: principal.id,
+                sender: { id: principal.id, name: principal.displayName },
+                senderPrincipalId: principal.id,
+                channel: 'web',
+                kind,
+                text: input.text,
+                mentions: [],
+                attachments: input.attachments,
+                metadata: { native: true, answersTask: openQuestion.id },
+              },
+              conversation,
+              // The message is stored, but the intake gate is skipped: the question is
+              // already open, so queueing another handoff would duplicate the work.
+              { skipIntake: true },
+            );
+            if (delivered.message) {
+              return { message: delivered.message, taskId: openQuestion.id };
+            }
+          }
+        }
+      }
+
       const delivered = await this.deliver(
         {
           account,
@@ -1211,6 +1277,8 @@ export class ChatAgentService {
       this.rememberClientMessage(principal.id, conversationId, clientMsgId, result);
       return result;
     }
+
+    // A group or peer conversation: a message never resumes a task by itself.
 
     if (conversation.targetKind === 'member') {
       const peerId = conversation.participantIds.find((id) => id !== principal.id);
@@ -2824,6 +2892,7 @@ export class ChatAgentService {
       metadata?: Record<string, unknown>;
     },
     existing?: Conversation,
+    options: { skipIntake?: boolean } = {},
   ): Promise<InjectMessageResult> {
     const conversation =
       existing ??
@@ -2870,6 +2939,12 @@ export class ChatAgentService {
     // in the conversation, but no assistant ever sees it. The sender is deliberately
     // not told (the tier is the owner's policy, not the sender's business); the audit
     // log records the decision for the owner.
+    if (options.skipIntake) {
+      // The reply belongs to a task that is already waiting: the message is stored and
+      // broadcast, but nothing new is queued for it.
+      return { authorized: true, conversationId: conversation.id, message: inbound };
+    }
+
     const senderId = input.senderPrincipalId ?? input.requesterId;
     const tier = await this.tierFor(input.account, senderId);
     if (!tierPolicy(tier).intake) {
@@ -3061,6 +3136,27 @@ export class ChatAgentService {
     await Promise.all(pendingMessages);
 
     // A pending approval blocks completion: the side effect has not happened.
+    // A clarification is checked before an approval: "I need the missing detail" and "I need
+    // permission" are different waits, and the question must reach the conversation either way.
+    const clarification = findClarificationMarker(result.toolCalls);
+    if (clarification && conversation) {
+      // The question is posted as the assistant's own message so the answer has a place to
+      // go, and the task parks in waiting_input until the requester replies.
+      await this.appendAssistantMessage(
+        account,
+        conversation,
+        `需要你补充一下：${clarification.question}`,
+      );
+      this.audit?.({
+        action: 'task.clarification_requested',
+        outcome: 'ok',
+        actorId: account.id,
+        target: task.id,
+        detail: clarification.question.slice(0, 120),
+      });
+      return { kind: 'waiting_input', question: clarification.question };
+    }
+
     const approvalMarker = findApprovalMarker(result.toolCalls);
     if (approvalMarker) {
       return { kind: 'waiting_approval', approvalId: approvalMarker.approvalId };
@@ -3333,6 +3429,23 @@ function findApprovalMarker(
         approvalId,
         digest: typeof approvalRequired?.digest === 'string' ? approvalRequired.digest : undefined,
       };
+    }
+  }
+  return marker;
+}
+
+/** The question an ask_user call asked, if the model asked one. */
+function findClarificationMarker(
+  toolCalls: ToolCallRecord[],
+): { question: string } | undefined {
+  let marker: { question: string } | undefined;
+  for (const call of toolCalls) {
+    if (call.tool !== 'ask_user') continue;
+    const output = readRecord(call.output);
+    const clarification = readRecord(output?.clarificationRequired);
+    const question = clarification?.question;
+    if (typeof question === 'string' && question.trim() !== '') {
+      marker = { question: question.trim().slice(0, 500) };
     }
   }
   return marker;

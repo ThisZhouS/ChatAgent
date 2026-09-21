@@ -48,6 +48,11 @@ export class MockProvider implements ModelProvider {
   private pickTool(text: string, tools: HermesToolDefinition[]): HermesToolDefinition | undefined {
     const lower = text.toLowerCase();
     const find = (...names: string[]) => tools.find((tool) => names.includes(tool.name));
+    // Asking back is checked first: a request that openly says it lacks information should
+    // not be answered by guessing at a document tool.
+    if (/请向我确认|信息不足|需要澄清|clarify|ask me/.test(lower)) {
+      return find('ask_user');
+    }
     if (/word|docx|文档|报告|周报|日报|月报|汇报/.test(lower)) {
       return find('create_word_document') ?? find('parse_document');
     }
@@ -79,6 +84,8 @@ export class MockProvider implements ModelProvider {
 
   private sampleArgs(name: string, text: string): Record<string, unknown> {
     switch (name) {
+      case 'ask_user':
+        return { question: text || '请补充必要的信息。' };
       case 'create_word_document':
         return {
           title: 'ChatAgent 工作说明',

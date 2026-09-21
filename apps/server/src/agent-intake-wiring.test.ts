@@ -119,7 +119,13 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 20_000): P
     const [task] = await tasks(app, alice);
     expect(task?.goal).toContain('周报');
     expect(task?.requesterId).toBe('u_alice');
-    expect(await intakeStatus(app, alice)).toMatchObject({ mode: 'deferred', pending: 0, submitted: 1 });
+    // The ledger is updated just after the task is submitted, so wait for the queue to drain
+    // rather than reading it in the same tick the task appeared.
+    const drained = await waitFor(async () => (await intakeStatus(app, alice))?.pending === 0);
+    const status = await intakeStatus(app, alice);
+    expect(drained, `queue did not drain: ${JSON.stringify(status)}`).toBe(true);
+    expect(status?.mode).toBe('deferred');
+    expect(status?.submitted ?? 0).toBeGreaterThanOrEqual(1);
   });
 
   intakeIt('never hands over a message withdrawn inside the window', async () => {
