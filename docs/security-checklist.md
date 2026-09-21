@@ -124,6 +124,12 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **可见性**：`status().authorization`（状态/最近复核/失败原因/撤销数/无法确认数/暂缓条数）与设置页「授权复核」提示，避免“任务没动却没有任何解释”。
 
 
+## 开发模式的主体注入边界（2026-09-21 实测）
+
+- 凭据顺序：member API token -> native session token -> **开发主体注入（仅 authMode=development，loopback 限定）**（apps/server/src/auth.ts）。
+- 实测（本机 dev 实例）：不带请求头 -> 200；带空 Bearer -> 200（两者都走开发主体注入）；带**无法识别**的令牌 -> 401 authentication required——认不出的凭据是拒绝而不是忽略，这条 fail-closed 行为正确。
+- 生产绑定：authMode 默认由 NODE_ENV === production 决定（config.ts），上述注入只在开发态成立；**部署到生产必须走 production 模式**，否则本机无凭据请求会拿到开发主体身份。
+
 ## 安全不变量：强制点与测试覆盖核对（2026-09-21 静态核对）
 
 方法：对每条不变量的强制标识在 `apps/`、`packages/` 内做符号统计，比较「实现文件」与「测试文件」的命中数。**命中不等于证明**，但一处都没命中就必须解释清楚。
