@@ -124,6 +124,15 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **可见性**：`status().authorization`（状态/最近复核/失败原因/撤销数/无法确认数/暂缓条数）与设置页「授权复核」提示，避免“任务没动却没有任何解释”。
 
 
+## 审批摘要与审批面（2026-09-21 核对）
+
+- 线上（开发实例）：`GET /api/approvals` 返回 74 条记录，每条都带 `digest`，以及 `status/expiresAt/approverId/decidedAt/consumedAt/consumedByStepKey` 生命周期字段；决策走 `POST /api/approvals/:id/decision`。
+- 实现侧命中（本轮抽查，非穷举）：
+  - `apps/server/src/service.ts:589:      .digest('hex')`
+  - `apps/server/src/service.ts:3495:): { approvalId: string; digest?: string } | undefined {`
+  - `apps/server/src/service.ts:3496:  let marker: { approvalId: string; digest?: string } | undefined;`
+  - `apps/server/src/service.ts:3504:        digest: typeof approvalRequired?.digest === 'string' ? approvalRequired.digest : undefined,`
+- 说明：报告里只写「本轮实际看到的行」，不做「摘要一定不会绕过」这类更强断言；强度断言由 `approval-outbox.test.ts`、`security-regression.test.ts` 等用例承担（本轮未重跑）。
 ## 成员边界（发送）线上实测（2026-09-21）
 
 - 以开发主体向一个自己**不是参与者**的会话发消息：服务端返回 `{"error":"forbidden","detail":"not_a_participant"}`（403），并且该会话里**没有新增任何消息**（实测总数 1、目标文本出现 0 次）。成员资格在发送路径上是硬门，不是靠界面隐藏。
