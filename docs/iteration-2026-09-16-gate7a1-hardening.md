@@ -584,5 +584,6 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 动机：本会话的线上核对全是 `Temp/` 里的一次性 shell 探测，而 `Temp/` 不入库（第四十三轮记过这条教训），于是想把它做成 `scripts/live-boundaries-check.mjs` 一次可复跑的命令。
 - 结果：**检查本身是对的**——跑出 `8/8 boundaries behaved as documented`（health、开发主体注入与无法识别凭据 401、投喂预算字段、审批带 digest、非参与者发送 403、扩展名与内容不符 415、事件流应答游标）。**但退出路径在 Windows 上不稳**：事件流探测留下未关闭的连接，自然退出会挂住（首次跑完 8/8 后一直不退，被 timeout 杀掉，exit=124）；显式 `process.exit(0)` 则触发 libuv 断言 `!(handle->flags & UV_HANDLE_CLOSING) ... async.c line 76`，exit=127（本会话早前在 `ensure-e2e-member.mjs` 上见过同一断言）。
 - 处置：**删除该脚本，不留未验证的工具**（按本项目纪律，未跑通的东西不进仓库）；本文件的「线上实测汇总」仍是有效证据，只是复跑方式仍是 shell 探测。
+- **后续（第四十五轮）**：脚本已按下面的思路重做并入库（`scripts/live-boundary-check.mjs`，7/7、退出码 0）。真正的病根不是事件流，而是 **`process.exit()` 本身**：在本平台（Node 24.11 / Windows）退出时 undici 的 keep-alive 句柄正在关闭，就会触发 `UV_HANDLE_CLOSING` 断言（这也是早前 `ensure-e2e-member.mjs` 出现同一断言的原因）。改法是把 `process.exit(...)` 换成 `process.exitCode = ...` 让进程自然结束；事件流探测仍留在本文件的实测表里，因为它要复现就得处理那个句柄清理问题。
 - 若要做成正式脚本，先解决退出路径：读完首个 chunk 后 `await reader.cancel()` + `controller.abort()` 再退出，或把事件流探测拆成单独的 `--stream` 选项，避免「退出时正在关闭的句柄」这一组合。
 
