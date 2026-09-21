@@ -378,3 +378,12 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - **产品理念审查入库**：把本轮并行产出的审查报告 `docs/product-readiness-review-2026-09-17.md` 与请求留痕 `Prompt/2026-09-17-product-concept-review.md` 纳入仓库。它按“解决什么问题、员工能完成什么工作”给出 8 个缺口（GAP-01 聊天交办与本机执行未统一、GAP-02 本机文件输入/结果取用断裂、GAP-03 真实 Hermes 接入不只是模型凭据、GAP-04 Office 工具不足以支撑可信日常办公、GAP-05 员工缺少“授权我的助手”流程、GAP-06/07/08 自主工作、员工路径与发布门槛），并给出 M1–M4 交付顺序。**本轮不修改业务代码**，只补一条后续修订说明。
 - **仓库令牌卫生**：审查同时暴露 `scripts/ui-e2e.mjs` 把 `alice-dev-token` 作为默认值写在仓库里（与 G6-5「令牌移出仓库」口径冲突，实测该令牌可登录 200）。现改为按 `--member/--token` → `SMOKE_MEMBER/SMOKE_TOKEN` → `Temp/e2e-member.json` 解析；缺失时由新增的 `scripts/ensure-e2e-member.mjs` 以本机 owner 身份签发**专用成员 `e2e_local`**（只写 sha256，令牌落在被 gitignore 的 `Temp/`），不触碰 `u_alice` 等既有账号。两条路径都实测：直接复用 → 38/38；删掉本地文件后自动签发 → 38/38；`u_alice` 令牌未变（仍 200）。历史提交里的旧令牌只能靠轮换失效，已写进 `docs/security-checklist.md`。
 - **推送**：`main` 推到 `git@github.com:ThisZhouS/ChatAgent.git`（SSH 可达，此前本地领先 42 个提交）。
+
+## 第十九轮（2026-09-17 夜间）：产品功能树差距审计 + 消息投喂闸门
+
+用户给出六域功能树（聊天/好友/群聊/UI/Agent/服务器）并要求「把 agent 与自建聊天工具整合、把能力关在笼子里」。本轮先用四个只读子代理做逐域差距审计（结果汇总到 `docs/product-decomposition-gap-matrix-2026-09-17.md`），再实现其中最关键的一条。
+
+- **审计结论**：原生聊天基础设施、群聊基础、任务与授权骨架、桌面壳已成体系；好友关系与验证、提醒分级、转发署名与时间、图片/表情渲染、窗口置顶隐藏、主题背景、Agent 联系人级分级、关键词钩子、群公告与群主权限、解散群、断线补差、目录外授权均缺失或半成品。
+- **实现 P0-1 消息投喂闸门**：一切消息默认在过撤回时间后再交给 agent（硬编码，无参数可绕过）；撤回取消未投喂项并可审计；上下文改为可配置窗口（默认最近 20 条）；提示词新增不可绕过规则（辅助层）。验证：`agent-intake.test.ts` 9 例 + `agent-intake-wiring.test.ts` 4 例 + `ChatView.test.ts` 文案 1 例。
+- **顺带修复**：锁心跳允许重叠，`releaseLock()` 只 await 最新一次心跳，旧心跳可在释放后把锁文件写回（第三方审查 PR-01 的现象）。改为串行链 + rename 前校验，`electron-lock-check` 18/18。
+- 验证：根套件 35 文件 / 337 用例、`apps/web` 43 用例、`tsc`/`vue-tsc` 0 错；`.env.example`、本文件、`docs/tasks.md`、`docs/security-checklist.md`、`Tree/Tree.md` 与本记录同步更新。

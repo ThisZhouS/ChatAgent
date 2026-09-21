@@ -52,8 +52,10 @@ import { NativeImGateway } from './native-gateway';
 import type { ServerConfig } from './config';
 import { loadConfig } from './config';
 import { ChatAgentService, ServiceError } from './service';
+import { AgentIntakeGate } from './agent-intake';
 import {
   AccountStore,
+  AgentIntakeStore,
   ArtifactStore,
   ConversationStore,
   LocalTaskReceiptStore,
@@ -138,6 +140,10 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     config.native.sessionTtlSeconds,
   );
   const localTasks = new LocalTaskReceiptStore();
+  const agentIntakeStore = new AgentIntakeStore(
+    join(config.dataDir, 'agent-intake.json'),
+    onStoreError,
+  );
   const events = new NativeEventHub();
   const audit = new AuditLog(config.auditFilePath);
   const limiter = new RateLimiter(DEFAULT_RATE_LIMITS);
@@ -223,7 +229,11 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     }),
   );
 
-  const service = new ChatAgentService(
+  // The intake gate needs the service for history and task submission, and the service
+  // needs the gate, so the callbacks read this reference at call time (never during
+  // construction): a handoff is only ever submitted later, from the queue.
+  let service!: ChatAgentService;
+  service = new ChatAgentService(
     config,
     accounts,
     conversations,
@@ -239,10 +249,48 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     sessions,
     events,
     readState,
+    new AgentIntakeGate({
+      store: agentIntakeStore,
+      mode: config.agentIntake.mode,
+      // The recall window IS the deferral: one number, so they cannot drift apart.
+      deferMs: Math.max(0, config.native.recallWindowSeconds) * 1000,
+      contextMessages: config.agentIntake.contextMessages,
+      lookupMessage: (messageId) => messages.findById(messageId),
+      buildHistory: (conversationId, limit) => service.buildAgentHistory(conversationId, limit),
+      submit: async ({ record, history }) => {
+        const task = await service.taskEngine.submit({
+          accountId: record.accountId,
+          conversationId: record.conversationId,
+          organizationId: record.organizationId,
+          requesterId: record.requesterId,
+          goal: record.goal,
+          input: { history },
+          maxAttempts: 1,
+        });
+        return { taskId: task.id };
+      },
+      onEvent: (event) => events.publish(event),
+      logger: {
+        warn: (message, detail) => app.log.warn({ detail }, message),
+        error: (message, detail) => app.log.error({ detail }, message),
+      },
+    }),
     (event) => audit.record(event),
   );
 
   await directory.ensureOwner();
+
+  // Start the intake queue: recover anything that came due while the server was down,
+  // then keep polling. Deferred is the product default; `immediate` only restores the
+  // old behaviour for deployments that disable recall.
+  await service.recoverIntake();
+  service.startIntake();
+  if (config.agentIntake.mode === 'immediate' && config.native.recallWindowSeconds > 0) {
+    app.log.warn(
+      'CHATAGENT_AGENT_INTAKE_MODE=immediate with recall enabled: agents may read a ' +
+        'message the sender can still withdraw.',
+    );
+  }
 
   // Seed a default account so the workbench works immediately.
   if ((await accounts.list()).length === 0) {
@@ -277,6 +325,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
   }
 
   app.addHook('onClose', async () => {
+    service.stopIntake();
     await service.taskEngine.stop();
     for (const gateway of gateways) await gateway.stop();
     // Coalesced stores flush here so a graceful shutdown loses nothing.
@@ -1417,6 +1466,7 @@ async function deliverIfAuthorized(
     if (
       event.type === 'message' ||
       event.type === 'message_recalled' ||
+      event.type === 'agent_intake' ||
       event.type === 'conversation_updated'
     ) {
       await service.getConversation(principal, event.conversationId);

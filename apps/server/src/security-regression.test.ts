@@ -24,7 +24,11 @@ const MEMBERS: TestMemberSeed[] = [
 ];
 
 async function boot(overrides: Parameters<typeof createTestApp>[0] = {}) {
-  const test = await createTestApp({ members: MEMBERS, ...overrides });
+  const test = await createTestApp({
+    members: MEMBERS,
+    agentIntake: { mode: 'immediate' },
+    ...overrides,
+  });
   active.push(test.app);
   return test;
 }

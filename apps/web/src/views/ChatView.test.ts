@@ -50,7 +50,11 @@ const mocks = vi.hoisted(() => {
     conversation,
     group,
     markRead: vi.fn(async () => ({ ok: true })),
-    send: vi.fn(async () => ({ message: {} })),
+    // The send response may also carry the intake notice (queued until the recall
+    // window ends), so the mock's shape has to allow it.
+    send: vi.fn(async (): Promise<{ message: unknown; intake?: unknown; intakes?: unknown[] }> => ({
+      message: {},
+    })),
     open: vi.fn(async () => conversation),
     createGroup: vi.fn(async () => conversation),
     addMember: vi.fn(async () => ({ ok: true })),
@@ -184,6 +188,32 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('早上好，验收前请确认群聊');
   });
 
+
+  it('explains that an assistant message is queued until the recall window ends', async () => {
+    mocks.send.mockResolvedValueOnce({
+      message: { id: 'm_new' },
+      intake: {
+        id: 'intake-1',
+        state: 'pending',
+        mode: 'deferred',
+        dueAt: new Date(Date.now() + 120_000).toISOString(),
+      },
+    });
+    const wrapper = mountChat();
+    await flushPromises();
+
+    await wrapper.find('textarea').setValue('@助手 汇总本周进展');
+    const sendButton = wrapper.findAll('button').find((button) => button.text().includes('发送'));
+    await sendButton?.trigger('click');
+    await flushPromises();
+
+    const notice = wrapper.find('[data-testid="intake-notice"]');
+    expect(notice.exists()).toBe(true);
+    // The user must not read "queued" as "the assistant is ignoring me", and must
+    // know that withdrawing the message cancels the handoff.
+    expect(notice.text()).toContain('撤回窗口结束后才会交给助手');
+    expect(notice.text()).toContain('撤回即取消');
+  });
   it('sends the composed text through the native API', async () => {
     const wrapper = mountChat();
     await flushPromises();

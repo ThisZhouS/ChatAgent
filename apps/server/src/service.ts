@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   AgentAccount,
+  AgentIntakeNotice,
   ApprovalRecord,
   ChatMessage,
   Conversation,
@@ -55,7 +56,23 @@ import type {
   ReadStateStore,
   SessionStore,
   WebhookDedupeStore,
+  AgentIntakeRecord,
 } from './stores';
+import { AgentIntakeGate, type AgentIntakeStatus } from './agent-intake';
+
+function toIntakeNotice(
+  record: AgentIntakeRecord,
+  mode: 'deferred' | 'immediate',
+): AgentIntakeNotice {
+  return {
+    id: record.id,
+    state: record.state,
+    mode,
+    dueAt: record.state === 'pending' ? record.dueAt : undefined,
+    taskId: record.taskId,
+    reason: record.cancelReason,
+  };
+}
 
 export interface InjectMessageResult {
   authorized: boolean;
@@ -65,6 +82,14 @@ export interface InjectMessageResult {
   deduplicated?: boolean;
   /** Present when the inbound message was persisted. */
   message?: ChatMessage;
+  /**
+   * How this message is being handed to an agent. In deferred mode `taskId` is
+   * absent until the recall window has elapsed, so clients must show the queue
+   * state instead of a task link.
+   */
+  intake?: AgentIntakeNotice;
+  /** One per mentioned AI account in a group message. */
+  intakes?: AgentIntakeNotice[];
 }
 
 export interface WebhookHandleResult {
@@ -125,6 +150,8 @@ export class ChatAgentService {
     private readonly sessions: SessionStore,
     private readonly events: NativeEventHub,
     private readonly readState: ReadStateStore,
+    /** Queue that holds a message until its recall window has elapsed. */
+    private readonly intake: AgentIntakeGate,
     /**
      * Optional audit sink. AI-originated messages are recorded here without
      * their body text, so "what did the assistant send to whom" is traceable
@@ -739,6 +766,18 @@ export class ChatAgentService {
       const recalledAt = new Date().toISOString();
       const updated = await this.messages.markRecalled(messageId, recalledAt);
       if (!updated) throw new ServiceError(404, 'message not found');
+      // Hard-coded rule: a recall also removes the message from the agent's intake
+      // queue, so a withdrawn message is never handed over (see agent-intake.ts).
+      const cancelled = await this.intake.cancelForMessage(updated.id, 'recalled');
+      if (cancelled) {
+        this.audit?.({
+          action: 'agent_intake.cancelled',
+          outcome: 'ok',
+          actorId: principal.id,
+          target: updated.id,
+          detail: `intake:${cancelled.id}`,
+        });
+      }
       this.events.publish({
         type: 'message_recalled',
         conversationId: updated.conversationId,
@@ -761,7 +800,15 @@ export class ChatAgentService {
       mentions?: string[];
       replyTo?: string;
     },
-  ): Promise<{ message: ChatMessage; taskId?: string; taskIds?: string[] }> {
+  ): Promise<{
+    message: ChatMessage;
+    taskId?: string;
+    taskIds?: string[];
+    /** Present for an AI conversation: when the agent may read this message. */
+    intake?: AgentIntakeNotice;
+    /** One per mentioned AI account in a group. */
+    intakes?: AgentIntakeNotice[];
+  }> {
     this.requireMember(principal);
     await this.assertAttachmentsOwned(principal, input.attachments);
     const conversation = await this.conversations.get(conversationId);
@@ -814,7 +861,11 @@ export class ChatAgentService {
       if (!delivered.message) {
         throw new ServiceError(500, 'message was not persisted');
       }
-      return { message: delivered.message, taskId: delivered.taskId };
+      return {
+        message: delivered.message,
+        taskId: delivered.taskId,
+        intake: delivered.intake,
+      };
     }
 
     if (conversation.targetKind === 'member') {
@@ -854,11 +905,12 @@ export class ChatAgentService {
       at: message.createdAt,
     });
 
-    // Group @AI: every mentioned participant that is an AI account gets a task
-    // for this message, with the group conversation as context.
+    // Group @AI: every mentioned participant that is an AI account is queued for this
+    // message, with the group conversation as context. Queued, not started - the intake
+    // gate waits out the recall window first (see agent-intake.ts).
     const taskIds: string[] = [];
+    const intakes: AgentIntakeNotice[] = [];
     if (conversation.targetKind === 'group' && mentions.length > 0) {
-      const history = await this.buildHistory(conversation.id);
       for (const mentionId of mentions.slice(0, 3)) {
         const account = await this.accounts.get(mentionId);
         if (!account || !canUseAccount(principal, account)) continue;
@@ -866,20 +918,21 @@ export class ChatAgentService {
         // The client inserts "@<displayName>"; strip it so the model sees the
         // instruction alone rather than the mention prefix.
         const goal = stripMention(input.text, [account.displayName, account.name]).trim();
-        const task = await this.taskEngine.submit({
-          accountId: account.id,
+        const record = await this.intake.defer({
           conversationId: conversation.id,
-          organizationId: conversation.organizationId,
+          messageId: message.id,
+          accountId: account.id,
+          organizationId: account.organizationId,
           requesterId: principal.id,
+          chatType: 'group',
           goal: goal === '' ? '（空消息）' : goal,
-          input: { history },
-          maxAttempts: 1,
         });
-        taskIds.push(task.id);
+        intakes.push(toIntakeNotice(record, this.intake.intakeMode));
+        if (record.taskId) taskIds.push(record.taskId);
       }
     }
 
-    return { message, taskId: taskIds[0], taskIds };
+    return { message, taskId: taskIds[0], taskIds, intakes };
   }
 
   /** True when the principal may see this approval (requester or decider). */
@@ -1952,6 +2005,35 @@ export class ChatAgentService {
 
   // Agent status -----------------------------------------------------------
 
+  // Agent intake queue (recall-window deferral) ---------------------------
+
+  /**
+   * The conversation as an agent may read it at handoff time. Public because the
+   * intake gate (owned by the app, so it can share the audit sink and logger) calls
+   * back into the service once the recall window has elapsed.
+   */
+  buildAgentHistory(conversationId: string, limit?: number): Promise<ModelMessage[]> {
+    return this.buildHistory(conversationId, limit);
+  }
+
+
+  /** Loads the queue and processes anything that came due while we were down. */
+  async recoverIntake(): Promise<void> {
+    await this.intake.recover();
+  }
+
+  startIntake(intervalMs = 1_000): void {
+    this.intake.start(intervalMs);
+  }
+
+  stopIntake(): void {
+    this.intake.stop();
+  }
+
+  intakeStatus(): Promise<AgentIntakeStatus> {
+    return this.intake.status();
+  }
+
   async agentStatus(principal: Principal) {
     this.requireMember(principal);
     const accounts = await this.accounts.list();
@@ -1970,6 +2052,8 @@ export class ChatAgentService {
       uptimeSeconds: Math.round(process.uptime()),
       // Clients need the server's window to decide whether to offer "recall".
       recallWindowSeconds: Math.max(0, this.config.native.recallWindowSeconds),
+      // And the intake policy, so the UI can explain "queued, not yet read".
+      intake: await this.intake.status(),
       accounts: orgAccounts.length,
       onlineAccounts: orgAccounts.filter((account) => account.status === 'online').length,
       tasks: {
@@ -2103,8 +2187,6 @@ export class ChatAgentService {
         targetId: input.account.id,
       }));
 
-    const history = await this.buildHistory(conversation.id);
-
     const inbound: ChatMessage = {
       id: crypto.randomUUID(),
       channel: input.channel,
@@ -2132,26 +2214,39 @@ export class ChatAgentService {
       at: inbound.createdAt,
     });
 
-    const goal = buildGoal(inbound);
-    const task = await this.taskEngine.submit({
-      accountId: input.account.id,
+    // The handoff goes through the intake gate: nothing is submitted before the recall
+    // window has elapsed, so a withdrawn message is never read by an agent.
+    const record = await this.intake.defer({
       conversationId: conversation.id,
+      messageId: inbound.id,
+      accountId: input.account.id,
       organizationId: input.organizationId,
       requesterId: input.requesterId,
-      goal,
-      input: { history },
-      maxAttempts: 1,
+      chatType: input.chatType,
+      goal: buildGoal(inbound),
     });
 
-    return { authorized: true, conversationId: conversation.id, taskId: task.id, message: inbound };
+    return {
+      authorized: true,
+      conversationId: conversation.id,
+      taskId: record.taskId,
+      intake: toIntakeNotice(record, this.intake.intakeMode),
+      message: inbound,
+    };
   }
 
-  private async buildHistory(conversationId: string): Promise<ModelMessage[]> {
-    // Recalled messages are removed from the model context as well; otherwise
-    // the AI would quote text the sender already withdrew.
-    const list = (await this.messages.list(conversationId)).filter(
+  /**
+   * The conversation as the agent may see it: recalled messages are gone, and only the
+   * most recent `limit` messages are handed over. An unbounded history was both a cost
+   * problem (every message ever sent went into the prompt) and a privacy problem (an
+   * ancient message resurfaced with no relation to the request).
+   */
+  private async buildHistory(conversationId: string, limit?: number): Promise<ModelMessage[]> {
+    const window = Math.max(1, limit ?? this.config.agentIntake.contextMessages);
+    const all = (await this.messages.list(conversationId)).filter(
       (message) => !message.recalledAt,
     );
+    const list = all.slice(-window);
     return list.map((message) => {
       if (message.direction === 'inbound') {
         return { role: 'user', content: buildGoal(message) } satisfies ModelMessage;

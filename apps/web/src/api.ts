@@ -1,5 +1,6 @@
 import type {
   AgentAccount,
+  AgentIntakeNotice,
   ApprovalRecord,
   ChatMessage,
   Conversation,
@@ -247,7 +248,15 @@ export const api = {
         replyTo?: string;
       },
     ) =>
-      request<{ message: ChatMessage; taskId?: string; taskIds?: string[] }>(
+      request<{
+        message: ChatMessage;
+        taskId?: string;
+        taskIds?: string[];
+        /** Set for an assistant conversation: when the agent may read the message. */
+        intake?: AgentIntakeNotice;
+        /** One per mentioned assistant in a group. */
+        intakes?: AgentIntakeNotice[];
+      }>(
         `/conversations/${id}/messages`,
         {
           method: 'POST',

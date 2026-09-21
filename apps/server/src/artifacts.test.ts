@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 async function boot() {
-  const test = await createTestApp();
+  const test = await createTestApp({ agentIntake: { mode: 'immediate' } });
   active.push(test.app);
   return test;
 }

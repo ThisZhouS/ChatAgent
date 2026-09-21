@@ -5,7 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { DEFAULT_ORGANIZATION_ID, LEGACY_OWNER_ID } from '@chatagent/contracts';
 import { buildApp } from './app';
 import { hashToken } from './auth';
-import type { NativeConfig, ServerConfig, WebhookConfig } from './config';
+import type { AgentIntakeConfig, NativeConfig, ServerConfig, WebhookConfig } from './config';
 
 export interface TestApp {
   app: FastifyInstance;
@@ -27,10 +27,11 @@ export interface TestMemberSeed {
 }
 
 export async function createTestApp(
-  overrides: Partial<Omit<ServerConfig, 'auth' | 'webhook' | 'native'>> & {
+  overrides: Partial<Omit<ServerConfig, 'auth' | 'webhook' | 'native' | 'agentIntake'>> & {
     auth?: Partial<ServerConfig['auth']>;
     webhook?: Partial<Omit<WebhookConfig, 'channels'>> & { channels?: WebhookConfig['channels'] };
     native?: Partial<NativeConfig>;
+    agentIntake?: Partial<AgentIntakeConfig>;
     /** Members written to the directory before the app boots. */
     members?: TestMemberSeed[];
   } = {},
@@ -66,6 +67,12 @@ export async function createTestApp(
       recallWindowSeconds: 120,
       externalChannels: false,
     },
+    // Tests exercise the shipped default: a message reaches an agent only after the
+    // recall window. Suites that assert immediate task creation ask for `immediate`.
+    agentIntake: {
+      mode: 'deferred',
+      contextMessages: 20,
+    },
   };
 
   const config: ServerConfig = {
@@ -78,6 +85,7 @@ export async function createTestApp(
       channels: { ...(overrides.webhook?.channels ?? {}) },
     },
     native: { ...base.native, ...(overrides.native ?? {}) },
+    agentIntake: { ...base.agentIntake, ...(overrides.agentIntake ?? {}) },
   };
 
   if (overrides.members && overrides.members.length > 0) {

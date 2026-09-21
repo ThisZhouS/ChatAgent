@@ -289,8 +289,34 @@ export interface MemberView {
   accountStatus?: AccountStatus;
 }
 
+/**
+ * What happened to a message on its way to an agent. The host hands a message over
+ * only after the recall window has elapsed, so `pending` means "not yet read by the
+ * agent" and `cancelled` means it never will be (the sender withdrew it).
+ */
+export interface AgentIntakeNotice {
+  id: string;
+  state: 'pending' | 'submitted' | 'cancelled';
+  mode: 'deferred' | 'immediate';
+  /** When the agent may read it (pending only). */
+  dueAt?: string;
+  taskId?: string;
+  reason?: string;
+}
+
 export type NativeEvent =
   | { type: 'message'; conversationId: string; message: ChatMessage; at: string }
+  | {
+      type: 'agent_intake';
+      conversationId: string;
+      intakeId: string;
+      messageId: string;
+      state: AgentIntakeNotice['state'];
+      dueAt?: string;
+      taskId?: string;
+      reason?: string;
+      at: string;
+    }
   | {
       type: 'message_recalled';
       conversationId: string;

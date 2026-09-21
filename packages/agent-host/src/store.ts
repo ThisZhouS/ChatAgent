@@ -750,6 +750,12 @@ export class JsonFileAgentHostStore implements AgentHostStore {
           await rm(tmp, { force: true }).catch(() => undefined);
           return this.loseLock('the lock file changed while heartbeating');
         }
+        // Last check before the commit point: if this store was released while the
+        // beat was in flight, the lock file must stay gone.
+        if (!this.lockHeld || this.lockToken !== token) {
+          await rm(tmp, { force: true }).catch(() => undefined);
+          return;
+        }
         // Rename is the commit point: a reader never sees a half-written payload.
         await rename(tmp, this.lockPath);
       } catch {
@@ -758,7 +764,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       }
     };
     const schedule = () => {
-      this.lockBeatInFlight = beat();
+      // Heartbeats are serialised. Overlapping beats could each reach their rename,
+      // and `releaseLock()` awaits only the newest promise - so an older beat could
+      // put the lock file back after a clean release, leaving an orphan lock that
+      // makes the next start look like a second writer. Chaining makes the awaited
+      // promise the tail of every beat that is still running.
+      this.lockBeatInFlight = this.lockBeatInFlight
+        .then(() => beat())
+        .catch(() => undefined);
       void this.lockBeatInFlight;
     };
     this.lockBeatOnce = beat;

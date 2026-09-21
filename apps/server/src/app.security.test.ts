@@ -15,7 +15,9 @@ afterEach(async () => {
 async function boot(
   ...args: Parameters<typeof createTestApp>
 ): Promise<Awaited<ReturnType<typeof createTestApp>>> {
-  const test = await createTestApp(...args);
+  // These suites assert delivery/redaction/authorization, not intake timing: they opt
+  // into immediate handoff (merged under the caller's own overrides).
+  const test = await createTestApp({ agentIntake: { mode: 'immediate' }, ...(args[0] ?? {}) });
   active.push(test.app);
   return test;
 }

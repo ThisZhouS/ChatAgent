@@ -805,6 +805,86 @@ export class WebhookDedupeStore {
   }
 }
 
+export interface AgentIntakeRecord {
+  id: string;
+  conversationId: string;
+  /** The message that carried the request; the handoff dies with it. */
+  messageId: string;
+  accountId: string;
+  organizationId: string;
+  requesterId: string;
+  chatType: 'direct' | 'group';
+  goal: string;
+  state: 'pending' | 'submitted' | 'cancelled';
+  /** When the agent may see the message (recall window elapses first). */
+  dueAt: string;
+  createdAt: string;
+  updatedAt: string;
+  taskId?: string;
+  cancelReason?: 'recalled' | 'message_missing' | 'conversation_missing';
+  /** Delivery attempts of the handoff itself (not of the task). */
+  attempts: number;
+  lastError?: string;
+}
+
+/**
+ * Queue of messages that are waiting for the recall window to elapse before they
+ * are handed to an agent. Persisted so a restart neither drops a request nor
+ * replays one that was already submitted.
+ */
+export class AgentIntakeStore {
+  private readonly records = new Map<string, AgentIntakeRecord>();
+  private readonly writer: JsonFileWriter<AgentIntakeRecord[]>;
+  private loaded = false;
+
+  constructor(
+    private readonly filePath: string,
+    onError?: (error: unknown) => void,
+    /** Terminal records kept for the operator; pending ones are never pruned. */
+    private readonly terminalRetention = 200,
+  ) {
+    this.writer = new JsonFileWriter<AgentIntakeRecord[]>(filePath, 150, onError);
+  }
+
+  get health(): StorageHealth {
+    return this.writer.health;
+  }
+
+  async load(): Promise<void> {
+    if (this.loaded) return;
+    this.loaded = true;
+    const rows = await readJson<AgentIntakeRecord[]>(this.filePath, []);
+    for (const row of rows) {
+      if (row && typeof row.id === 'string') this.records.set(row.id, row);
+    }
+  }
+
+  async get(id: string): Promise<AgentIntakeRecord | undefined> {
+    await this.load();
+    return this.records.get(id);
+  }
+
+  async list(): Promise<AgentIntakeRecord[]> {
+    await this.load();
+    return [...this.records.values()];
+  }
+
+  async save(record: AgentIntakeRecord): Promise<void> {
+    await this.load();
+    this.records.set(record.id, record);
+    this.prune();
+    this.writer.schedule([...this.records.values()]);
+    await this.writer.flush();
+  }
+
+  private prune(): void {
+    const terminal = [...this.records.values()]
+      .filter((record) => record.state !== 'pending')
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    for (const record of terminal.slice(this.terminalRetention)) this.records.delete(record.id);
+  }
+}
+
 /**
  * Native client login sessions. The plaintext session token is returned to the
  * caller exactly once; only its sha256 hash is persisted.

@@ -122,3 +122,12 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **断网可用边界明确**：`unverified` 只约束外部副作用；本地文档任务照常运行，在跑任务不回滚、不打断。这是刻意选择，写在实现注释里。
 - **请求/响应都不带内容**：设备只发 `id + kind`（≤200 条），服务端只回 `id + kind + status + expiresAt`；不是本人的审批、未知 id、无台账的种类统一 `unknown`，不泄露 id 是否存在；`supportedKinds` 明说服务端只管 `approval`。
 - **可见性**：`status().authorization`（状态/最近复核/失败原因/撤销数/无法确认数/暂缓条数）与设置页「授权复核」提示，避免“任务没动却没有任何解释”。
+
+
+## 消息投喂闸门（2026-09-17）
+
+- **默认延迟投喂是硬编码行为**：`AgentIntakeGate` 在撤回窗口结束前不把消息交给任何 agent；唯一例外是部署配置 `CHATAGENT_AGENT_INTAKE_MODE=immediate`（启动时告警）。没有任何 API 参数、工具或提示词可以提前投喂。
+- **撤回即取消**：`recallMessage` 在同一事务路径上取消未投喂的入队项并写审计 `agent_intake.cancelled`；已投喂的任务不回滚（避免静默作废用户已看到的执行）。
+- **入队与投喂都持久化**：队列落 `data/agent-intake.json`，重启不重放已投喂项、不丢失已到期项；投喂失败按指数退避重试而不是丢弃。
+- **上下文窗口有上限**：交给模型的会话历史默认最近 20 条（`CHATAGENT_AGENT_CONTEXT_MESSAGES`，1-200），撤回内容不在其中。
+- **提示词只是辅助**：`packages/hermes/src/system-prompt.ts` 的 `OPERATING_RULES` 声明「撤回内容不可索要/重建、目录外访问被拒即终局、关闭的工具不存在、授权由代码判定」，真正的边界仍在代码（闸门、能力下限、审批摘要、工作目录校验）。

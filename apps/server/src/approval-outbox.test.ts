@@ -351,7 +351,7 @@ describe('Gate 4: outbox receipts', () => {
 
 describe('Gate 4: approval path end to end', () => {
   it('blocks the task, rejects self-approval, and completes the send once approved', async () => {
-    const test = await createTestApp();
+    const test = await createTestApp({ agentIntake: { mode: 'immediate' } });
     active.push(test.app);
     const app = test.app;
 

@@ -47,6 +47,17 @@ export interface ApprovalConfig {
   ttlSeconds: number;
 }
 
+export interface AgentIntakeConfig {
+  /**
+   * `deferred` (default) hands a message to an agent only after the recall window has
+   * elapsed, so a sender who withdraws it inside the window never had it read.
+   * `immediate` restores the old behaviour and is only sensible when recall is off.
+   */
+  mode: 'deferred' | 'immediate';
+  /** How many recent messages of a conversation an agent may read per request. */
+  contextMessages: number;
+}
+
 export interface NativeConfig {
   /** Native client session lifetime. */
   sessionTtlSeconds: number;
@@ -72,6 +83,7 @@ export interface ServerConfig {
   webhook: WebhookConfig;
   approval: ApprovalConfig;
   native: NativeConfig;
+  agentIntake: AgentIntakeConfig;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -140,7 +152,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       recallWindowSeconds: Number(env.CHATAGENT_RECALL_WINDOW_SECONDS ?? 120),
       externalChannels: env.CHATAGENT_ENABLE_EXTERNAL_CHANNELS === 'true',
     },
+    agentIntake: {
+      // Only the exact string 'immediate' opts out; anything else stays deferred, so a
+      // typo cannot silently hand messages to an agent before the recall window ends.
+      mode: env.CHATAGENT_AGENT_INTAKE_MODE === 'immediate' ? 'immediate' : 'deferred',
+      contextMessages: clampInt(env.CHATAGENT_AGENT_CONTEXT_MESSAGES, 20, 1, 200),
+    },
   };
+}
+
+function clampInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
 export function hasModelConfig(config: ServerConfig): boolean {

@@ -27,7 +27,10 @@ const MEMBERS: TestMemberSeed[] = [
 ];
 
 async function boot() {
-  const test = await createTestApp({ members: MEMBERS });
+  const test = await createTestApp({
+      members: MEMBERS,
+      agentIntake: { mode: 'immediate' },
+    });
   active.push(test.app);
   return test;
 }
@@ -1289,7 +1292,11 @@ describe('message recall', () => {
   });
 
   it('names the disabled state instead of claiming the window expired', async () => {
-    const test = await createTestApp({ members: MEMBERS, native: { recallWindowSeconds: 0 } });
+    const test = await createTestApp({
+      members: MEMBERS,
+      native: { recallWindowSeconds: 0 },
+      agentIntake: { mode: 'immediate' },
+    });
     active.push(test.app);
     const aliceToken = await login(test.app, 'u_alice', 'alice-token');
     const accountId = await createAgent(test.app, auth(aliceToken));
@@ -1378,7 +1385,11 @@ describe('message recall', () => {
   });
 
   it('rejects recall once the window has expired', async () => {
-    const test = await createTestApp({ members: MEMBERS, native: { recallWindowSeconds: 0 } });
+    const test = await createTestApp({
+      members: MEMBERS,
+      native: { recallWindowSeconds: 0 },
+      agentIntake: { mode: 'immediate' },
+    });
     active.push(test.app);
     const aliceToken = await login(test.app, 'u_alice', 'alice-token');
     const accountId = await createAgent(test.app, auth(aliceToken));

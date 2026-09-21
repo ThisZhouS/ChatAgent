@@ -20,6 +20,11 @@ const text = ref('');
 const attachments = ref<ChatMessage['attachments']>([]);
 const error = ref('');
 const sending = ref(false);
+/**
+   * Set while this conversation has a message waiting for the recall window. The
+   * assistant has not read it yet, and a recall cancels the handoff entirely.
+   */
+const intakeNotice = ref<{ dueAt?: string; count: number; cancelled?: boolean } | null>(null);
 const uploading = ref(false);
 const loadingMessages = ref(false);
 const loadingEarlier = ref(false);
@@ -573,12 +578,18 @@ async function send() {
   sending.value = true;
   error.value = '';
   try {
-    await api.chat.send(activeId.value, {
+    const result = await api.chat.send(activeId.value, {
       text: text.value,
       attachments: attachments.value,
       mentions: mentions.value,
       replyTo: quoted.value?.id,
     });
+    // The host hands a message to an assistant only after the recall window has
+    // elapsed. Say so, otherwise "why is the AI not answering" is the user's problem.
+    const pending = [result?.intake, ...(result?.intakes ?? [])].filter(
+      (notice): notice is NonNullable<typeof notice> => Boolean(notice),
+    ).filter((notice) => notice.state === 'pending');
+    intakeNotice.value = pending.length > 0 ? { dueAt: pending[0]?.dueAt, count: pending.length } : null;
     quoted.value = null;
     text.value = '';
     attachments.value = [];
@@ -694,6 +705,24 @@ function connectStream() {
   stream.addEventListener('task', (raw) => {
     const event = JSON.parse((raw as MessageEvent).data) as { conversationId?: string };
     if (event.conversationId === activeId.value) void loadActiveTask();
+  });
+  stream.addEventListener('agent_intake', (raw) => {
+    const event = JSON.parse((raw as MessageEvent).data) as {
+      conversationId: string;
+      state: 'pending' | 'submitted' | 'cancelled';
+      dueAt?: string;
+    };
+    if (event.conversationId !== activeId.value) return;
+    if (event.state === 'cancelled') {
+      intakeNotice.value = { count: 0, cancelled: true };
+      return;
+    }
+    if (event.state === 'submitted') {
+      intakeNotice.value = null;
+      void loadActiveTask();
+      return;
+    }
+    intakeNotice.value = { dueAt: event.dueAt, count: intakeNotice.value?.count ?? 1 };
   });
   stream.addEventListener('approval', () => {
     void loadActiveTask();
@@ -1211,6 +1240,19 @@ onUnmounted(() => {
               <span class="quote-text">{{ quotePreviewOf(quoted) }}</span>
               <el-button size="small" text @click="quoted = null">取消</el-button>
             </div>
+            <p
+              v-if="intakeNotice"
+              class="intake-notice"
+              data-testid="intake-notice"
+            >
+              <el-tag size="small" type="info">助手待读</el-tag>
+              <template v-if="intakeNotice.cancelled">
+                消息已撤回，未交给助手
+              </template>
+              <template v-else>
+                已排队 {{ intakeNotice.count }} 条：撤回窗口结束后才会交给助手，撤回即取消
+              </template>
+            </p>
             <div class="composer-row">
               <el-upload :auto-upload="false" :show-file-list="false" :on-change="onFileChange">
                 <el-button :loading="uploading" :disabled="!activeId">附件</el-button>
