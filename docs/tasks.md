@@ -268,4 +268,5 @@ pnpm dev
 
 ## 待办（第四十一轮发现，未处理）
 
+- [x] 依赖审计的「空报告当干净」通道已封（第四十一轮）：registry 不可达时 pnpm 返回 `{"error":…}` 且退出码 0，脚本曾据此打印 `0 advisories` 并成功退出；现在缺 `metadata.totalDependencies` 就按未验证处理、退出 2。
 - [ ] **依赖高危项**：`node scripts/audit-deps.mjs --level critical` 显示 2 条 HIGH、0 条 critical——`extract-zip@<=2.0.1 -> >=2.0.2`（标记 `[app]`，来自打包链路）。既有验收门是 `--level critical`，所以现在是绿的：**「critical 门通过」不等于「没有高危」。** 处理需要联网升级该传递依赖 → 重跑用例与打包 → 复跑打包后 E2E，未完成前不要把这步写成已验证；是否把验收门提到 `--level high` 也应由产品决定（提上去会让当前验收立刻变红）。

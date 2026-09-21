@@ -68,6 +68,18 @@ try {
   process.exit(2);
 }
 
+// pnpm answers an unreachable registry with `{ "error": ... }` and exit code 0. Parsing that
+// as a report printed "0 advisories" and exited 0 - a clean bill of health for a scan that read
+// nothing. Demand positive evidence that dependencies were actually audited.
+const auditedDependencies = report?.metadata?.totalDependencies ?? 0;
+if (report?.error || auditedDependencies <= 0) {
+  console.log('dependency audit covered no dependencies: the registry answered nothing usable');
+  if (report?.error) console.log(`  reason: ${JSON.stringify(report.error).slice(0, 200)}`);
+  console.log('  → treat "dependency CVE scan" as UNVERIFIED for this run');
+  console.log('[audit-deps] 0 dependencies audited — 未验证，退出码 2（不是通过）');
+  process.exit(2);
+}
+
 if (asJson) {
   console.log(JSON.stringify(report, null, 2));
   process.exit(0);
