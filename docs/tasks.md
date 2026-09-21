@@ -269,4 +269,4 @@ pnpm dev
 ## 待办（第四十一轮发现，未处理）
 
 - [x] 依赖审计的「空报告当干净」通道已封（第四十一轮）：registry 不可达时 pnpm 返回 `{"error":…}` 且退出码 0，脚本曾据此打印 `0 advisories` 并成功退出；现在缺 `metadata.totalDependencies` 就按未验证处理、退出 2。
-- [ ] **依赖高危项**：`node scripts/audit-deps.mjs --level critical` 显示 2 条 HIGH、0 条 critical——`extract-zip@<=2.0.1 -> >=2.0.2`（标记 `[app]`，来自打包链路）。既有验收门是 `--level critical`，所以现在是绿的：**「critical 门通过」不等于「没有高危」。** 处理需要联网升级该传递依赖 → 重跑用例与打包 → 复跑打包后 E2E，未完成前不要把这步写成已验证；是否把验收门提到 `--level high` 也应由产品决定（提上去会让当前验收立刻变红）。
+- [ ] **依赖高危项（已定位来源）**：`extract-zip@2.0.1` 来自 `electron@39.8.10`，而 electron 是 `@chatagent/desktop` 的 **devDependency**（`pnpm why extract-zip` 实证：extract-zip@2.0.1 <- electron@39.8.10 <- @chatagent/desktop；没有任何 workspace 包声明它）。在打包产物 apps/desktop/release 里找不到任何 extract-zip 痕迹（本轮实核对），它没有随安装包分发。 所以正确的修法是**随既定的 Electron 版本切换一起消失**（彩排已在 42.4.1 全绿），切完复跑 `node scripts/audit-deps.mjs --level high` 核对，而不是现在动依赖树。既有验收门仍是 `--level critical`：**「critical 门通过」不等于「没有高危」**；是否把门提到 `high` 由产品决定（提上去会让当前验收立刻变红）。
