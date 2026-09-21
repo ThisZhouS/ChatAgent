@@ -124,6 +124,12 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **可见性**：`status().authorization`（状态/最近复核/失败原因/撤销数/无法确认数/暂缓条数）与设置页「授权复核」提示，避免“任务没动却没有任何解释”。
 
 
+## 仓库与本地凭据边界（2026-09-21 核对）
+
+- **受控文件里没有密钥形态字面量**：`git grep` 扫过全部受控文件，未命中 `sk-…`、`AKIA…`、私钥块，或 `api_key / access_token / client_secret = "<16 位以上长串>"` 这类形态。
+- **本地凭据一律不入库**：`Temp/`（`owner-token.txt`、`e2e-member.json`）、`data/`、`node_modules/`、`dist/`、`apps/desktop/release/` 均在 `.gitignore` 内，已用 `git check-ignore -v` 逐个确认（前三者是真正持有凭据/数据的路径）。
+- **受控文件里唯一与凭据同名的只有 `.env.example`**（模板，不含值）。
+- **已知例外（沿用既有记录）**：开发期固定令牌（如 `alice-dev-token`）存在于**历史提交**中——上面这次扫描只看受控文件，**不覆盖 git 历史**；仓库若对外公开，按既有清单轮换这些开发令牌，并注意 `authMode` 只在 `development` 下接受它们。
 ## 消息投喂闸门（2026-09-17）
 
 - **默认延迟投喂是硬编码行为**：`AgentIntakeGate` 在撤回窗口结束前不把消息交给任何 agent；唯一例外是部署配置 `CHATAGENT_AGENT_INTAKE_MODE=immediate`（启动时告警）。没有任何 API 参数、工具或提示词可以提前投喂。
