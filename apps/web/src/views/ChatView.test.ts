@@ -646,6 +646,64 @@ describe('ChatView', () => {
     expect(mocks.listMessages).toHaveBeenCalled();
   });
 
+
+  it('sends a catalogue sticker without text and renders it as a badge', async () => {
+    mocks.listMessages.mockResolvedValue([
+      {
+        id: 'm_sticker',
+        channel: 'web',
+        conversationId: 'conv_bob',
+        chatType: 'direct',
+        direction: 'inbound',
+        kind: 'image',
+        text: '',
+        sticker: 'thanks',
+        sender: { id: 'u_bob', name: 'Bob' },
+        mentions: [],
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+
+    // The id maps to this client's own bundle; nothing is fetched for it.
+    const badge = wrapper.find('[data-testid="bubble-sticker"]');
+    expect(badge.exists()).toBe(true);
+    expect(badge.text()).toContain('🙏');
+    expect(badge.text()).toContain('谢谢');
+
+    await wrapper.find('[data-testid="sticker-trigger"]').trigger('click');
+    await flushPromises();
+    const ok = document.querySelector('[data-testid="sticker-ok"]') as HTMLElement | null;
+    expect(ok, 'the picker lists the catalogue').toBeTruthy();
+    ok?.click();
+    await flushPromises();
+
+    // A sticker is a message of its own, sent immediately through the same API.
+    expect(mocks.send).toHaveBeenCalledWith('conv_bob', expect.objectContaining({ sticker: 'ok' }));
+  });
+
+  it('inserts an emoji into the composer instead of sending anything', async () => {
+    const wrapper = mountChat({ attachTo: document.body });
+    await flushPromises();
+    mocks.send.mockClear();
+
+    await wrapper.find('[data-testid="emoji-trigger"]').trigger('click');
+    await flushPromises();
+    const item = [...document.querySelectorAll('.el-dropdown-menu__item')].find((node) =>
+      (node.textContent ?? '').includes('👍'),
+    ) as HTMLElement | undefined;
+    expect(item, 'the emoji list is offered').toBeTruthy();
+    item?.click();
+    await flushPromises();
+
+    const composer = wrapper.find('[data-testid="composer"]').element as HTMLTextAreaElement;
+    expect(composer.value).toContain('👍');
+    // Emoji are just text: nothing is sent until the user presses send.
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
   it('sends the composed text through the native API', async () => {
     const wrapper = mountChat();
     await flushPromises();

@@ -317,6 +317,8 @@ export const api = {
         attachments?: ChatMessage['attachments'];
         mentions?: string[];
         replyTo?: string;
+        /** A sticker from the shared catalogue; it needs no text. */
+        sticker?: string;
         /** Retry key: the server returns the existing message for a repeated id. */
         clientMsgId?: string;
       },

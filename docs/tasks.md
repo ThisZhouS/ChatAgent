@@ -261,6 +261,6 @@ pnpm dev
 - [x] **P2-5 会话外观（界面背景）**：`Conversation.appearance` 闭集（预设 id 或 #rrggbb），任何参与者可设；渲染为房间底色，深色房间自动切浅色文字且气泡保持实色（对比度不受影响）；非法样式串一律 400 且不改变已存值。证据：`appearance.test.ts` 3 例、`ChatView.test.ts` 2 例。
 - [x] **P2-6 会话别名**：每查看者私有的 `{title?, members?}`（存在本人已读行），覆盖侧栏会话名、气泡发送者名与自己在本群的昵称；只能标注本会话成员、≤32 字、≤200 项、空串即清除。证据：`aliases.test.ts` 3 例、`ChatView.test.ts` 2 例。
 - [x] **P2-7 事件游标与存储决策**：`docs/adr-0004-storage-and-event-cursor.md`（继续 JSON + 迁移触发条件 + 代价）；`since()` 返回 `truncated`，游标过期时 SSE 先发 `event: resync` 让客户端重载（不再静默丢一段消息）。证据：`cursor-expiry.test.ts` 3 例、`event-replay.test.ts` 更新、`ChatView.test.ts` 1 例。
-- [ ] **P2 其余**：表情与贴纸（需要新消息类型与渲染约定，留到最后）。
+- [x] **P2-8 表情与贴纸**：表情=插入普通字符；贴纸=contracts 里的闭集目录（id 随消息走、客户端自带资源渲染、未知 id 400 且客户端不渲染）。证据：`stickers.test.ts` 2 例、`ChatView.test.ts` 2 例。**P0/P1/P2 既定条目至此全部落地**；下一阶段转入端到端复验与收口。
 
 待产品确认的 9 个语义问题见该文档 §4（好友分级的对象、拉黑归属、转发撤回是否级联、公告范围、队列栈粒度、文件安全是否含内容扫描、窗口背景指哪个窗口、个人 ID 含义、目录外授权的形式）。

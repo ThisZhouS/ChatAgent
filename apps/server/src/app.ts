@@ -941,14 +941,19 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     const { id } = request.params as { id: string };
     const parsed = nativeMessageSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (parsed.data.text.trim() === '' && parsed.data.attachments.length === 0) {
-      return reply.code(400).send({ error: 'text or attachments are required' });
+    if (
+      parsed.data.text.trim() === '' &&
+      parsed.data.attachments.length === 0 &&
+      parsed.data.sticker === undefined
+    ) {
+      return reply.code(400).send({ error: 'text, attachments or a sticker are required' });
     }
     const delivered = await service.sendNativeMessage(request.principal, id, {
       text: parsed.data.text,
       attachments: parsed.data.attachments as ChatMessage['attachments'],
       mentions: parsed.data.mentions,
       replyTo: parsed.data.replyTo,
+      sticker: parsed.data.sticker,
       clientMsgId: parsed.data.clientMsgId,
     });
     audit.record({

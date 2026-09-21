@@ -894,9 +894,38 @@ async function openContact(contact: MemberView) {
   }
 }
 
+/** Emoji and stickers the composer can insert. Both are local: nothing is uploaded. */
+const EMOJI = ['😀', '👍', '🙏', '🎉', '✅', '⏳', '❓', '⚠️', '📌', '📎'];
+const STICKERS: Array<{ id: string; emoji: string; label: string }> = [
+  { id: 'ok', emoji: '✅', label: '好的' },
+  { id: 'thanks', emoji: '🙏', label: '谢谢' },
+  { id: 'question', emoji: '❓', label: '有疑问' },
+  { id: 'done', emoji: '🎉', label: '完成' },
+  { id: 'wait', emoji: '⏳', label: '稍等' },
+  { id: 'cheer', emoji: '💪', label: '加油' },
+];
+/** Set when the next send is a sticker rather than text. */
+const pendingSticker = ref<string | undefined>(undefined);
+
+function insertEmoji(emoji: string) {
+  text.value = `${text.value}${emoji}`;
+}
+
+function stickerOf(message: ChatMessage): { emoji: string; label: string } | undefined {
+  if (!message.sticker) return undefined;
+  // An id this client does not know falls back to nothing rather than to a broken image.
+  return STICKERS.find((item) => item.id === message.sticker);
+}
+
+function sendSticker(sticker: string) {
+  // A sticker is a message of its own; it is sent immediately, like a reaction.
+  pendingSticker.value = sticker;
+  void send();
+}
+
 async function send() {
   if (!activeId.value) return;
-  if (text.value.trim() === '' && attachments.value.length === 0) return;
+  if (text.value.trim() === '' && attachments.value.length === 0 && !pendingSticker.value) return;
   sending.value = true;
   error.value = '';
   // One key per logical message. If this attempt fails (timeout, dropped response, the
@@ -910,8 +939,10 @@ async function send() {
       attachments: attachments.value,
       mentions: mentions.value,
       replyTo: quoted.value?.id,
+      sticker: pendingSticker.value ?? undefined,
       clientMsgId,
     });
+    pendingSticker.value = undefined;
     lastDraft = undefined;
     // The host hands a message to an assistant only after the recall window has
     // elapsed. Say so, otherwise "why is the AI not answering" is the user's problem.
@@ -1758,7 +1789,12 @@ onUnmounted(() => {
                     <div v-if="message.recalledAt" class="bubble-recalled">
                       {{ isMine(message) ? '你撤回了一条消息' : '对方撤回了一条消息' }}
                     </div>
-                    <div v-else-if="message.text" class="bubble-text">{{ message.text }}</div>
+                    <div v-else-if="stickerOf(message)" class="bubble-sticker" data-testid="bubble-sticker">
+                      <span class="sticker-emoji">{{ stickerOf(message)?.emoji }}</span>
+                      <span class="sticker-label">{{ stickerOf(message)?.label }}</span>
+                    </div>
+                    <div v-if="message.sticker && message.text" class="bubble-text">{{ message.text }}</div>
+                    <div v-else-if="!message.sticker && message.text" class="bubble-text">{{ message.text }}</div>
                     <div
                       v-if="!message.recalledAt && forwardedFromOf(message) as ForwardedFrom | undefined"
                       class="bubble-forwarded"
@@ -1947,6 +1983,31 @@ onUnmounted(() => {
                 placeholder="发送消息给 AI 助手或同事（Enter 发送，Shift+Enter 换行）"
                 @keydown.enter.exact.prevent="send"
               />
+              <el-dropdown trigger="click" @command="insertEmoji">
+                <el-button data-testid="emoji-trigger">表情</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-for="emoji in EMOJI" :key="emoji" :command="emoji">
+                      {{ emoji }}
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <el-dropdown trigger="click" @command="sendSticker">
+                <el-button data-testid="sticker-trigger">贴纸</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      v-for="item in STICKERS"
+                      :key="item.id"
+                      :command="item.id"
+                      :data-testid="`sticker-${item.id}`"
+                    >
+                      {{ item.emoji }} {{ item.label }}
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <el-button
                 type="primary"
                 data-testid="send"
@@ -2403,6 +2464,22 @@ onUnmounted(() => {
   border-radius: 8px;
   background: var(--el-bg-color);
   color: var(--el-text-color-primary);
+}
+
+.bubble-sticker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.sticker-emoji {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.sticker-label {
+  color: var(--el-text-color-regular);
 }
 
 .bubble-text {

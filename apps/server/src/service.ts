@@ -7,6 +7,7 @@ import type {
   ApprovalRecord,
   ContactRelationView,
   ChatMessage,
+  StickerId,
   Conversation,
   ConversationAliases,
   ConversationSummary,
@@ -1177,6 +1178,8 @@ export class ChatAgentService {
       attachments: ChatMessage['attachments'];
       mentions?: string[];
       replyTo?: string;
+      /** A sticker from the shared catalogue (see STICKER_IDS). */
+      sticker?: StickerId;
       /** Idempotency key for this send attempt (see nativeMessageSchema). */
       clientMsgId?: string;
     },
@@ -1226,7 +1229,7 @@ export class ChatAgentService {
       }
     }
 
-    const kind = input.attachments.length > 0 ? 'mixed' : 'text';
+    const kind = input.sticker ? 'image' : input.attachments.length > 0 ? 'mixed' : 'text';
 
     // A dissolved group is a tombstone: the history stays readable, nothing new goes in.
     if (conversation.dissolvedAt) {
@@ -1362,6 +1365,8 @@ export class ChatAgentService {
       chatType: conversation.chatType,
       direction: 'inbound',
       kind,
+      // The sticker travels as an id from the shared catalogue; clients render it themselves.
+      sticker: input.sticker,
       text: input.text,
       sender: { id: principal.id, name: principal.displayName },
       senderPrincipalId: principal.id,

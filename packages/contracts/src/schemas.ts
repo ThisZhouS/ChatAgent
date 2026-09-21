@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { STICKER_IDS } from './types';
 
 export const channelTypeSchema = z.enum([
   'native',
@@ -226,6 +227,8 @@ export const contactPatchSchema = z
   .strict();
 
 export const nativeMessageSchema = z.object({
+  /** A sticker id from the shared catalogue; anything else is refused. */
+  sticker: z.enum(STICKER_IDS).optional(),
   text: z.string().max(8000).default(''),
   /** Id of the message being quoted; must belong to the same conversation. */
   replyTo: z.string().min(1).max(128).optional(),

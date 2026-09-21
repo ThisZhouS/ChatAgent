@@ -163,6 +163,14 @@ export interface FileAttachment {
   localPath?: string;
 }
 
+/**
+ * Stickers are a closed catalogue, not user uploads: the id travels in the message and every
+ * client renders it from its own bundle. An unknown id is refused by the server, so a message
+ * can never point at content somebody else controls.
+ */
+export const STICKER_IDS = ['ok', 'thanks', 'question', 'done', 'wait', 'cheer'] as const;
+export type StickerId = (typeof STICKER_IDS)[number];
+
 export interface ChatMessage {
   id: string;
   channel: ChannelType;
@@ -180,6 +188,8 @@ export interface ChatMessage {
   mentions: string[];
   attachments: FileAttachment[];
   replyTo?: string;
+  /** Set when this message is a sticker from the shared catalogue (see STICKER_IDS). */
+  sticker?: StickerId;
   createdAt: string;
   /**
    * Set when the sender recalled the message. The body and attachments must not
