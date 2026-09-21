@@ -22,4 +22,12 @@ contextBridge.exposeInMainWorld('chatagent', {
      */
     openWorkbench: () => ipcRenderer.invoke('chatagent:workbench:open'),
   },
+  /**
+   * Window controls the page may ask for. The action is a fixed verb (not a path or a
+   * rectangle), so a compromised page cannot move the window somewhere unexpected or
+   * open arbitrary targets; every action is validated again in the main process.
+   */
+  window: {
+    set: (action) => ipcRenderer.invoke('chatagent:window', { action }),
+  },
 });

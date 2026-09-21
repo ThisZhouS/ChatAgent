@@ -16,6 +16,37 @@ import { decideNotification } from '../notifications';
 const props = defineProps<{ me: MemberView | null }>();
 const emit = defineEmits<{ 'unread-total': [count: number] }>();
 
+const desktopWindow = computed(() => window.chatagent?.window);
+/** Local mirror of the main process' window state, refreshed from its reply. */
+const windowPinned = ref(false);
+const windowVisible = ref(true);
+
+async function windowAction(action: 'pin' | 'unpin' | 'toggle-pin' | 'hide' | 'show') {
+  const bridge = desktopWindow.value;
+  if (!bridge) return;
+  try {
+    const response = await bridge.set(action);
+    if (response.ok && response.result) {
+      windowPinned.value = response.result.pinned;
+      windowVisible.value = response.result.visible;
+    } else if (!response.ok) {
+      error.value = `窗口操作失败：${response.error ?? 'unknown'}`;
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function refreshWindowState() {
+  const bridge = desktopWindow.value;
+  if (!bridge) return;
+  // Ask the main process rather than assuming: the OS can change always-on-top too.
+  const response = await bridge.set('show').catch(() => undefined);
+  if (response?.ok && response.result) {
+    windowPinned.value = response.result.pinned;
+    windowVisible.value = response.result.visible;
+  }
+}
 const contacts = ref<MemberView[]>([]);
 const conversations = ref<ConversationSummary[]>([]);
 const activeId = ref('');
@@ -1443,6 +1474,25 @@ onUnmounted(() => {
             <div class="side-title">
               <span>{{ activeConversation ? titleOf(activeConversation) : '选择会话' }}</span>
               <el-tag v-if="isAgentConversation" size="small" type="primary">AI 助手</el-tag>
+              <!-- Desktop-only window controls; the browser has no such window. -->
+              <span v-if="desktopWindow" class="side-actions">
+                <el-button
+                  size="small"
+                  text
+                  data-testid="window-pin"
+                  @click="windowAction(windowPinned ? 'unpin' : 'pin')"
+                >
+                  {{ windowPinned ? '取消置顶' : '窗口置顶' }}
+                </el-button>
+                <el-button
+                  size="small"
+                  text
+                  data-testid="window-hide"
+                  @click="windowAction('hide')"
+                >
+                  隐藏窗口
+                </el-button>
+              </span>
               <span
                 v-else-if="activeConversation?.targetKind === 'group'"
                 class="side-actions"

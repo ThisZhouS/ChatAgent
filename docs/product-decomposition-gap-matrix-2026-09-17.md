@@ -211,6 +211,14 @@
 - 界面：聊天区支持**拖入单文件**（拖入时显示落点提示），与「附件」按钮走同一条上传路径；客户端先做明显的类型/大小（20MB）检查以免白跑一趟，并提供 `accept` 白名单；多文件拖入直接说明「一次只能一个文件」而不是静默丢弃。**服务端仍然独立校验字节**——前端检查只是体验。
 - 验证：`file-signature.test.ts` 5 例（各家族接受、改名拒绝、OOXML 容器不通用、未知容器/空文件/超范围扩展名、文本正反例）+ `documents-upload.test.ts` +2 例（PDF 改名 .docx → 415 且审计与零落库；真 docx/UTF-8 csv 接受、PNG 改名 .txt 拒绝）+ `ChatView.test.ts` +2 例（拖入上传、明显错误本地拒绝且不打扰服务端）。根套件 43 文件 / **384 用例**、web 64 用例、`tsc`/`vue-tsc` 0 错。
 
+### 3.9 窗口置顶与隐藏（P2 第二项）
+
+- 问题（审计）：`main.cjs` 从未调用 `setAlwaysOnTop`，也没有 hide/show 命令；两项都**没有自动验收入口**。
+- 主进程：新增 `chatagent:window` IPC（动作是固定动词 `pin`/`unpin`/`toggle-pin`/`hide`/`show`，不接受坐标、路径或窗口 id；发送者仍按既有规则校验），托盘菜单加入「窗口置顶/取消置顶」与「隐藏窗口（后台继续运行）」，标签按**实时状态**生成。
+- 状态可核对：`status().window` 返回 `{pinned, visible, focused}`，且 `pinned` 是向窗口本身询问（`isAlwaysOnTop()`）而不是缓存布尔值——操作系统/窗口管理器也能改变置顶，缓存会与会话现实不符。
+- 页面侧：`preload.cjs` 暴露 `chatagent.window.set(action)`；聊天头部在**桌面壳内**才显示「窗口置顶/隐藏窗口」按钮，普通浏览器里根本不渲染（`window.chatagent?.window` 不存在），按钮文案跟随主进程回报的状态。
+- 验证：**真实 Electron 检查** `electron-nav-check.mjs` 新增 5 项断言（页面可达、置顶后 `pinned:true`、`status().window` 同步、隐藏后 `visible:false`、show/unpin 复原、未知动作被拒），并把桥面白名单更新为包含 `window`（13/13）；`ChatView.test.ts` 新增 1 例（浏览器里不渲染控件、桌面壳里调用并跟随回报状态）。既有 Electron 检查全部复跑通过（锁 18/18、回执 21/21、冒烟 6/6、退出 10/10、CSP 5/5、工作台 13/13）。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。

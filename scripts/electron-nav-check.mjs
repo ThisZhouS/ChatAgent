@@ -194,15 +194,19 @@ async function main() {
       if (!ready) check('the stub page finished loading', false);
 
       const bridge = await cdp.evaluateSoft(
-        'JSON.stringify({ top: Object.keys(window.chatagent || {}).sort(), host: Object.keys((window.chatagent || {}).host || {}).sort() })',
+        'JSON.stringify({ top: Object.keys(window.chatagent || {}).sort(), host: Object.keys((window.chatagent || {}).host || {}).sort(), window: Object.keys((window.chatagent || {}).window || {}).sort() })',
       );
       const shape = bridge.ok && bridge.value ? JSON.parse(bridge.value) : {};
       check(
         'the page bridge is the narrow one (no generic ipcRenderer passthrough)',
+        // The surface is a fixed list, on purpose: adding a channel here has to be a
+        // deliberate edit, so a new bridge member cannot slip in unnoticed.
         Array.isArray(shape.top) &&
-          shape.top.join(',') === 'host,platform,versions' &&
+          shape.top.join(',') === 'host,platform,versions,window' &&
           Array.isArray(shape.host) &&
-          shape.host.join(',') === 'command,openWorkbench,quitApp',
+          shape.host.join(',') === 'command,openWorkbench,quitApp' &&
+          Array.isArray(shape.window) &&
+          shape.window.join(',') === 'set',
         JSON.stringify(shape),
       );
 
@@ -245,6 +249,54 @@ async function main() {
       // A page that tries to open a window still keeps its own context intact.
       const alive = await cdp.evaluateSoft('window.__ready === 1');
       check('the page is still the trusted shell page after both attempts', alive.ok && alive.value === true);
+
+      // 6. Window controls: the page asks, the main process acts, and the answer carries the
+      //    window's real state - so the UI (and this check) never has to trust a local flag.
+      const windowBridge = await cdp.evaluateSoft(
+        'typeof window.chatagent?.window?.set === "function"',
+      );
+      check(
+        'the page can reach the window controls',
+        windowBridge.ok && windowBridge.value === true,
+        String(windowBridge.value ?? windowBridge.error),
+      );
+
+      const pinned = await cdp.evaluate('window.chatagent.window.set("pin")');
+      check(
+        'pinning reports the window as pinned',
+        pinned?.ok === true && pinned.result?.pinned === true,
+        JSON.stringify(pinned),
+      );
+
+      const status = await cdp.evaluate('window.chatagent.host.command({ type: "status" })');
+      check(
+        'the host status carries the window state',
+        status?.ok === true && status.result?.window?.pinned === true,
+        JSON.stringify(status?.result?.window ?? null),
+      );
+
+      const hidden = await cdp.evaluate('window.chatagent.window.set("hide")');
+      check(
+        'hiding the window is reported as not visible',
+        hidden?.ok === true && hidden.result?.visible === false,
+        JSON.stringify(hidden),
+      );
+
+      await cdp.evaluate('window.chatagent.window.set("show")');
+      const unpinned = await cdp.evaluate('window.chatagent.window.set("unpin")');
+      check(
+        'showing and unpinning restore a normal window',
+        unpinned?.ok === true && unpinned.result?.pinned === false && unpinned.result?.visible === true,
+        JSON.stringify(unpinned),
+      );
+
+      // A window control takes a fixed verb; anything else is refused by name.
+      const unknownAction = await cdp.evaluate('window.chatagent.window.set("move")');
+      check(
+        'an unknown window action is refused',
+        unknownAction?.ok === false && unknownAction.error === 'unknown_action',
+        JSON.stringify(unknownAction),
+      );
 
       // 5. sanity: same-origin navigation is not blocked wholesale.
       await cdp.evaluateSoft(`location.href = ${JSON.stringify(`${serverUrl}/app.js`)}`).catch(() => undefined);

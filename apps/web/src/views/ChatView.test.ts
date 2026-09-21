@@ -464,6 +464,35 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('超过 20MB');
   });
 
+
+  it('offers window controls only inside the desktop shell', async () => {
+    // A plain browser has no such window; the controls must not appear there.
+    const wrapper = mountChat();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="window-pin"]').exists()).toBe(false);
+
+    const setWindow = vi.fn(async () => ({ ok: true, result: { pinned: true, visible: true, focused: true } }));
+    (window as { chatagent?: unknown }).chatagent = {
+      platform: 'win32',
+      versions: { electron: '39.8.10', chrome: '142', node: '22' },
+      window: { set: setWindow },
+    };
+    const desktop = mountChat();
+    await flushPromises();
+
+    await desktop.find('[data-testid="window-pin"]').trigger('click');
+    await flushPromises();
+    expect(setWindow).toHaveBeenCalledWith('pin');
+    // The label follows the state the main process reported, not a local guess.
+    expect(desktop.find('[data-testid="window-pin"]').text()).toContain('取消置顶');
+
+    await desktop.find('[data-testid="window-hide"]').trigger('click');
+    await flushPromises();
+    expect(setWindow).toHaveBeenCalledWith('hide');
+
+    delete (window as { chatagent?: unknown }).chatagent;
+  });
+
   it('sends the composed text through the native API', async () => {
     const wrapper = mountChat();
     await flushPromises();

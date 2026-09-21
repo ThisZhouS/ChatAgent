@@ -178,3 +178,9 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - **扩展名不是类型**：所有上传都按文件签名校验（`apps/server/src/file-signature.ts`），不匹配即 415 并写审计；空文件、未知扩展名、无法识别的容器一律拒绝（fail-closed）。
 - **容器不可互换**：docx/xlsx 是 ZIP、doc/xls 是 OLE，改名不会通过；文本类必须是可读 UTF-8 且不含 NUL（避免二进制伪装成 csv/txt 进入解析器）。
 - **前端检查不算防线**：客户端只做类型/大小预检与拖入体验，服务端独立校验字节与大小；限流（每成员）、20MiB 上限、zip 炸弹防护都仍在服务端执行。
+
+## 窗口控制面（2026-09-17，P2）
+
+- **动作是固定动词**：`chatagent:window` 只接受 `pin/unpin/toggle-pin/hide/show`，不接受坐标、路径、窗口 id；未知动作返回 `unknown_action`，IPC 发送者仍按白名单校验（非本应用帧拒绝）。
+- **状态以窗口为准**：`status().window.pinned` 读 `isAlwaysOnTop()`，不缓存；页面按钮文案跟随主进程回报，不自行猜测。
+- **浏览器里没有这个面**：控件仅在桌面壳内渲染，普通浏览器打开同一页面时 `window.chatagent?.window` 不存在，不会出现点了没反应的按钮。

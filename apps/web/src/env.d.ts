@@ -21,10 +21,20 @@ interface ChatAgentHostBridge {
   quitApp(): Promise<{ ok: boolean }>;
 }
 
+/** Desktop-only window controls (absent in a plain browser). */
+interface ChatAgentWindowBridge {
+  set(action: 'pin' | 'unpin' | 'toggle-pin' | 'hide' | 'show'): Promise<{
+    ok: boolean;
+    result?: { pinned: boolean; visible: boolean; focused: boolean };
+    error?: string;
+  }>;
+}
+
 interface Window {
   chatagent?: {
     platform: string;
     versions: { electron: string; chrome: string; node: string };
     host?: ChatAgentHostBridge;
+    window?: ChatAgentWindowBridge;
   };
 }

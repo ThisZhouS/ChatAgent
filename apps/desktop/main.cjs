@@ -238,6 +238,20 @@ let lastLockTakeover = null;
 let deviceToken = '';
 let tray = null;
 let mainWindow = null;
+
+/**
+ * The window state the page and the checks can read back. `pinned` is asked of the window
+ * itself rather than tracked in a variable: the OS can change it (window managers, a
+ * keyboard shortcut), and a cached boolean would then disagree with reality.
+ */
+function windowState() {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  return {
+    pinned: win ? win.isAlwaysOnTop() === true : false,
+    visible: win ? win.isVisible() === true : false,
+    focused: win ? win.isFocused() === true : false,
+  };
+}
 let trayUnavailable = false;
 
 // Single idempotent shutdown path shared by every quit route (tray, menu, IPC,
@@ -611,7 +625,11 @@ function readAuthorizationRefreshMs() {
   return raw;
 }
 
+/** The server URL the tray menu needs to reopen the window / workbench. */
+let serverUrlForTray = '';
+
 function registerHostIpc(serverUrl) {
+  serverUrlForTray = serverUrl;
   // Electron security checklist #17: validate the sender of every IPC message.
   // Only frames of our own app (the configured server origin in the renderer,
   // or our local error page) may talk to the host bridge.
@@ -657,8 +675,24 @@ function registerHostIpc(serverUrl) {
             ? { takenOver: lastLockTakeover.takenOver, auditPath: lastLockTakeover.auditPath }
             : null,
         },
+        // Window state travels with the status so the page (and the checks) can verify
+        // what the main process actually did, instead of trusting its own button state.
+        window: windowState(),
       };
     }
+    return result;
+  });
+
+  // Window controls (pin to top, hide to tray). The action is a fixed verb: the page
+  // cannot pass coordinates, a path or an arbitrary window id.
+  ipcMain.handle('chatagent:window', (event, payload) => {
+    if (!isTrustedSender(event)) {
+      return { ok: false, error: 'untrusted_sender', detail: 'IPC sender is not the app frame' };
+    }
+    const action = payload && typeof payload.action === 'string' ? payload.action : '';
+    const result = applyWindowAction(action);
+    // The tray label depends on the pin state, so keep the menu honest after a page action.
+    if (result.ok) refreshTrayMenu(serverUrlForTray);
     return result;
   });
 
@@ -693,22 +727,66 @@ function createTray(serverUrl) {
     tray = new Tray(nativeImage.createFromPath(TRAY_ICON));
     tray.setToolTip('ChatAgent — 本机 Agent 后台运行中');
     tray.setContextMenu(
-      Menu.buildFromTemplate([
-        { label: '显示主窗口', click: () => showMainWindow(serverUrl) },
-        { label: '打开本机工作台（不依赖服务器）', click: () => showLocalWorkbench(serverUrl) },
-        { type: 'separator' },
-        {
-          // Same single shutdown path as every other quit route.
-          label: '退出（停止后台 Agent）',
-          click: () => app.quit(),
-        },
-      ]),
+      Menu.buildFromTemplate(trayMenuTemplate(serverUrl)),
     );
     tray.on('double-click', () => showMainWindow(serverUrl));
   } catch (err) {
     // A tray is nice-to-have; a broken icon must not take the app down.
     console.error('[chatagent] tray unavailable:', err.message);
   }
+}
+
+/** Applies one window action. Shared by the IPC handler and the tray so both behave the same. */
+function applyWindowAction(action) {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  if (!win) return { ok: false, error: 'no_window' };
+  switch (action) {
+    case 'pin':
+      win.setAlwaysOnTop(true);
+      break;
+    case 'unpin':
+      win.setAlwaysOnTop(false);
+      break;
+    case 'toggle-pin':
+      win.setAlwaysOnTop(!win.isAlwaysOnTop());
+      break;
+    case 'hide':
+      win.hide();
+      break;
+    case 'show':
+      win.show();
+      break;
+    default:
+      return { ok: false, error: 'unknown_action' };
+  }
+  return { ok: true, result: windowState() };
+}
+
+/** Rebuilds the tray menu (the pin entry depends on the current state). */
+function refreshTrayMenu(serverUrl) {
+  if (!tray || trayUnavailable) return;
+  try {
+    tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate(serverUrl)));
+  } catch (err) {
+    console.error('[chatagent] tray menu refresh failed:', err && err.message ? err.message : err);
+  }
+}
+
+function trayMenuTemplate(serverUrl) {
+  return [
+    { label: '显示主窗口', click: () => showMainWindow(serverUrl) },
+    {
+      label: windowState().pinned ? '取消窗口置顶' : '窗口置顶',
+      click: () => {
+        applyWindowAction('toggle-pin');
+        refreshTrayMenu(serverUrl);
+      },
+    },
+    { label: '隐藏窗口（后台继续运行）', click: () => applyWindowAction('hide') },
+    { label: '打开本机工作台（不依赖服务器）', click: () => showLocalWorkbench(serverUrl) },
+    { type: 'separator' },
+    { label: '退出（停止后台 Agent）', click: () => app.quit() },
+  ];
 }
 
 function showMainWindow(serverUrl) {
