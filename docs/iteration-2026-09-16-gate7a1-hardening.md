@@ -568,3 +568,9 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 同一类问题的另五个出口：`electron-csp-check`/`electron-lock-check`/`electron-nav-check`/`electron-quit-check`/`electron-receipt-sync-check` 在找不到 Electron 运行时的时候打印一句 `SKIP` 然后 `process.exit(0)`——在没有 Electron 的机器上，一次「全部通过」的巡检其实是**一项都没跑**；`scripts/acceptance.mjs` 只按退出码判定，于是这条也会被计成 PASS。
 - 改动：五处跳过路径改为 `process.exit(2)`，并多印一行 `0 checks ran — 未验证，退出码 2（不是通过）`；正常路径（Electron 存在）行为完全不变。
 - 验证：用既有覆盖位 `CHATAGENT_ELECTRON_BIN=/nonexistent/electron.exe` 强制走跳过路径，五个脚本**全部退出 2** 且打印未验证说明；不设覆盖位跑真实路径，`csp 5/5`、`nav 13/13` 均退出 0，未受影响。（本轮只改脚本与文档，未触碰 TS/源码，故未重跑类型检查与用例套件。）
+
+## 第四十一轮（2026-09-21）：依赖审计的两条「未验证」出口 + 一条真实发现
+
+- 出口诚实性（第三类，同一毛病的最后一处）：`scripts/audit-deps.mjs` 在**审计端点不可达**和**报告无法解析**时都打印「UNVERIFIED」，却 `process.exit(0)`——`scripts/acceptance.mjs` 把它当 critical gate 的一步按退出码判定，于是「扫不了」被记成「扫过了」。两处均改为 `process.exit(2)`，并保留原有 UNVERIFIED 文案。至此**全部验收脚本**（Gate 7A、五份 Electron 检查、依赖审计）都不会再把「没跑到」说成「通过」。
+- 验证：强制不可达端点（`npm_config_registry=http://127.0.0.1:1/`）→ 退出 2 且打印未验证；正常路径（本次真的连上了 registry）→ 报告解析成功、`0 at or above "critical"`、退出 0，行为未变。
+- **本轮的真实发现**：审计报告里有 2 条 HIGH（`extract-zip@<=2.0.1 -> >=2.0.2`，标记 `[app]`），critical 为 0，所以既有的 `--level critical` 门是绿的。也就是说：**「critical gate 通过」不等于「没有高危依赖」**。已记入 `docs/tasks.md` 待办（升级该传递依赖需要联网安装并重跑打包，本轮上下文不足以完成全量复验，故不动）。

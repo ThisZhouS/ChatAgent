@@ -265,3 +265,7 @@ pnpm dev
 - [x] **投喂重试预算（补 P0-1 收尾）**：入队项带 `maxAttempts`（默认 8，`CHATAGENT_AGENT_INTAKE_MAX_ATTEMPTS` 1-100），用尽即终态 `failed`，不再无限重试；等待撤回窗口不计入预算；`/api/agent/status` 报 `failed`/`stalled`，审计写 `agent_intake.failed`，会话只收到闭集原因码与次数（原始错误不外发）；客户端显示「已重试 N 次，请稍后重发」。证据：`agent-intake.test.ts` +2 例、`ChatView.test.ts` +1 例。
 
 待产品确认的 9 个语义问题见该文档 §4（好友分级的对象、拉黑归属、转发撤回是否级联、公告范围、队列栈粒度、文件安全是否含内容扫描、窗口背景指哪个窗口、个人 ID 含义、目录外授权的形式）。
+
+## 待办（第四十一轮发现，未处理）
+
+- [ ] **依赖高危项**：`node scripts/audit-deps.mjs --level critical` 显示 2 条 HIGH、0 条 critical——`extract-zip@<=2.0.1 -> >=2.0.2`（标记 `[app]`，来自打包链路）。既有验收门是 `--level critical`，所以现在是绿的：**「critical 门通过」不等于「没有高危」。** 处理需要联网升级该传递依赖 → 重跑用例与打包 → 复跑打包后 E2E，未完成前不要把这步写成已验证；是否把验收门提到 `--level high` 也应由产品决定（提上去会让当前验收立刻变红）。

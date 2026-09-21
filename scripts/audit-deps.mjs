@@ -52,7 +52,10 @@ if (!audit.ok) {
   console.log('dependency audit skipped: the registry audit endpoint is unreachable');
   console.log(`  reason: ${audit.error}`);
   console.log('  → treat "dependency CVE scan" as UNVERIFIED for this run');
-  process.exit(0);
+  // Exit 2 (unverified), not 0: the message above already says UNVERIFIED, and a caller that
+  // only reads the exit code must not be told this step passed.
+  console.log('[audit-deps] 0 advisories checked — 未验证，退出码 2（不是通过）');
+  process.exit(2);
 }
 
 let report;
@@ -61,7 +64,8 @@ try {
 } catch {
   console.log('dependency audit could not be parsed; raw output follows');
   console.log(audit.stdout.slice(0, 2000));
-  process.exit(0);
+  console.log('[audit-deps] 报告无法解析 — 未验证，退出码 2（不是通过）');
+  process.exit(2);
 }
 
 if (asJson) {
