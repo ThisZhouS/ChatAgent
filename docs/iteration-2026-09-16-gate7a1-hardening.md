@@ -547,3 +547,10 @@ F5 的表象是“存活 pid 的锁被偷走并删除”，根因是**锁里没�
 - 未跑（本轮无改动，沿用第 34~36 轮证据）：Electron 七项、打包与打包后 E2E（38/38）。
 
 **后续无法在本会话继续**：既定功能条目（P0-1~P2-8）已全部落地并有自动化证据；剩余条目都属于**当前环境无法验证**（Gate 7A.3 需真实 Hermes 运行时与模型凭据、双机局域网、安装包 GUI、Electron 换版本需 registry 网络）或**需要用户决策**（§4 的九个语义问题）。已逐条记录在 `docs/pilot-readiness-2026-09-18.md`（C 类）与 `docs/tasks.md`，不得据此宣称完成。
+
+## 第三十八轮（2026-09-18）：投喂重试预算与失败可见性
+
+- 本轮不新增功能，补的是一处**只有坏环境才会暴露**的缺口：投喂失败原本「指数退避、永不放弃」，于是「没配模型凭据」这类问题在界面上表现为助手不回话，而不是一条可读的原因，运维也没有任何计数可看（这也是 Gate 7A.3 无法验证时最容易被忽略的盲区）。
+- 改动：`agent-intake.ts` 增 `DEFAULT_MAX_ATTEMPTS = 8` 与终态 `failed`；`config.ts` 增 `CHATAGENT_AGENT_INTAKE_MAX_ATTEMPTS`（1-100）；`stores.ts` 与 contracts 类型增 `maxAttempts`/`failed`/`attempts`；`app.ts` 传预算并在终态失败时写审计 `agent_intake.failed`；`service.ts` 的 notice 仅在失败时携带 attempts；`ChatView.vue` 增失败提示（含 `data-testid="intake-failed"`）。
+- 不变量：等待撤回窗口不算尝试、不消耗预算；`failed` 是终态（不再重试，行保留可查）；原始错误文本不上客户端可见事件；撤回/已投喂语义不变。
+- 验证：根套件 50 文件 / **410 用例**、web **74 用例**、`tsc`/`vue-tsc` 0 错（新增 3 例）。

@@ -56,6 +56,12 @@ export interface AgentIntakeConfig {
   mode: 'deferred' | 'immediate';
   /** How many recent messages of a conversation an agent may read per request. */
   contextMessages: number;
+  /**
+   * Failed delivery attempts of a single handoff before it is parked as failed. Raise it
+   * for a deployment that must keep trying through a long outage; never lower it to 1,
+   * which would park a handoff on the first transient error.
+   */
+  maxAttempts: number;
 }
 
 export interface NativeConfig {
@@ -157,6 +163,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       // typo cannot silently hand messages to an agent before the recall window ends.
       mode: env.CHATAGENT_AGENT_INTAKE_MODE === 'immediate' ? 'immediate' : 'deferred',
       contextMessages: clampInt(env.CHATAGENT_AGENT_CONTEXT_MESSAGES, 20, 1, 200),
+      // ~10 minutes of trying at the default backoff, then the handoff is parked.
+      maxAttempts: clampInt(env.CHATAGENT_AGENT_INTAKE_MAX_ATTEMPTS, 8, 1, 100),
     },
   };
 }

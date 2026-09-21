@@ -62,7 +62,14 @@ const sending = ref(false);
 /** Idempotency key of the last failed send, so a retry reuses it (see send()). */
 let lastDraft: { key: string; id: string } | undefined;
 
-const intakeNotice = ref<{ dueAt?: string; count: number; cancelled?: boolean } | null>(null);
+const intakeNotice = ref<{
+  dueAt?: string;
+  count: number;
+  cancelled?: boolean;
+  /** The handoff was attempted and gave up; the sender has to resend. */
+  failed?: boolean;
+  attempts?: number;
+} | null>(null);
 const uploading = ref(false);
 const loadingMessages = ref(false);
 const loadingEarlier = ref(false);
@@ -1150,8 +1157,9 @@ function connectStream() {
   stream.addEventListener('agent_intake', (raw) => {
     const event = JSON.parse((raw as MessageEvent).data) as {
       conversationId: string;
-      state: 'pending' | 'submitted' | 'cancelled';
+      state: 'pending' | 'submitted' | 'cancelled' | 'failed';
       dueAt?: string;
+      attempts?: number;
     };
     if (event.conversationId !== activeId.value) return;
     if (event.state === 'cancelled') {
@@ -1161,6 +1169,12 @@ function connectStream() {
     if (event.state === 'submitted') {
       intakeNotice.value = null;
       void loadActiveTask();
+      return;
+    }
+    if (event.state === 'failed') {
+      // Stay visible until the next send: "the assistant quietly never answered" is the
+      // exact failure this notice exists to prevent.
+      intakeNotice.value = { count: 0, failed: true, attempts: event.attempts };
       return;
     }
     intakeNotice.value = { dueAt: event.dueAt, count: intakeNotice.value?.count ?? 1 };
@@ -1956,9 +1970,19 @@ onUnmounted(() => {
               class="intake-notice"
               data-testid="intake-notice"
             >
-              <el-tag size="small" type="info">助手待读</el-tag>
+              <el-tag
+                size="small"
+                :type="intakeNotice.failed ? 'warning' : 'info'"
+              >
+                {{ intakeNotice.failed ? '助手未接单' : '助手待读' }}
+              </el-tag>
               <template v-if="intakeNotice.cancelled">
                 消息已撤回，未交给助手
+              </template>
+              <template v-else-if="intakeNotice.failed">
+                <span data-testid="intake-failed">
+                  助手多次尝试后仍未能开始处理（已重试 {{ intakeNotice.attempts ?? 0 }} 次），请稍后重发
+                </span>
               </template>
               <template v-else>
                 已排队 {{ intakeNotice.count }} 条：撤回窗口结束后才会交给助手，撤回即取消

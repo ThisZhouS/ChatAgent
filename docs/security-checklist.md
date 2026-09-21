@@ -128,7 +128,8 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 
 - **默认延迟投喂是硬编码行为**：`AgentIntakeGate` 在撤回窗口结束前不把消息交给任何 agent；唯一例外是部署配置 `CHATAGENT_AGENT_INTAKE_MODE=immediate`（启动时告警）。没有任何 API 参数、工具或提示词可以提前投喂。
 - **撤回即取消**：`recallMessage` 在同一事务路径上取消未投喂的入队项并写审计 `agent_intake.cancelled`；已投喂的任务不回滚（避免静默作废用户已看到的执行）。
-- **入队与投喂都持久化**：队列落 `data/agent-intake.json`，重启不重放已投喂项、不丢失已到期项；投喂失败按指数退避重试而不是丢弃。
+- **投喂失败有预算且不静默**：`maxAttempts`（默认 8）用尽后入队项置终态 `failed`；会话只收到闭集原因码（`retry_exhausted`）与尝试次数，**原始错误文本不进入客户端可见事件**（只留在服务端日志与运维状态面），审计 detail 也只写原因码与次数。等待撤回窗口不算尝试、不消耗预算。
+- **入队与投喂都持久化**：队列落 `data/agent-intake.json`，重启不重放已投喂项、不丢失已到期项；投喂失败按指数退避重试，重试有上限（见上一条）。
 - **上下文窗口有上限**：交给模型的会话历史默认最近 20 条（`CHATAGENT_AGENT_CONTEXT_MESSAGES`，1-200），撤回内容不在其中。
 - **提示词只是辅助**：`packages/hermes/src/system-prompt.ts` 的 `OPERATING_RULES` 声明「撤回内容不可索要/重建、目录外访问被拒即终局、关闭的工具不存在、授权由代码判定」，真正的边界仍在代码（闸门、能力下限、审批摘要、工作目录校验）。
 

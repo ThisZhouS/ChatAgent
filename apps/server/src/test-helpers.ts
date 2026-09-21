@@ -72,6 +72,7 @@ export async function createTestApp(
     agentIntake: {
       mode: 'deferred',
       contextMessages: 20,
+      maxAttempts: 8,
     },
   };
 

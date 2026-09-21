@@ -268,6 +268,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       // The recall window IS the deferral: one number, so they cannot drift apart.
       deferMs: Math.max(0, config.native.recallWindowSeconds) * 1000,
       contextMessages: config.agentIntake.contextMessages,
+      maxAttempts: config.agentIntake.maxAttempts,
       lookupMessage: (messageId) => messages.findById(messageId),
       buildHistory: (conversationId, limit) => service.buildAgentHistory(conversationId, limit),
       submit: async ({ record, history }) => {
@@ -282,7 +283,19 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
         });
         return { taskId: task.id };
       },
-      onEvent: (event) => events.publish(event),
+      onEvent: (event) => {
+        events.publish(event);
+        // A handoff that ran out of retries is an operational fact, not a user mistake:
+        // record it so the operator can see the environment refused work and when.
+        if (event.state === 'failed') {
+          audit.record({
+            action: 'agent_intake.failed',
+            outcome: 'failed',
+            target: event.messageId,
+            detail: `${event.reason ?? 'failed'};attempts=${event.attempts ?? 0}`,
+          });
+        }
+      },
       logger: {
         warn: (message, detail) => app.log.warn({ detail }, message),
         error: (message, detail) => app.log.error({ detail }, message),

@@ -68,7 +68,18 @@ async function tasks(app: FastifyInstance, token: string): Promise<TaskRecord[]>
 async function intakeStatus(app: FastifyInstance, token: string) {
   const status = (
     await app.inject({ method: 'GET', url: '/api/agent/status', headers: auth(token) })
-  ).json() as { intake?: { mode: string; deferMs: number; pending: number; submitted: number; cancelled: number } };
+  ).json() as {
+    intake?: {
+      mode: string;
+      deferMs: number;
+      pending: number;
+      submitted: number;
+      cancelled: number;
+      failed: number;
+      stalled: number;
+      maxAttempts: number;
+    };
+  };
   return status.intake;
 }
 
@@ -126,6 +137,11 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 20_000): P
     expect(drained, `queue did not drain: ${JSON.stringify(status)}`).toBe(true);
     expect(status?.mode).toBe('deferred');
     expect(status?.submitted ?? 0).toBeGreaterThanOrEqual(1);
+    // The retry budget is wired from configuration, not only a unit-level default, and a
+    // healthy queue reports no parked or stalling handoffs.
+    expect(status?.maxAttempts).toBe(8);
+    expect(status?.failed ?? 0).toBe(0);
+    expect(status?.stalled ?? 0).toBe(0);
   });
 
   intakeIt('never hands over a message withdrawn inside the window', async () => {

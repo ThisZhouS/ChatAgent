@@ -262,5 +262,6 @@ pnpm dev
 - [x] **P2-6 会话别名**：每查看者私有的 `{title?, members?}`（存在本人已读行），覆盖侧栏会话名、气泡发送者名与自己在本群的昵称；只能标注本会话成员、≤32 字、≤200 项、空串即清除。证据：`aliases.test.ts` 3 例、`ChatView.test.ts` 2 例。
 - [x] **P2-7 事件游标与存储决策**：`docs/adr-0004-storage-and-event-cursor.md`（继续 JSON + 迁移触发条件 + 代价）；`since()` 返回 `truncated`，游标过期时 SSE 先发 `event: resync` 让客户端重载（不再静默丢一段消息）。证据：`cursor-expiry.test.ts` 3 例、`event-replay.test.ts` 更新、`ChatView.test.ts` 1 例。
 - [x] **P2-8 表情与贴纸**：表情=插入普通字符；贴纸=contracts 里的闭集目录（id 随消息走、客户端自带资源渲染、未知 id 400 且客户端不渲染）。证据：`stickers.test.ts` 2 例、`ChatView.test.ts` 2 例。**P0/P1/P2 既定条目至此全部落地**；下一阶段转入端到端复验与收口。
+- [x] **投喂重试预算（补 P0-1 收尾）**：入队项带 `maxAttempts`（默认 8，`CHATAGENT_AGENT_INTAKE_MAX_ATTEMPTS` 1-100），用尽即终态 `failed`，不再无限重试；等待撤回窗口不计入预算；`/api/agent/status` 报 `failed`/`stalled`，审计写 `agent_intake.failed`，会话只收到闭集原因码与次数（原始错误不外发）；客户端显示「已重试 N 次，请稍后重发」。证据：`agent-intake.test.ts` +2 例、`ChatView.test.ts` +1 例。
 
 待产品确认的 9 个语义问题见该文档 §4（好友分级的对象、拉黑归属、转发撤回是否级联、公告范围、队列栈粒度、文件安全是否含内容扫描、窗口背景指哪个窗口、个人 ID 含义、目录外授权的形式）。

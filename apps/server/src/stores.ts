@@ -888,7 +888,7 @@ export interface AgentIntakeRecord {
   requesterId: string;
   chatType: 'direct' | 'group';
   goal: string;
-  state: 'pending' | 'submitted' | 'cancelled';
+  state: 'pending' | 'submitted' | 'cancelled' | 'failed';
   /** When the agent may see the message (recall window elapses first). */
   dueAt: string;
   createdAt: string;
@@ -897,6 +897,11 @@ export interface AgentIntakeRecord {
   cancelReason?: 'recalled' | 'message_missing' | 'conversation_missing';
   /** Delivery attempts of the handoff itself (not of the task). */
   attempts: number;
+  /**
+   * Retry budget of this handoff. Optional so rows written before the budget existed
+   * still load; a missing value means "use the current default" (see agent-intake.ts).
+   */
+  maxAttempts?: number;
   lastError?: string;
 }
 

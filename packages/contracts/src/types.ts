@@ -424,12 +424,18 @@ export interface MemberView {
  */
 export interface AgentIntakeNotice {
   id: string;
-  state: 'pending' | 'submitted' | 'cancelled';
+  /**
+   * `failed` is terminal: the handoff was attempted, kept failing and used up its retry
+   * budget. Waiting out the recall window is `pending`, never `failed`.
+   */
+  state: 'pending' | 'submitted' | 'cancelled' | 'failed';
   mode: 'deferred' | 'immediate';
   /** When the agent may read it (pending only). */
   dueAt?: string;
   taskId?: string;
   reason?: string;
+  /** Delivery attempts spent, so a client can say how hard the host tried. */
+  attempts?: number;
 }
 
 export type NativeEvent =
@@ -443,6 +449,8 @@ export type NativeEvent =
       dueAt?: string;
       taskId?: string;
       reason?: string;
+      /** Attempts spent before a terminal failure; never carries the raw error text. */
+      attempts?: number;
       at: string;
     }
   | {

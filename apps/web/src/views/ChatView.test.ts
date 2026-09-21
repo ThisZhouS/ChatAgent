@@ -280,6 +280,31 @@ describe('ChatView', () => {
     expect(notice.text()).toContain('撤回即取消');
   });
 
+  it('tells the sender when the host gave up on a handoff instead of staying silent', async () => {
+    const wrapper = mountChat();
+    await flushPromises();
+
+    const stream = streamInstances.at(-1);
+    expect(stream, 'the view subscribes to the native event stream').toBeTruthy();
+    stream?.dispatch('agent_intake', {
+      conversationId: 'conv_bob',
+      intakeId: 'intake-7',
+      messageId: 'm_7',
+      state: 'failed',
+      reason: 'retry_exhausted',
+      attempts: 8,
+    });
+    await flushPromises();
+
+    const notice = wrapper.find('[data-testid="intake-notice"]');
+    expect(notice.exists()).toBe(true);
+    // "The assistant quietly never answered" must not be the only signal the sender gets.
+    const failed = wrapper.find('[data-testid="intake-failed"]');
+    expect(failed.exists()).toBe(true);
+    expect(failed.text()).toContain('已重试 8 次');
+    expect(failed.text()).toContain('请稍后重发');
+  });
+
   it('resynchronises the thread when the event stream reconnects', async () => {
     mountChat();
     await flushPromises();

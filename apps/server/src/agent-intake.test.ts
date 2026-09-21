@@ -52,6 +52,8 @@ interface Harness {
   messages: Map<string, ChatMessage>;
   advance(ms: number): void;
   failNext(error: Error): void;
+  /** Every submit fails until this is cleared: simulates a broken environment. */
+  failAlways(error?: Error): void;
 }
 
 async function harness(
@@ -65,6 +67,7 @@ async function harness(
   const messages = new Map<string, ChatMessage>([['m1', message()]]);
   let clock = Date.parse('2026-09-17T10:00:00.000Z');
   let failure: Error | undefined;
+  let persistentFailure: Error | undefined;
   const gate = new AgentIntakeGate({
     store,
     mode: options.mode ?? 'deferred',
@@ -81,6 +84,7 @@ async function harness(
       ];
     },
     submit: async ({ record, history }) => {
+      if (persistentFailure) throw persistentFailure;
       if (failure) {
         const error = failure;
         failure = undefined;
@@ -103,6 +107,9 @@ async function harness(
     },
     failNext: (error) => {
       failure = error;
+    },
+    failAlways: (error) => {
+      persistentFailure = error;
     },
   };
 }
@@ -250,5 +257,71 @@ describe('agent intake gate', () => {
     h.advance(5_000);
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect((await h.store.get(record.id))?.state).toBe('pending');
+  });
+
+  it('parks a handoff as failed once the retry budget is spent, and never retries it again', async () => {
+    const h = await harness({ deferMs: 1_000 });
+    const record = await h.gate.defer(deferInput);
+    expect(record.maxAttempts).toBe(8);
+    // A broken environment: every attempt throws, so nothing is ever submitted.
+    h.failAlways(new Error('model credentials are not configured'));
+    for (let round = 0; round < 12; round += 1) {
+      h.advance(10 * 60_000);
+      await h.gate.tick();
+    }
+
+    const parked = await h.store.get(record.id);
+    expect(parked?.state).toBe('failed');
+    expect(parked?.attempts).toBe(8);
+    expect(parked?.lastError).toContain('credentials');
+    expect(h.submits).toHaveLength(0);
+
+    // Terminal: even with the environment fixed the queue does not pick the row up again;
+    // the sender resends, which is a new message and a new handoff.
+    h.failAlways(undefined);
+    h.advance(10 * 60_000);
+    expect(await h.gate.tick()).toBe(0);
+    expect((await h.store.get(record.id))?.state).toBe('failed');
+    expect(h.submits).toHaveLength(0);
+
+    // The room is told why, and the client is told how hard the host tried - but the raw
+    // error text stays in the log and the status surface, never on the wire.
+    const failedEvent = h.events.find((event) => event.state === 'failed');
+    expect(failedEvent?.reason).toBe('retry_exhausted');
+    expect(failedEvent?.attempts).toBe(8);
+    expect(JSON.stringify(h.events)).not.toContain('credentials');
+
+    expect(await h.gate.status()).toMatchObject({
+      pending: 0,
+      submitted: 0,
+      failed: 1,
+      stalled: 0,
+      maxAttempts: 8,
+    });
+  });
+
+  it('counts a stalled queue while it retries, and the recall window never spends the budget', async () => {
+    const h = await harness({ deferMs: 600_000 });
+    const record = await h.gate.defer(deferInput);
+    // Ten ticks inside the recall window: the handoff is queued, and that is not a failure.
+    for (let round = 0; round < 10; round += 1) {
+      h.advance(1_000);
+      expect(await h.gate.tick()).toBe(0);
+    }
+    const waiting = await h.store.get(record.id);
+    expect(waiting?.state).toBe('pending');
+    expect(waiting?.attempts).toBe(0);
+    expect(await h.gate.status()).toMatchObject({ pending: 1, failed: 0, stalled: 0 });
+    expect(h.events.some((event) => event.state === 'failed')).toBe(false);
+
+    // One real failure while pending shows up as a stalling queue, and the next attempt
+    // after the backoff still goes through.
+    h.advance(600_000);
+    h.failNext(new Error('task queue is full, retry later'));
+    expect(await h.gate.tick()).toBe(0);
+    expect(await h.gate.status()).toMatchObject({ pending: 1, failed: 0, stalled: 1 });
+    h.advance(5_001);
+    expect(await h.gate.tick()).toBe(1);
+    expect(await h.gate.status()).toMatchObject({ pending: 0, submitted: 1, failed: 0, stalled: 0 });
   });
 });

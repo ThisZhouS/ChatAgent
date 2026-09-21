@@ -85,6 +85,9 @@ function toIntakeNotice(
     dueAt: record.state === 'pending' ? record.dueAt : undefined,
     taskId: record.taskId,
     reason: record.cancelReason,
+    // Attempts are only meaningful once a handoff has been parked; a pending row's count is
+    // internal retry bookkeeping and would only confuse the client.
+    attempts: record.state === 'failed' ? record.attempts : undefined,
   };
 }
 

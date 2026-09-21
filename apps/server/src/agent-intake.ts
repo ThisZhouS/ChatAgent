@@ -27,6 +27,8 @@ export interface AgentIntakeEvent {
   dueAt?: string;
   taskId?: string;
   reason?: string;
+  /** Set on a terminal failure so a client can say how many attempts were spent. */
+  attempts?: number;
   at: string;
 }
 
@@ -37,6 +39,16 @@ export interface AgentIntakeStatus {
   pending: number;
   submitted: number;
   cancelled: number;
+  /**
+   * Handoffs that used up their retry budget. Non-zero is never a user error: it means the
+   * environment cannot take work (missing model credentials, locked or full workspace) and
+   * the operator has to act. This is the counter a pilot should alarm on.
+   */
+  failed: number;
+  /** Pending handoffs that already failed at least once: a queue that is stalling. */
+  stalled: number;
+  /** The budget in force, so the counters above can be read without guessing. */
+  maxAttempts: number;
   /** Oldest handoff still waiting, so an operator can see a stuck queue. */
   oldestPendingAt?: string;
   lastError?: string;
@@ -60,6 +72,8 @@ export interface AgentIntakeGateOptions {
   deferMs: number;
   /** How many recent messages around the request the agent may read. */
   contextMessages: number;
+  /** Retry budget per handoff; defaults to DEFAULT_MAX_ATTEMPTS. */
+  maxAttempts?: number;
   lookupMessage: (messageId: string) => Promise<ChatMessage | undefined>;
   buildHistory: (conversationId: string, limit: number) => Promise<ModelMessage[]>;
   submit: (input: {
@@ -78,11 +92,24 @@ export interface AgentIntakeGateOptions {
 const RETRY_BASE_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
 
+/**
+ * Retry budget of a single handoff. Retrying forever looks harmless and is not: a request
+ * stuck behind a broken environment (no model credentials, locked workspace) produces no
+ * answer, no reason and no way for anyone to notice - the sender just waits, and the agent
+ * looks like it ignored them. After this many failed ATTEMPTS the handoff is parked as
+ * `failed`: the row is kept, the conversation is told to resend, and the queue reports the
+ * count. Waiting out the recall window is not an attempt and never spends the budget.
+ * Operators can raise the budget (or the tool can be configured for a long outage) with
+ * CHATAGENT_AGENT_INTAKE_MAX_ATTEMPTS.
+ */
+const DEFAULT_MAX_ATTEMPTS = 8;
+
 export class AgentIntakeGate {
   private readonly store: AgentIntakeStore;
   private readonly mode: AgentIntakeMode;
   private readonly deferMs: number;
   private readonly contextMessages: number;
+  private readonly maxAttempts: number;
   private readonly now: () => number;
   private readonly logger: AgentIntakeGateOptions['logger'];
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -94,6 +121,7 @@ export class AgentIntakeGate {
     this.mode = options.mode;
     this.deferMs = Math.max(0, options.deferMs);
     this.contextMessages = Math.max(1, options.contextMessages);
+    this.maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
     this.now = options.now ?? (() => Date.now());
     this.logger = options.logger;
   }
@@ -128,6 +156,7 @@ export class AgentIntakeGate {
       createdAt: at,
       updatedAt: at,
       attempts: 0,
+      maxAttempts: this.maxAttempts,
     };
     await this.store.save(record);
     if (this.deferred) {
@@ -216,6 +245,27 @@ export class AgentIntakeGate {
         detail,
       });
       const attempts = record.attempts + 1;
+      const budget = Math.max(1, record.maxAttempts ?? this.maxAttempts);
+      if (attempts >= budget) {
+        // Terminal, and deliberately not a silent drop: the row stays readable, the room
+        // gets a reason it can act on (resend) and the operator gets a counter. The raw
+        // error stays in the log and the status surface - it is not sent to the room.
+        const failed: AgentIntakeRecord = {
+          ...record,
+          state: 'failed',
+          attempts,
+          lastError: detail,
+          updatedAt: new Date(this.now()).toISOString(),
+        };
+        await this.store.save(failed);
+        this.logger?.error('agent intake handoff gave up after its retry budget', {
+          intakeId: record.id,
+          attempts,
+          detail,
+        });
+        this.publish(failed, 'retry_exhausted');
+        return failed;
+      }
       const retryIn = Math.min(RETRY_BASE_MS * 2 ** (attempts - 1), RETRY_MAX_MS);
       const updated: AgentIntakeRecord = {
         ...record,
@@ -244,7 +294,7 @@ export class AgentIntakeGate {
     return updated;
   }
 
-  private publish(record: AgentIntakeRecord): void {
+  private publish(record: AgentIntakeRecord, reason?: string): void {
     this.options.onEvent?.({
       type: 'agent_intake',
       intakeId: record.id,
@@ -253,7 +303,8 @@ export class AgentIntakeGate {
       state: record.state,
       dueAt: record.state === 'pending' ? record.dueAt : undefined,
       taskId: record.taskId,
-      reason: record.cancelReason,
+      attempts: record.state === 'failed' ? record.attempts : undefined,
+      reason: reason ?? record.cancelReason,
       at: new Date(this.now()).toISOString(),
     });
   }
@@ -297,6 +348,9 @@ export class AgentIntakeGate {
       pending: pending.length,
       submitted: records.filter((record) => record.state === 'submitted').length,
       cancelled: records.filter((record) => record.state === 'cancelled').length,
+      failed: records.filter((record) => record.state === 'failed').length,
+      stalled: pending.filter((record) => record.attempts > 0).length,
+      maxAttempts: this.maxAttempts,
       oldestPendingAt: pending
         .map((record) => record.dueAt)
         .sort((a, b) => Date.parse(a) - Date.parse(b))[0],
