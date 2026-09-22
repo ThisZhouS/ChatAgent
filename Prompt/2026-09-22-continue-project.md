@@ -105,3 +105,5 @@
 | 是否外发 | 否 |
 | 幂等/取消语义 | 设置同一个 handle 幂等且不消耗冷却；并发下由目录的单点写入串行化；保留项到期自动释放 |
 | 测试 profile | 离线 MockProvider；冷却/保留期通过配置置 0 覆盖，不使用真实等待 |
+
+**运行态实测（第 57 轮，独立实例）**：重建 `apps/server/dist` 后，用临时数据目录在 `:8792` 起了第二个实例（`:8787` 未动，探完即停并删除临时目录）实测：新实例 `GET /api/auth/me` 即返回派生 handle `dev-owner`（惰性分配生效）；`PATCH {handle:'Alice.Wang-1'}` → 200 存成 `alice.wang-1`；`admin` → 400 `handle_reserved`；`ab` → 400 schema 字段错误；紧随其后的第二次改名 → 429 `handle_change_cooldown`（带可再次修改的时间）；两次被拒后回读仍是 `alice.wang-1`，`GET /api/members` 也带该 handle。边界同前：真实构建产物的 HTTP 证据，不等于 Gate 7A.3，也不覆盖浏览器端。

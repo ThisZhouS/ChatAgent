@@ -323,6 +323,7 @@
 - 老成员惰性分配：`MemberDirectory.ensureHandles` 在 `GET /api/auth/me` 与 `GET /api/members` 上触发，从成员 id（必要时用显示名）派生一个合法且未被占用的名字；id 以数字开头或含非法字符时会被修好（用例用 `7carol!x` 钉住）。**没有单独的迁移步骤**，因此也没有「忘了跑迁移」这种状态。
 - 接口：`PATCH /api/auth/handle`，**请求里没有成员 id**——「只能改自己」是结构性的；审计写 `member.handle_set`（detail 只记 `旧->新`）。目录（`GET /api/members`）与联系人里都带 handle，前端目录搜索同时匹配显示名与 handle，结果行显示 `@handle`。
 - 存储：`data/members.json` 由「裸数组」变为 `{members, retiredHandles}`，**两种形态都能读**（老部署原样读入，下一次写入时改成新形态）；过期保留项在读取时被丢弃，文件不会随着改名史无限增长。
+- **运行态实测（2026-09-22，独立实例 `:8792` + 临时数据目录，探完即停并删除）**：全新实例上 `GET /api/auth/me` 直接返回派生 handle `dev-owner`（惰性分配真的在跑）；`PATCH {handle:'Alice.Wang-1'}` → 200 且存成 `alice.wang-1`；保留词 `admin` → **400 `handle_reserved`**；太短的 `ab` → 400（schema 字段错误）；紧接着的第二次改名 → **429 `handle_change_cooldown`**，消息带上可再次修改的时间 `2026-10-22T…`；两次被拒之后 `GET /api/auth/me` 仍是 `alice.wang-1`（拒绝确实没写入），`GET /api/members` 也带上了该 handle。
 - 验证：新增 `handles.test.ts` **6 例**（派生与幂等、设置后全组织可见、格式/保留词拒绝且不落库、跨大小写重名 409、冷却 429 且 0 天时放行、旧名保留期内他人 409 而本人可取回且 0 天保留即刻释放）；web 侧 `SettingsView.test.ts` +2 例（显示服务端确认的当前 handle 并保存、被拒时显示服务端原因且当前值不变）与 `ChatView.test.ts` +1 例（按 handle 搜到同事）；根套件 **55 文件 / 436 用例**、web **83 用例**、`tsc`/`vue-tsc` 0 错。
 
 ## 4. 需要产品确认的语义（审计不确定项汇总）
