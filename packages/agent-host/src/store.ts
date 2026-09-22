@@ -3,7 +3,12 @@ import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/prom
 import { dirname, join } from 'node:path';
 import type { StoreLoadReport } from './record-integrity';
 import { validatePersistedRow } from './record-integrity';
-import { DEFAULT_MAX_RECORDS, selectExpiredRecords } from './retention';
+import {
+  DEFAULT_MAX_RECORDS,
+  selectExpiredRecords,
+  selectExpiredRecordsDetailed,
+} from './retention';
+import type { ExpiredRecord } from './retention';
 import type { LocalTaskRecord, LocalTaskState } from './types';
 import { TERMINAL_LOCAL_STATES } from './types';
 
@@ -72,11 +77,22 @@ export interface AgentHostStore {
    */
   getLoadReport?(): StoreLoadReport | undefined;
   /**
-   * Retention activity: how many records this store has dropped so far, and how
-   * many the loaded rows say are past the cap. Optional — a store without
-   * retention simply omits it. Reported so pruning is never invisible.
+   * Retention activity: how many records this store has dropped so far, whether
+   * the per-record audit behind those drops is being written, and where. Optional
+   * — a store without retention simply omits it. Reported so pruning is never
+   * invisible, and so a failing audit is loud instead of silent.
    */
-  retentionStats?(): { pruned: number };
+  retentionStats?(): RetentionStats;
+}
+
+/** See `AgentHostStore.retentionStats`. */
+export interface RetentionStats {
+  pruned: number;
+  /** Append-only JSONL that names every dropped task id; absent when disabled. */
+  auditPath?: string;
+  /** Audit appends that failed. The pruning still happened and still stands. */
+  auditFailures?: number;
+  lastAuditError?: string;
 }
 
 export interface LockPayload {
@@ -296,7 +312,11 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private readonly maxRecords: number;
   private readonly maxAgeMs?: number;
   private readonly heartbeatMs: number;
+  private readonly retentionAuditPath?: string;
   private prunedRecords = 0;
+  private retentionAuditFailures = 0;
+  private lastRetentionAuditError?: string;
+  private auditQueue: Promise<void> = Promise.resolve();
 
   constructor(
     filePath: string,
@@ -306,6 +326,13 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       maxAgeMs?: number;
       /** Overridable for tests: how often the holder refreshes its lock. */
       heartbeatMs?: number;
+      /**
+       * Per-record retention audit. Enabled by default: dropping task history
+       * without a trace turns housekeeping into silent data loss, and the sink is
+       * a local JSONL next to the store (same shape as `.lock-audit.jsonl`).
+       * `false` disables it; an object may point it somewhere else.
+       */
+      retentionAudit?: boolean | { path?: string };
     } = {},
   ) {
     this.filePath = filePath;
@@ -314,6 +341,11 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     this.maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
     this.maxAgeMs = options.maxAgeMs;
     this.heartbeatMs = options.heartbeatMs ?? LOCK_HEARTBEAT_MS;
+    const audit = options.retentionAudit ?? true;
+    this.retentionAuditPath =
+      audit === false
+        ? undefined
+        : (audit === true ? undefined : audit.path) ?? `${filePath}.retention-audit.jsonl`;
   }
 
   async load(): Promise<void> {
@@ -425,9 +457,56 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     }
   }
 
-  /** How many records retention has dropped since this store was opened. */
-  retentionStats(): { pruned: number } {
-    return { pruned: this.prunedRecords };
+  /** Retention housekeeping since this store was opened (see RetentionStats). */
+  retentionStats(): RetentionStats {
+    return {
+      pruned: this.prunedRecords,
+      ...(this.retentionAuditPath ? { auditPath: this.retentionAuditPath } : {}),
+      auditFailures: this.retentionAuditFailures,
+      ...(this.lastRetentionAuditError ? { lastAuditError: this.lastRetentionAuditError } : {}),
+    };
+  }
+
+  /**
+   * Appends one line per prune batch naming every dropped task id and the rule
+   * that dropped it — the "why is my history smaller?" answer that a count alone
+   * cannot give. Best effort by design: an unwritable audit file must not take
+   * the task store down with it, so the failure is counted and reported in
+   * `retentionStats()` instead of being swallowed or thrown.
+   */
+  private async appendRetentionAudit(expired: readonly ExpiredRecord[]): Promise<void> {
+    const path = this.retentionAuditPath;
+    if (!path || expired.length === 0) return;
+    // The rules that applied to this batch, so the line can be read without
+    // walking every task entry (each entry still carries its own reason).
+    const reasons = [...new Set(expired.map((entry) => entry.reason))].sort().join('+');
+    const line = JSON.stringify({
+      at: new Date().toISOString(),
+      action: 'task_store.pruned',
+      actor: 'local-host',
+      store: this.filePath,
+      reason: reasons,
+      count: expired.length,
+      tasks: expired,
+    });
+    // Serialized so the lines describe the drops in the order they happened.
+    const run = this.auditQueue.then(async () => {
+      try {
+        await mkdir(dirname(path), { recursive: true });
+        const handle = await open(path, 'a');
+        try {
+          await handle.write(`${line}\n`);
+        } finally {
+          await handle.close();
+        }
+      } catch (error) {
+        this.retentionAuditFailures += 1;
+        this.lastRetentionAuditError = error instanceof Error ? error.message : String(error);
+        console.error('[chatagent] retention audit append failed:', this.lastRetentionAuditError);
+      }
+    });
+    this.auditQueue = run;
+    await run;
   }
 
   /** Integrity report from the last load; undefined before the store is loaded. */
@@ -553,6 +632,8 @@ export class JsonFileAgentHostStore implements AgentHostStore {
 
   async flush(): Promise<void> {
     await this.queue;
+    // A caller that flushes then reads the audit file must see the line.
+    await this.auditQueue;
   }
 
   async close(): Promise<void> {
@@ -574,13 +655,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     this.records.set(taskId, next);
     // Retention applies at write time: the file only ever shrinks on a write we
     // were going to perform anyway, and never during a load.
-    const prunable = selectExpiredRecords([...this.records.values()], {
+    const prunable = selectExpiredRecordsDetailed([...this.records.values()], {
       maxRecords: this.maxRecords,
       maxAgeMs: this.maxAgeMs,
     });
-    const pruned = prunable.length > 0 ? prunable.map((id) => this.records.get(id)!) : [];
+    const pruned = prunable
+      .map((entry) => this.records.get(entry.taskId))
+      .filter((record): record is LocalTaskRecord => record !== undefined);
     for (const record of pruned) this.records.delete(record.taskId);
-    this.prunedRecords += pruned.length;
     try {
       await this.persist();
     } catch (error) {
@@ -595,6 +677,11 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       }
       throw error;
     }
+    // Only now is the drop real: the counter and the audit describe history the
+    // file no longer has, so a rolled-back write must not appear in either (the
+    // counter used to move before the write, so a failed write over-reported).
+    this.prunedRecords += pruned.length;
+    await this.appendRetentionAudit(prunable);
   }
 
   private async persist(): Promise<void> {

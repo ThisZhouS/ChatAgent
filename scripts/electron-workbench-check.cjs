@@ -161,6 +161,49 @@ app.whenReady().then(async () => {
     }
     check('a second writer on the same store is refused', lockedCode === 'agent_host_store_locked', lockedCode);
 
+    // Retention housekeeping leaves a per-record trail: the count on screen is
+    // backed by an append-only file naming every dropped id and the rule that
+    // dropped it (round-4 follow-up: a bare count cannot be traced afterwards).
+    const auditPath = path.join(root, 'tasks.json.retention-audit.jsonl');
+    const auditLines = fs.existsSync(auditPath)
+      ? fs
+          .readFileSync(auditPath, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+      : [];
+    const audited = auditLines.flatMap((entry) => entry.tasks || []);
+    const status = await host.status();
+    const reported = status.storeIntegrity && status.storeIntegrity.pruned;
+    check(
+      'retention writes a per-record audit trail next to the store',
+      auditLines.length > 0 &&
+        auditLines.every(
+          (entry) =>
+            entry.action === 'task_store.pruned' && entry.actor === 'local-host' && entry.store,
+        ),
+      `lines=${auditLines.length} path=${auditPath}`,
+    );
+    check(
+      'the audit and the reported count agree id by id, each with its rule',
+      audited.length === reported &&
+        audited.every(
+          (task) =>
+            typeof task.taskId === 'string' &&
+            typeof task.state === 'string' &&
+            (task.reason === 'age' || task.reason === 'count') &&
+            typeof task.updatedAt === 'string',
+        ),
+      `audited=${audited.length} reported=${reported}`,
+    );
+    check(
+      'pruned ids reach the trail, never the page',
+      audited.some((task) => task.taskId.startsWith('wb-old-')) &&
+        !afterSubmit.includes('wb-old-000'),
+      `first=${audited[0] && audited[0].taskId}`,
+    );
+
     // The workbench keeps working after the server is unreachable: the page is
     // local, so nothing above touched http://localhost:8787.
     check(

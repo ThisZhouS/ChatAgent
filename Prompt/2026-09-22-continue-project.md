@@ -127,3 +127,33 @@
 ## 追加交付（第 57 轮之八）：运行态边界自检 7/7
 
 在 HEAD 构建的开发实例上复跑 `node scripts/live-boundary-check.mjs`：**7/7 边界按文档表现，退出码 0**（健康 / 回环开发主体注入 / 认不出的凭据 401 / 投喂预算字段 / 审批带 digest / 非参与者发送 403 / 字节与扩展名不符 415）。该脚本自己在结尾打印「这只是运行态行为，不是 Gate 7A.3」——这条边界也写进差距矩阵 §3.23。
+
+## 追加交付（第 58 轮）：保留策略的逐条留痕（清理的 taskId 落审计，不落界面）
+
+下一句指令仍是「继续」。九问已全部落地，本轮从 `docs/tasks.md`「下一轮候选」里取第一条**只靠本机就能闭环**的项：第四轮复核记下的「保留策略的 id 列表」。
+
+- 口径来源：第四轮记录原话是「现在只上报条数与原因，未列出被清理的具体 taskId（内存计数）；如果审计需要逐条追溯，**应落审计而非界面**」。因此本轮**不动界面**（设置页与离线工作台仍只说「N 条」），把 id 落到本机审计文件。
+- 淘汰判定：`selectExpiredRecords()` 拆出 `selectExpiredRecordsDetailed()`，每条被淘汰的记录自带 `reason`（`age` 年龄规则 / `count` 容量上限）与 `state`、`updatedAt`；原函数保留为 id 投影，既有调用点与用例语义不变。
+- 审计落盘：`<tasks.json>.retention-audit.jsonl`（与既有 `.lock-audit.jsonl` 同形），默认开启，可 `retentionAudit: false` 关闭或改路径；每个成功写入后的淘汰批次一行 JSON。
+- 三条边界：① 只写**真正落盘**的淘汰；② 审计写失败**不让调用方的任务写入失败**（记账问题不该拖垮任务库），但计数并上报 `status().storeIntegrity.retentionAuditFailures/lastAuditError`，主进程打 `console.error`；③ 具体 taskId 只进文件，不进状态载荷的界面消费面。
+- 顺带修掉一个真实缺陷：淘汰计数原本在落盘**之前**自增，写入失败回滚记录后计数不回退，「本次运行已清理 N 条」会多报；现在计数与审计都只在写入成功后发生，并有用例钉死。
+
+| 项 | 值 |
+| --- | --- |
+| 受影响 package/符号 | `packages/agent-host/src/retention.ts`（`RetentionReason`/`ExpiredRecord`/`selectExpiredRecordsDetailed`）；`packages/agent-host/src/store.ts`（`retentionAudit` 选项、`appendRetentionAudit`、`retentionStats`、`commit()` 顺序、`flush()` 串行化、`RetentionStats`）；`packages/agent-host/src/types.ts`（`storeIntegrity.retentionAudit*`）；`packages/agent-host/src/host.ts`（status 装配）；`apps/desktop/main.cjs`（失败时一行 `console.error`） |
+| 前置权限 | 无新增权限面：审计文件与任务库同目录、同权限，只在本机写；不经过服务端、不外发 |
+| 数据分类 | taskId、任务终态、更新时间、淘汰原因。**taskId 本身不是秘密**，但它此前从不出现在界面上，因此仍只落本机文件；不含目标正文、产物内容或凭据 |
+| 是否外发 | 否（未联网、未调用模型、未启动真实 Hermes） |
+| 幂等/取消语义 | 审计是纯追加，重复运行只会多行不会改历史；写入失败/回滚不产生行，因此「文件说什么 = 实际删了什么」；`close()` 后不再写（沿用既有 `agent_host_store_closed` 约束） |
+| 测试 profile | 离线；`retention.test.ts` 8 → 15 例；真实 Electron `electron-workbench-check.cjs` 13 → 16 项（520 条终态记录种子）；桌面壳七项在 HEAD 上合计 **89/89**、全部退出码 0 |
+
+落盘文件：
+
+- `packages/agent-host/src/retention.ts`、`store.ts`、`types.ts`、`host.ts`：判定、落盘、状态上报（这四个是本轮入库的代码）。
+- `apps/desktop/agent-host.bundle.cjs`：按 `apps/desktop/build-agent-host.mjs` 重建（桌面壳 `require` 的就是它）。该文件在 `.gitignore` 里、产物不入库；改过 `packages/agent-host` 后必须重建，否则 Electron 检查跑的还是旧宿主。
+- `apps/desktop/main.cjs`：审计写失败时的 console 提示（不改弹窗与界面文案）。
+- `scripts/electron-workbench-check.cjs`：新增三项断言（审计文件存在且结构正确、审计 id 条数与 `status().storeIntegrity.pruned` 逐条相等、被清理的 id 不进页面）。
+- `packages/agent-host/src/retention.test.ts`：新增 7 例（明细原因与投影一致、逐条字段、age 与 count 可分、被拒写入不写审计且计数为 0、审计不可写时任务照常成功、显式关闭不产生文件、非终态不被标注）。
+- 文档：`docs/tasks.md`（该条勾掉）、差距矩阵 §3.24、`docs/security-checklist.md`（保留策略三条边界）、`docs/acceptance-guide.md`（审计文件位置与读法）。
+
+**边界**：这些证据都是本机可重复的回归，不等于 Gate 7A.3（真实 Hermes + 真实模型凭据），也不覆盖双机局域网与安装包 GUI 人工验收。审计文件是**本机**留痕，不随回执上传到组织服务——服务端侧的台账是另一条尚未开始的候选。

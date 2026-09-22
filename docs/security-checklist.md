@@ -112,6 +112,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 隔离的坏行是“只读的墓碑”：既不交给执行器，也不能通过 `retry()`/IPC `retry` 复活（否则等于绕过 `invalid_persisted_row`）。
 - 回执同步的三条硬约束：去重键必须是“版本+内容”指纹（`updatedAt` 同毫秒会让最终结果永不镜像）；单次请求必须 ≤ 契约上限（100 条，超出即永久 400）；产物必须符合共享契约（无 `sha256` 的产物丢弃、字段截断、非法 state 跳过），否则一条坏记录会毒死整批。
 - 保留策略只淘汰 `succeeded`/`failed`/`cancelled`；`interrupted`（可重试）与进行中的行永不淘汰，且淘汰数量必须可观测（`storeIntegrity.prunable` = 待清理，`storeIntegrity.pruned` = 本次运行已清理，设置页分别提示）。
+- **保留策略的逐条留痕（2026-09-22）**：每个淘汰批次追加一行到 `<tasks.json>.retention-audit.jsonl`（`action: task_store.pruned`、`actor: local-host`、每条的 `taskId/state/reason(age|count)/updatedAt`），默认开启。三条边界：① 只写**已经真正落盘**的淘汰（写入失败回滚的记录不写、计数也不加，修掉了原来「失败也计数」的多报）；② 审计写失败不让调用方的任务写入失败——记账问题不该拖垮任务库——但失败计入 `storeIntegrity.retentionAuditFailures/lastAuditError` 并由主进程 `console.error`，不静默；③ 具体 taskId **只进审计文件，不进界面/状态载荷**（界面只说条数，符合第四轮的「逐条追溯落审计」决定）。
 - 锁的接管只看“持有者是否存活”，年龄不是接管理由；歧义情形必须由人确认并留审计。
 
 ## 授权刷新（2026-09-17 第十五轮）

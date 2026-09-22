@@ -270,6 +270,15 @@ export interface HostStatus {
     prunable?: number;
     /** Records retention has already dropped in this session. */
     pruned?: number;
+    /**
+     * Append-only JSONL naming every dropped task id and the rule that dropped
+     * it. The ids belong in the audit file, not on screen: the UI only ever says
+     * how many records went.
+     */
+    retentionAuditPath?: string;
+    /** Audit appends that failed; the drops themselves still happened. */
+    retentionAuditFailures?: number;
+    retentionAuditError?: string;
     repaired: number;
     quarantined: number;
     duplicates: number;

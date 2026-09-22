@@ -355,6 +355,24 @@
 
 覆盖到的关键点（来自脚本自身的断言名）：本机任务库的单写者锁、回执同步的分级退避、宿主冒烟含「产物落在工作根内」与「重启后仍可读」、工作台在断网时的保留/授权/回执提示、退出后任务终态仍落盘、CSP 注入与不覆盖服务端策略、页面桥只有固定动词且跨源跳转被拦。七项都不依赖网络与真实模型，因此它们能在本机作为**回归证据**重复执行。
 
+### 3.24 保留策略的逐条留痕（第 240 行「下一轮建议」第 7 条第 4 项，2026-09-22 实现）
+
+**问题**（第四轮复核记录）：保留策略此前只上报「本次运行已清理 N 条」这样一个内存计数，被清掉的具体 taskId 无从追溯；当时的结论是「如果审计需要逐条追溯，应落审计而非界面」。
+
+**做法**（三处，都在本机、不经过服务端）
+
+1. `packages/agent-host/src/retention.ts`：新增 `selectExpiredRecordsDetailed()`，为每条被淘汰记录返回 `{taskId, state, reason: 'age' | 'count', updatedAt}`；原 `selectExpiredRecords()` 改成它的 id 投影，既有调用点与用例语义不变。**每条记录带自己的原因**，不把「这一批为什么被清」笼统记成一种。
+2. `packages/agent-host/src/store.ts`：新增逐条审计落盘 `<tasks.json>.retention-audit.jsonl`（与既有的 `.lock-audit.jsonl` 同一形态），**默认开启**、可用 `retentionAudit: false` 关闭或改路径；每次写入成功后的淘汰批次追加一行 JSON（`action: task_store.pruned`、`actor: local-host`、`reason`、`count`、`tasks[]`）。审计文件写失败**不让调用方的任务写入失败**（记账问题不该拖垮任务库），但失败会被计数并在 `retentionStats()` 与 `status().storeIntegrity.retentionAuditFailures/lastAuditError` 上报，主进程另打一行 `console.error`。
+3. 顺手修掉一个真实缺陷：淘汰计数原本在 `persist()` **之前**自增，写入失败回滚记录后计数不回退，于是「本次运行已清理 N 条」会多报。现在计数与审计都只在写入成功后发生（用例钉死）。
+
+**边界**：id 列表只进审计文件，界面继续只说「N 条」（产品在第四轮已定：逐条追溯落审计，不落界面）；`interrupted`（可重试）与进行中的行依旧永不淘汰；载入只报告不改写文件的既有语义未变。
+
+**证据**：`retention.test.ts` 8 → **15 例**（新增：明细原因与 id 投影一致、审计逐条含 state/reason/updatedAt 且不含未淘汰的排队任务、age 与 count 可在同一份trail 区分、被拒写入不写审计且计数为 0、审计路径不可写时任务写入照常成功且失败被计数、显式关闭后不产生审计文件、非终态永不被标注原因）；根套件 **55 文件 / 443 用例**、`tsc` 0 错；真实 Electron `electron-workbench-check.cjs` **13 → 16 项**（520 条终态记录种子下：审计文件存在且每行结构正确、审计里的 id 条数与 `status().storeIntegrity.pruned` **逐条相等**、被清理的 id 只进文件不进页面），退出码 0。
+
+**桌面壳整体回归**：本轮改的是宿主包（`packages/agent-host`），而桌面壳直接 `require` 它的 bundle，所以七项在 HEAD 上全部复跑，**89/89、全部退出码 0**：lock **18/18**、receipt-sync **21/21**、host-smoke **6/6**、workbench **16/16**、quit **10/10**、csp **5/5**、nav **13/13**。运行方式必须按 §3.23 表格左列：`electron-lock-check.mjs` 与 `electron-receipt-sync-check.mjs` 用 `node` 跑（脚本内部用 `process.execPath` 派生「存活的无关进程」「已死进程」，用 electron 跑会让它变成 electron.exe 并卡住），其余五个必须用 `electron` 跑。
+
+**已知缺口（本轮有意不做）**：审计文件本身是**只追加、不轮转**的——每次「已满后接受一次写入」通常追加一行，一台每天几百个任务的设备长期运行会让它线性增长（相对任务库的 500 条上限，这是唯一还在长的文件）。旋转需要先定策略（按天/按大小的保留窗口、截断动作自身要不要写meta行、崩溃安全的截断方式），属于要产品口径的决定，因此记进 `docs/tasks.md` 的候选，而不是先塞一个半成品。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。

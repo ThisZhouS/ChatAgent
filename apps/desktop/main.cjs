@@ -367,6 +367,15 @@ async function reportStoreIntegrity() {
       `[chatagent] retention: ${integrity.prunable} 条超出保留上限的终态记录将在下次写入时清理`,
     );
   }
+  // The per-record trail is a file, not a dialog: the UI keeps saying "N 条", the
+  // audit file says which ids and why. A failing append is worth a console line —
+  // housekeeping that cannot be traced should not be entirely invisible.
+  if (integrity.retentionAuditFailures) {
+    console.error(
+      `[chatagent] retention audit: ${integrity.retentionAuditFailures} 次逐条清理记录写入失败` +
+        `（${integrity.retentionAuditError || '原因未知'}）`,
+    );
+  }
   if (notes.length === 0) return;
   console.warn('[chatagent] task store integrity:', notes.join('；'));
   try {

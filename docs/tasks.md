@@ -239,7 +239,8 @@ pnpm dev
    - **服务端授权台账与签发路径**：目前 `supportedKinds` 只有 `approval`，委托没有台账可查；需要把委托登记进服务端并让设备按需取授权（当前授权仍由受信代码在内存中铸造）。
    - **Electron 版本切换**：按 `docs/upgrade-2026-09-17-electron.md` 的步骤把依赖换成 42.11.4 或 44.4.1（需 registry 网络；彩排已全绿）。
    - **Windows Job Object 子进程回收**：现在依赖 `taskkill /T`，进程被强杀时仍可能留下孙进程；需要原生模块或更可靠的内核级绑定。
-   - **保留策略的 id 列表**：现在只上报条数与原因，未列出被清理的具体 taskId（内存计数）；如果审计需要逐条追溯，应落审计而非界面。
+   - ~~**保留策略的 id 列表**~~ **已完成（2026-09-22，差距矩阵 §3.24）**：淘汰判定改为逐条带原因（`selectExpiredRecordsDetailed` → `{taskId, state, reason: age|count, updatedAt}`，原 id 接口保留为投影），存储层把每个淘汰批次追加到 `<tasks.json>.retention-audit.jsonl`（`action: task_store.pruned`，默认开启，可关或改路径）；审计写失败不让任务写入失败，但会计数并上报 `status().storeIntegrity.retentionAuditFailures/lastAuditError`，主进程打 `console.error`。**界面不变**（仍只说「N 条」），id 只在审计文件里。顺带修掉「写入失败仍自增淘汰计数」的多报缺陷。证据：`retention.test.ts` 8 → 15 例、根套件 **55 文件 / 443 用例**、`tsc` 0 错、真实 Electron `electron-workbench-check.cjs` **16/16**（审计条数与 `pruned` 逐条相等、被清理 id 不进页面）。
+   - **保留审计文件自身的增长治理**（2026-09-22 新增，来自差距矩阵 §3.24）：`<tasks.json>.retention-audit.jsonl` 现在只追加不轮转，长期运行会线性增长（任务库本身有 500 条上限，它是唯一还在长的文件）。旋转要先定策略：保留窗口按天还是按大小、截断动作自身要不要写一条 meta 行、截断如何崩溃安全；属于要产品口径的决定。
    - **完整 XSS 利用链验证**：CSP/导航/分区已加固并有 5/5 + 7/7 检查，但没有端到端的实际注入利用链复现。
 
 

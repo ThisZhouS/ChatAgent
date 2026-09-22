@@ -230,14 +230,19 @@ export class LocalAgentHost {
       storeIntegrity: (() => {
         const report = this.options.store.getLoadReport?.();
         if (!report) return undefined;
+        const retention = this.options.store.retentionStats?.();
         return {
           repaired: report.repaired.length,
           quarantined: report.quarantined.length,
           duplicates: report.duplicates.length,
           prunable: report.prunable?.length,
           // Records retention already dropped in this session, so a shrinking
-          // store is visible instead of looking like unexplained data loss.
-          pruned: this.options.store.retentionStats?.().pruned,
+          // store is visible instead of looking like unexplained data loss. The
+          // per-record trail lives in the audit file, not in this payload.
+          pruned: retention?.pruned,
+          retentionAuditPath: retention?.auditPath,
+          retentionAuditFailures: retention?.auditFailures,
+          retentionAuditError: retention?.lastAuditError,
           corruptFile: report.corruptFile,
         };
       })(),

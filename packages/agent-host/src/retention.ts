@@ -25,6 +25,22 @@ export interface RetentionOptions {
 
 export const DEFAULT_MAX_RECORDS = 500;
 
+/** Why a record was dropped: the age rule or the per-device count cap. */
+export type RetentionReason = 'age' | 'count';
+
+/**
+ * One dropped record, with what a reviewer needs to trace it afterwards. The
+ * store writes these to its retention audit, so "500 rows became 480" can be
+ * answered with the exact ids and the rule that removed each one.
+ */
+export interface ExpiredRecord {
+  taskId: string;
+  state: LocalTaskRecord['state'];
+  reason: RetentionReason;
+  /** The timestamp the decision was based on; `''` when the row had none. */
+  updatedAt: string;
+}
+
 const PRUNABLE: ReadonlySet<LocalTaskRecord['state']> = new Set([
   'succeeded',
   'failed',
@@ -40,21 +56,28 @@ function updatedAtMs(record: LocalTaskRecord): number {
 }
 
 /**
- * Returns the task ids that may be dropped. Pure: the caller decides when to
- * actually write, and a load must never rewrite the file on its own.
+ * Returns the records that may be dropped, each with the rule that removed it.
+ * Pure: the caller decides when to actually write, and a load must never rewrite
+ * the file on its own.
  */
-export function selectExpiredRecords(
+export function selectExpiredRecordsDetailed(
   records: readonly LocalTaskRecord[],
   options: RetentionOptions = {},
-): string[] {
+): ExpiredRecord[] {
   const maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
   const now = (options.now ?? Date.now)();
-  const expired = new Set<string>();
+  const expired = new Map<string, ExpiredRecord>();
 
   if (options.maxAgeMs !== undefined) {
     const cutoff = now - options.maxAgeMs;
     for (const record of records) {
-      if (PRUNABLE.has(record.state) && updatedAtMs(record) < cutoff) expired.add(record.taskId);
+      if (!PRUNABLE.has(record.state) || updatedAtMs(record) >= cutoff) continue;
+      expired.set(record.taskId, {
+        taskId: record.taskId,
+        state: record.state,
+        reason: 'age',
+        updatedAt: record.updatedAt ?? record.createdAt ?? '',
+      });
     }
   }
 
@@ -65,8 +88,26 @@ export function selectExpiredRecords(
     const candidates = remaining
       .filter((record) => PRUNABLE.has(record.state))
       .sort((a, b) => updatedAtMs(a) - updatedAtMs(b));
-    for (const record of candidates.slice(0, over)) expired.add(record.taskId);
+    for (const record of candidates.slice(0, over)) {
+      expired.set(record.taskId, {
+        taskId: record.taskId,
+        state: record.state,
+        reason: 'count',
+        updatedAt: record.updatedAt ?? record.createdAt ?? '',
+      });
+    }
   }
 
-  return [...expired];
+  return [...expired.values()];
+}
+
+/**
+ * Returns the task ids that may be dropped (the id projection of
+ * `selectExpiredRecordsDetailed`, kept for callers that only need the ids).
+ */
+export function selectExpiredRecords(
+  records: readonly LocalTaskRecord[],
+  options: RetentionOptions = {},
+): string[] {
+  return selectExpiredRecordsDetailed(records, options).map((entry) => entry.taskId);
 }

@@ -145,7 +145,7 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 安装/解包后的 ChatAgent 桌面客户端（`apps/desktop/release/win-unpacked/ChatAgent.exe`）或开发态 `pnpm desktop:dev`：
 
 1. **关窗常驻**：登录后关闭窗口 → 进程仍在托盘；此时提交的本机任务继续跑完，重开窗口后状态与产物仍在（自动化：`scripts/electron-host-smoke.cjs` 6/6）。
-2. **离线工作台**：断开/停掉组织服务器，刷新客户端 → 出现“无法连接到 ChatAgent 服务”，点“打开本机工作台”（或托盘菜单“打开本机工作台（不依赖服务器）”）：可看到设备、执行器、任务列表、提交文档任务、取消/重试、暂停/继续，页面不依赖服务器（自动化：`scripts/electron-workbench-check.cjs` 11/11）。
+2. **离线工作台**：断开/停掉组织服务器，刷新客户端 → 出现“无法连接到 ChatAgent 服务”，点“打开本机工作台”（或托盘菜单“打开本机工作台（不依赖服务器）”）：可看到设备、执行器、任务列表、提交文档任务、取消/重试、暂停/继续，页面不依赖服务器（自动化：`scripts/electron-workbench-check.cjs` 16/16）。
 3. **副作用任务不会被本机批准**：以“副作用任务”提交 → 立即失败并在“说明”列显示 `delegation_missing`，执行次数为 0；只有组织服务下发委托并由用户批准后才可能执行。
 4. **显式退出即停止**：托盘“退出（停止后台 Agent）”或工作台“退出” → 后台 Agent 与自有子进程树被清理，任务库锁释放，再次启动可正常接管；直接关窗不会停止 Agent（自动化：`node scripts/electron-quit-check.mjs` 10/10，真实应用 + 真实退出路径）。
 5. **稳定设备标识**：设置页本机卡片中的设备号为 `desktop-<uuid>`，重启客户端后不变（存放在用户数据目录 `device.json`）。
@@ -154,7 +154,12 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
    # pid 换成任意存活进程；路径按实际 userData 目录
    '{"pid":12345,"startedAt":"2026-09-16T00:00:00.000Z"}' | Set-Content "$env:APPDATA\ChatAgent\agent-host\tasks.json.lock"
    ```
-   启动客户端：弹窗显示锁路径/持有者 pid/起始时间，默认按钮是「不接管（默认）」。点「接管并重启后台 Agent」后，旧锁被改名为 `tasks.json.lock.replaced-<时间戳>` 保留、接管记录追加到 `tasks.json.lock-audit.jsonl`、后台 Agent 正常启动。自动化只覆盖"不接管"与"残留锁自愈"两半（`scripts/electron-lock-check.mjs` 9/9）；点击那一下必须真人完成。
+   启动客户端：弹窗显示锁路径/持有者 pid/起始时间，默认按钮是「不接管（默认）」。点「接管并重启后台 Agent」后，旧锁被改名为 `tasks.json.lock.replaced-<时间戳>` 保留、接管记录追加到 `tasks.json.lock-audit.jsonl`、后台 Agent 正常启动。自动化只覆盖"不接管"与"残留锁自愈"两半（`scripts/electron-lock-check.mjs` 18/18）；点击那一下必须真人完成。
+7. **清理了哪些任务，能在文件里逐条查到**：任务库的保留策略（每设备最多 500 条终态记录）只会在意「条数」，被清掉的 taskId 一律写进任务库旁边的 `tasks.json.retention-audit.jsonl`（一行一个批次）。读法：
+   ```powershell
+   Get-Content "$env:APPDATA\ChatAgent\agent-host\tasks.json.retention-audit.jsonl" | Select-Object -Last 3
+   ```
+   每行形如 `{"at":"…","action":"task_store.pruned","actor":"local-host","reason":"count","count":20,"tasks":[{"taskId":"…","state":"succeeded","reason":"count","updatedAt":"…"}]}`：`reason` 为 `age`（超过年龄上限，需显式配置）或 `count`（超过条数上限）。界面与设置页只说「N 条」（按产品决定：逐条追溯落审计、不落界面），因此**行里的 taskId 就是唯一的追溯入口**；审计写失败不会让任务写入失败，但会在设置页之外由主进程在控制台打印，并出现在 `status().storeIntegrity.retentionAuditFailures`。自动化：`scripts/electron-workbench-check.cjs` 3 项断言（审计文件结构、审计条数与 `pruned` 逐条相等、被清理的 id 不进页面）。
 
 ## 9. 已知缺口（不是回归）
 
