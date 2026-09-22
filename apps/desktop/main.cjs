@@ -593,10 +593,23 @@ function createHost(serverUrl) {
     ? ''
     : 'real Hermes runtime not found; using offline fake executor (never passed off as real)';
 
+  /**
+   * Directories an administrator has pre-authorized for task work (product decision 9C,
+   * 2026-09-21). Empty by default, and split on the platform path delimiter so a Windows
+   * drive letter cannot accidentally cut an entry in half. A granted directory widens the
+   * sandbox for every task on this machine, so it is configuration, never a per-task flag.
+   */
+  const readGrantedWorkRoots = () =>
+    (process.env.CHATAGENT_AGENT_GRANTED_ROOTS ?? '')
+      .split(path.delimiter)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '');
+
   host = new LocalAgentHost({
     deviceId: resolveDeviceId(),
     agentId: 'hermes',
     workRoot: path.join(root, 'work'),
+    grantedWorkRoots: readGrantedWorkRoots(),
     store: new JsonFileAgentHostStore(path.join(root, 'tasks.json'), {
       // Overridable so an end-to-end check can watch the heartbeat move without
       // waiting the production interval. Out-of-range values are ignored.

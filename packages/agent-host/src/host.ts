@@ -25,6 +25,12 @@ export interface LocalAgentHostOptions {
   agentId: string;
   /** Only directories below this root may be used as task working directories. */
   workRoot: string;
+  /**
+   * Extra directories an administrator granted explicitly (product decision 9C,
+   * 2026-09-21). Empty by default: a task may only work inside the work root unless
+   * someone with authority said otherwise, and every use is still recorded.
+   */
+  grantedWorkRoots?: readonly string[];
   store: AgentHostStore;
   adapter: HermesAdapter;
   /**
@@ -781,7 +787,7 @@ export class LocalAgentHost {
 
   /** Verifies a directory before use; the desktop layer calls this on user input. */
   async assertWorkDir(candidate: string): Promise<string> {
-    return assertInsideWorkRoot(this.workRoot, candidate);
+    return assertInsideWorkRoot(this.workRoot, candidate, this.options.grantedWorkRoots ?? []);
   }
 }
 

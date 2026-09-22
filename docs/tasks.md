@@ -272,3 +272,5 @@ pnpm dev
 - [ ] **依赖高危项（已定位来源）**：`extract-zip@2.0.1` 来自 `electron@39.8.10`，而 electron 是 `@chatagent/desktop` 的 **devDependency**（`pnpm why extract-zip` 实证：extract-zip@2.0.1 <- electron@39.8.10 <- @chatagent/desktop；没有任何 workspace 包声明它）。在打包产物 apps/desktop/release 里找不到任何 extract-zip 痕迹（本轮实核对），它没有随安装包分发。 所以正确的修法是**随既定的 Electron 版本切换一起消失**（彩排已在 42.4.1 全绿），切完复跑 `node scripts/audit-deps.mjs --level high` 核对，而不是现在动依赖树。既有验收门仍是 `--level critical`：**「critical 门通过」不等于「没有高危」**；是否把门提到 `high` 由产品决定（提上去会让当前验收立刻变红）。
 
 - [x] **3B 转发级联撤回**（2026-09-21 所有者确认后实现）：撤回原文时按来源级联撤回转发副本（可跨会话）、取消其投喂项、广播事件并审计 `message.recall_cascade`；仅原文发送者可发起、窗口按原文判定。证据：`recall-cascade.test.ts` 3 例 + 根套件 51 文件 / 413 用例 + 线上实测（副本 recalledAt 置位、正文为空）。
+
+- [x] **9C 管理员预置允许目录**（2026-09-21 所有者确认后实现）：宿主新增 `grantedWorkRoots`（默认空 = 旧行为），桌面从 `CHATAGENT_AGENT_GRANTED_ROOTS` 读取；授权根先 realpath、空白条目跳过、前缀相似不放行。证据：`workdir-grant.test.ts` 4 例、根套件 52 文件 / 417 用例、`gate7a-verify` Flow6 逃逸仍被拒、Electron 宿主冒烟 6/6。

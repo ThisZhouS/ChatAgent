@@ -43,18 +43,30 @@ export function isInside(root: string, candidate: string): boolean {
 
 /**
  * Resolves a caller-supplied directory and refuses it unless it lives inside the
- * authorized work root. Symlinks are resolved first so a link cannot point out.
+ * authorized work root - or inside one of the roots an administrator granted explicitly
+ * (product decision 9C, 2026-09-21). Symlinks are resolved first so a link cannot point
+ * out, and the grants are resolved the same way, so a granted path that happens to be a
+ * symlink cannot widen this check by accident. No grants means the old behaviour exactly:
+ * anything outside the work root is refused.
  */
-export async function assertInsideWorkRoot(root: string, candidate: string): Promise<string> {
+export async function assertInsideWorkRoot(
+  root: string,
+  candidate: string,
+  grantedRoots: readonly string[] = [],
+): Promise<string> {
   if (!isAbsolute(candidate)) {
     throw new WorkdirRefusedError('the working directory must be an absolute path', candidate, root);
   }
   const resolvedRoot = await safeRealpath(root);
   const resolved = await safeRealpath(candidate);
-  if (!isInside(resolvedRoot, resolved)) {
-    throw new WorkdirRefusedError('the working directory escapes the authorized work root', candidate, root);
+  if (isInside(resolvedRoot, resolved)) return resolved;
+  for (const granted of grantedRoots) {
+    // A blank entry would silently mean "the process working directory": skip it rather
+    // than let a malformed configuration grant something nobody asked for.
+    if (typeof granted !== 'string' || granted.trim() === '') continue;
+    if (isInside(await safeRealpath(granted), resolved)) return resolved;
   }
-  return resolved;
+  throw new WorkdirRefusedError('the working directory escapes the authorized work root', candidate, root);
 }
 
 /** realpath that falls back to the resolved path when the entry does not exist yet. */
