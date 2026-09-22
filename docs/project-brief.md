@@ -36,7 +36,7 @@ ChatAgent 同时是独立 Agent 工具与员工原生聊天客户端。员工使
 
 ## 可行性 / Feasibility
 
-- 可复用的本地代码或资源 / Existing local code or assets to reuse: 本仓库当前为空，无本地代码可复用。
+- 可复用的本地代码或资源 / Existing local code or assets to reuse: **立项时**本仓库为空，无本地代码可复用（这句描述的是 2026-09-06 的事实，保留在此作为留痕）。现状：仓库已有可复用资产——`packages/`（hermes / document / im-gateway / task-engine / agent-host / contracts）、`apps/`（server / web / desktop）、`scripts/` 下的验收脚本，以及 `docs/product-decomposition-gap-matrix-2026-09-17.md` 里按功能域整理的差距矩阵；需求基线见已重建的 `docs/requirements.md`。
 - 相近或竞争项目 / Similar or competing projects:
   - OpenClaw（MIT，Node/TS，gateway/channels/tools）
   - NousResearch/hermes-agent（MIT，Python，agent/gateway/cron/skills）

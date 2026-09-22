@@ -115,3 +115,11 @@
 ## 追加交付（第 57 轮之六）：桌面壳七项回归 86/86
 
 既然本轮动过 web 视图与契约，桌面壳就不能只靠「理论上有测试」：在 HEAD 上复跑 Electron 七项（`electron-lock-check` 18/18、`electron-receipt-sync-check` 21/21、`electron-host-smoke` 6/6、`electron-workbench-check` 13/13、`electron-quit-check` 10/10、`electron-csp-check` 5/5、`electron-nav-check` 13/13），合计 **86/86 通过**，全部退出码 0。七项都不依赖网络与真实模型，因此是可重复的本机回归证据；差距矩阵 §3.23 记录了覆盖点。边界不变：它们不覆盖真实 Hermes 与真实模型凭据（Gate 7A.3），也不覆盖双机局域网与安装包 GUI 人工验收。
+
+## 追加交付（第 57 轮之七）：需求基线重建（requirements.md）
+
+差距矩阵 §5 早就记着「requirements.md 与 project-brief.md 是旧口径（以 IM 平台/Webhook 为主），与本功能树方向漂移」。本轮把它收掉：
+
+- `docs/requirements.md` 按**已交付产品**重建为 R1~R9（身份与会话、原生聊天与可见性、AI 账号与分级、投喂闸门与任务、审批与交付、文件与文档、本机宿主、工作台与管理、质量与运维），每条给出**可执行证据文件名**而不是叙述；末尾显式列出尚未验收项。
+- `docs/project-brief.md`：把「本仓库当前为空」那句标注为立项时（2026-09-06）的事实，并补上现状可复用资产；旧句保留，避免抹掉历史。
+- 差距矩阵 §5 的对应条目改为已处理并保留原文。

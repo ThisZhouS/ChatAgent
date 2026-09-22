@@ -367,4 +367,4 @@
 
 - 本轮所有验证都是本地单机、无真实模型凭据：「风险与消耗预处理」「意图不明则询问」这类模型行为无法端到端验证（Gate 7A.3 未开始）。
 - 窗口置顶/隐藏位于 Electron 主进程，现有自动化（root vitest + Electron 检查）没有对应入口，需要新增检查脚本。
-- `docs/requirements.md` 与 `docs/project-brief.md` 仍是旧口径（以 IM 平台/Webhook 为主，brief 正文还留着「仓库当前为空」的历史描述），与本功能树的产品方向存在漂移，建议按功能树重建需求基线。
+- ~~`docs/requirements.md` 与 `docs/project-brief.md` 仍是旧口径~~ **已处理（2026-09-22 第 57 轮）**：`docs/requirements.md` 按已交付产品重建（R1~R9，每条指向可执行的证据文件），`docs/project-brief.md` 里「仓库当前为空」那句标注为立项时的事实并补上现状（可复用的 packages/apps/scripts 与差距矩阵）。留痕保留原文，避免下一个人以为从未漂移过。
