@@ -57,3 +57,12 @@
 1. 可立即试点：内部聊天 + 群聊 + 文件收发 + 撤回 + 好友关系 + 群治理 + 别名/外观/贴纸（A 类，自动化覆盖充分）。
 2. 小范围试点（需观察）：本机后台执行与文档交付（需真实模型；先限定「生成文档」这类无外发副作用的闭环），同时观察 120s 投喂窗口的体验。
 3. 暂不试点：外发/跨同事自动交付（依赖委托台账与真实审批链路）、无人值守定时任务、多机部署。
+
+## Gate 7A.3：服务端真实模型闭环已跑通（2026-09-21）
+
+- 配置：`CHATAGENT_MODEL_BASE_URL` / `CHATAGENT_MODEL_NAME=deepseek-v4.1-flash` / `CHATAGENT_MODEL_API_KEY`（**只在 gitignored 的 `Temp/model.env`，未入库**），OpenAI 兼容协议。
+- 实测：以 `CHATAGENT_AGENT_INTAKE_MODE=immediate` 重启服务端后，在助手会话里发「请用一句话确认你已接入真实模型」，助手回复「**已接入真实模型：本次回复由真实推理模型生成，而非脚本或模板模拟。**」；任务状态 `completed`、`attempts=1`、无错误，该次请求服务端耗时约 404ms（真实网络调用）。
+- 与 MockProvider 的差别可对照：同一会话里 Mock 的回复是「收到：「…」。需要产出文件时，请说明「生成 Word/Excel」。」——两条回复形态明显不同，因此这次是真实模型而非桩。
+- **仍未完成的**：`scripts/gate7a-verify.mjs` 的 Flow8 需要 `CHATAGENT_HERMES_EXE`（真实 Hermes 运行时进程）才能验证桌面宿主路径，目前仍是 BLOCKED；因此 Gate 7A.3 **只能说是服务端闭环已验证，不能宣称整条 Gate 通过**。
+- 安全提示：该 API key 通过聊天传递，已按凭据处理（仅落 gitignored 文件、未写入任何提交）；若这段对话会被分享，请轮换该 key。
+
