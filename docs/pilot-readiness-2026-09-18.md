@@ -68,3 +68,16 @@
 - **仍未完成的**：`scripts/gate7a-verify.mjs` 的 Flow8 需要 `CHATAGENT_HERMES_EXE`（真实 Hermes 运行时进程）才能验证桌面宿主路径，目前仍是 BLOCKED；因此 Gate 7A.3 **只能说是服务端闭环已验证，不能宣称整条 Gate 通过**。
 - 安全提示：该 API key 通过聊天传递，已按凭据处理（仅落 gitignored 文件、未写入任何提交）；若这段对话会被分享，请轮换该 key。
 
+
+## Gate 7A：真实 Hermes 运行时到位后全线通过（2026-09-22）
+
+本机一直存在真实运行时 `Temp/hermes-runtime/hermes-agent-cn-runtime-win32-x64.exe`（47.9 MB，早前 PoC 留下），此前只是没有把它指给校验脚本。指定后：
+
+- `CHATAGENT_HERMES_EXE=... node scripts/gate7a-verify.mjs` → **22 passed, 0 failed, 0 blocked，退出码 0**；
+- 其中 Flow8「真实 Hermes 进程契约」**真的启动了那个进程**，结果是 `state=failed error=no inference provider is configured for Hermes`——即「没有 provider 时明确失败、不伪装成功」，这正是该流程要验的契约；
+- 按本项目的退出码约定（0 = 全部通过且无未验证项），这条 Gate 现在**没有 BLOCKED**。
+
+另一半（服务端真实模型闭环）此前已验证：真实回复 + `本周工作周报.docx`（8819 字节、OOXML、PK 魔数）。
+
+**仍未做的**：把两者**合起来**跑一次——让桌面宿主里的真实 Hermes 进程带着真实模型完成一件办公任务（需要把模型 provider 配置传给 Hermes 进程）。目前只能说：宿主契约与真实运行时已验证、服务端办公闭环与真实模型已验证，**合体运行尚未验证**。
+
