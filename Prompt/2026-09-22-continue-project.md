@@ -107,3 +107,7 @@
 | 测试 profile | 离线 MockProvider；冷却/保留期通过配置置 0 覆盖，不使用真实等待 |
 
 **运行态实测（第 57 轮，独立实例）**：重建 `apps/server/dist` 后，用临时数据目录在 `:8792` 起了第二个实例（`:8787` 未动，探完即停并删除临时目录）实测：新实例 `GET /api/auth/me` 即返回派生 handle `dev-owner`（惰性分配生效）；`PATCH {handle:'Alice.Wang-1'}` → 200 存成 `alice.wang-1`；`admin` → 400 `handle_reserved`；`ab` → 400 schema 字段错误；紧随其后的第二次改名 → 429 `handle_change_cooldown`（带可再次修改的时间）；两次被拒后回读仍是 `alice.wang-1`，`GET /api/members` 也带该 handle。边界同前：真实构建产物的 HTTP 证据，不等于 Gate 7A.3，也不覆盖浏览器端。
+
+## 追加交付（第 57 轮之五）：端到端复验（打包后客户端 E2E 38/38）
+
+本轮动过服务端、契约与两个 web 视图，因此按交接文档第 5 步补上真实客户端复验：重建 `apps/web/dist` 与 `apps/server/dist` → `scripts/restart-server.mjs` 重启开发实例 → `node scripts/ui-e2e.mjs`，结果 **38/38 通过**（含 `view "设置" renders — cards: 8`，即新增两卡片后的界面结构；以及无错误提示、无横向溢出、无文字截断、亮/暗主题对比度、1024×720 布局）。开发实例的进程因此已从「改动前」变为 HEAD 构建——这一点已同步进交接文档，避免下一个人按旧提醒去重启。边界：E2E 覆盖客户端行为与结构，不覆盖服务端语义（由各服务端用例与运行态实测覆盖），也不等于 Gate 7A.3。

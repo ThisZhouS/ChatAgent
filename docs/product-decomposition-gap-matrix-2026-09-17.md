@@ -326,6 +326,15 @@
 - **运行态实测（2026-09-22，独立实例 `:8792` + 临时数据目录，探完即停并删除）**：全新实例上 `GET /api/auth/me` 直接返回派生 handle `dev-owner`（惰性分配真的在跑）；`PATCH {handle:'Alice.Wang-1'}` → 200 且存成 `alice.wang-1`；保留词 `admin` → **400 `handle_reserved`**；太短的 `ab` → 400（schema 字段错误）；紧接着的第二次改名 → **429 `handle_change_cooldown`**，消息带上可再次修改的时间 `2026-10-22T…`；两次被拒之后 `GET /api/auth/me` 仍是 `alice.wang-1`（拒绝确实没写入），`GET /api/members` 也带上了该 handle。
 - 验证：新增 `handles.test.ts` **6 例**（派生与幂等、设置后全组织可见、格式/保留词拒绝且不落库、跨大小写重名 409、冷却 429 且 0 天时放行、旧名保留期内他人 409 而本人可取回且 0 天保留即刻释放）；web 侧 `SettingsView.test.ts` +2 例（显示服务端确认的当前 handle 并保存、被拒时显示服务端原因且当前值不变）与 `ChatView.test.ts` +1 例（按 handle 搜到同事）；根套件 **55 文件 / 436 用例**、web **83 用例**、`tsc`/`vue-tsc` 0 错。
 
+
+### 3.22 第 57 轮的端到端复验（打包后客户端 E2E，2026-09-22）
+
+本轮改了服务端、契约与两个 web 视图（联系人卡片、设置页），所以按交接文档第 5 步做了真实客户端复验，而不是只停在组件用例：
+
+- 按 HEAD 重建 `apps/web/dist` 与 `apps/server/dist`，用 `scripts/restart-server.mjs` 重启开发实例（`:8787`，本次重启顺带让上一节记录的新接口真正上线），再跑 `scripts/ui-e2e.mjs`。
+- 结果：**38/38 全部通过**（真实 Electron 客户端 + 重建的 web 包）。其中与本轮直接相关的几条：`view "设置" renders — cards: 8`（新增「我的个人助手偏好」与「我的个人 ID」两张卡片后，卡片数由 6 变 8）、`view "成员" renders`、`no error toasts visible`、`no horizontal page overflow`、`no clipped text in bubbles or sidebar`、亮/暗主题对比度 ≥ 4.5、1024×720 布局保持。
+- 边界：E2E 覆盖的是客户端行为与界面结构，**不覆盖** handle 的唯一性/冷却、偏好越界 400 这类服务端语义（那些由 `handles.test.ts`、`preferences.test.ts` 与运行态实测覆盖）；也不等于 Gate 7A.3。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。
