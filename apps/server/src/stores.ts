@@ -570,6 +570,24 @@ export class MessageStore {
     return undefined;
   }
 
+  /**
+   * Every live message that was forwarded from the given one. A copy may live in a different
+   * conversation, so provenance (not the conversation) is what finds it. Copies that were
+   * already recalled on their own are skipped: there is nothing left to cascade over.
+   */
+  async findForwardsOf(messageId: string): Promise<ChatMessage[]> {
+    await this.load();
+    const hits: ChatMessage[] = [];
+    for (const list of this.messages.values()) {
+      for (const message of list) {
+        if (message.recalledAt) continue;
+        const source = message.metadata?.forwardedFrom as { messageId?: unknown } | undefined;
+        if (source?.messageId === messageId) hits.push({ ...message });
+      }
+    }
+    return hits;
+  }
+
   async append(message: ChatMessage): Promise<void> {
     await this.load();
     const list = this.messages.get(message.conversationId) ?? [];

@@ -1167,6 +1167,33 @@ export class ChatAgentService {
         recalledAt: updated.recalledAt ?? recalledAt,
         at: recalledAt,
       });
+
+      // Cascade (product decision 3B, 2026-09-21): a withdrawn message must not survive as a
+      // readable forward - "I took it back" has to mean the copies go too. Copies are found by
+      // provenance because they may sit in other conversations, and each one is cancelled from
+      // the intake queue as well, so a withdrawn sentence is never handed to an agent.
+      const forwards = await this.messages.findForwardsOf(updated.id);
+      for (const copy of forwards) {
+        const recalledCopy = await this.messages.markRecalled(copy.id, recalledAt);
+        if (!recalledCopy) continue;
+        await this.intake.cancelForMessage(recalledCopy.id, 'recalled');
+        this.events.publish({
+          type: 'message_recalled',
+          conversationId: recalledCopy.conversationId,
+          messageId: recalledCopy.id,
+          recalledAt: recalledCopy.recalledAt ?? recalledAt,
+          at: recalledAt,
+        });
+      }
+      if (forwards.length > 0) {
+        this.audit?.({
+          action: 'message.recall_cascade',
+          outcome: 'ok',
+          actorId: principal.id,
+          target: updated.id,
+          detail: 'forwards:' + String(forwards.length),
+        });
+      }
       return { ok: true, message: hideRecalledContent(updated) };
     }
 
