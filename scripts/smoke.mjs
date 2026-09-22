@@ -159,6 +159,11 @@ async function main() {
   const contacts = (await call('GET', '/api/contacts')).json ?? [];
   const agentContact = contacts.find((contact) => contact.kind === 'agent');
   record('contact list contains an AI account', Boolean(agentContact), agentContact?.displayName ?? 'none');
+  // A colleague to open a 1:1 with comes from the organization directory, not from the contact
+  // list: since decision 1C-(a) the contact list only holds people this account has a
+  // relationship with, while a direct chat with anybody in the organization stays allowed.
+  const orgMembers = (await call('GET', '/api/members')).json ?? [];
+  const peerMember = orgMembers.find((member) => member.id !== me.id);
   if (!agentContact) return;
 
   const opened = await call('POST', '/api/conversations', {
@@ -247,7 +252,7 @@ async function main() {
     `online=${(presence.json?.online ?? []).length}`,
   );
 
-  const peer = contacts.find((contact) => contact.kind === 'member' && contact.id !== me.id);
+  const peer = peerMember;
   let dmId = undefined;
   if (peer) {
     const dm = await call('POST', '/api/conversations', { targetId: peer.id, targetKind: 'member' });

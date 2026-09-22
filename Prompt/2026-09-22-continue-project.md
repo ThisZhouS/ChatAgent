@@ -36,6 +36,23 @@
 ## 未决与边界
 
 - **界面未做**：设置页还没有这两个数字的入口，成员目前只能用 API 改。已写进 `docs/tasks.md` 作为本条的下一片；在它落地前不得对用户宣称「助手上下文可设置」。
-- 第 1 条（(a) 组织目录可搜）与第 8 条（唯一 handle）本轮**未动代码**；落地方案与「先 grep `contacts()` 消费点」的前置检查见 `docs/design-1c-8b-5-2026-09-21.md`。
+- 第 8 条（唯一 handle）本轮**未动代码**；落地方案见 `docs/design-1c-8b-5-2026-09-21.md`。
 - 未运行 Electron 七项、打包后客户端 E2E 或 Gate 7A 自检（本轮只改服务端与契约，不涉及客户端与宿主；如需全量复验按 `docs/handoff-2026-09-18.md` 的「一条命令复现验证」执行）。
 - 仍不使用向量库：项目现有检索是 JSON 存储 + 进程内搜索，本轮 Prompt 沿用 Markdown 留痕（无新增向量写入需求）。
+
+## 追加交付（第 57 轮之二）：第 1 条 = 好友可见性落在发现层（1C-(a)）
+
+同一句指令「继续项目的完善」之下，按决策备忘的执行顺序（5 → 1 → 8）继续做第 1 条。
+
+- 口径来源：所有者在第 1 条上先答 **C**（人际好友管可见性、AI 分级管能力），再在 (a)/(b) 中选 **(a) 组织目录可搜**。落地前先按设计稿第 3 步做了消费点核对——结论与设计稿的担心一致：`native-chat.test.ts` 与 `friends.test.ts` 里有 4 处断言建立在「联系人返回全组织」之上，`scripts/smoke.mjs` 甚至用联系人找 1:1 对端（不改就会**静默跳过**撤回验收）。
+- 改动：`listContacts` 只回「有关系记录或有待处理申请」的人 + AI 账号；`listMembers` 保留为发现入口但 `online` 只给自己与好友（姓名与 roles 有意保留，理由见差距矩阵 §3.20）；`presence` 同样收窄；客户端加目录搜索入口、`peerOf`/群成员名回落目录、新建群候选改用目录。@ 候选在代码里**不存在**（mentions 只用于召唤 AI 账号），设计稿的这条担心没有对应物。
+- 验证：新增 `contact-visibility.test.ts` 4 例；改写的 4 处断言逐条说明是**旧口径**而非迁就实现；根套件 54 文件 / 430 用例、web 77 用例、`tsc`/`vue-tsc` 0 错。
+
+| 项 | 值 |
+| --- | --- |
+| 受影响 package/符号 | `apps/server/src/service.ts`（`listContacts`/`listMembers`/`presence`/`areFriends`）；`apps/web/src/views/ChatView.vue`（目录搜索、`peerOf`、`groupCandidates`、`loadGroupMembers`、`loadDirectory`）；`scripts/smoke.mjs`（对端改取 `/api/members`） |
+| 前置权限 | 已认证成员；目录读取仍是成员级（写操作才是组织管理员） |
+| 数据分类 | 成员 id、显示名、roles、好友范围内的在线状态；不新增任何外发 |
+| 是否外发 | 否（未启动服务、未调用模型；未跑打包后 E2E 与 Electron 检查） |
+| 幂等/取消语义 | 不涉及发送与任务状态机；只读接口的可见范围变化，对已存在的会话与消息无回滚要求 |
+| 测试 profile | 离线 MockProvider；`contact-visibility.test.ts` 4 例 + 4 处旧断言改写 + web 3 例 |

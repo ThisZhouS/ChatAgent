@@ -164,8 +164,13 @@ describe('friend requests', () => {
     expect((again.json() as FriendRequestRecord).id).toBe(first.id);
 
     await decide(app, bob, first.id, 'decline');
-    expect((await relationTo(app, alice, 'u_bob'))?.state).toBe('none');
-    expect((await relationTo(app, bob, 'u_alice'))?.state).toBe('none');
+    // Decision 1C-(a): a declined request leaves no relationship behind, and "no relationship"
+    // means the contact list does not show them at all - not merely a `none` badge. They stay
+    // reachable through the organization directory, which is where a new request comes from.
+    expect(await relationTo(app, alice, 'u_bob')).toBeUndefined();
+    expect(await relationTo(app, bob, 'u_alice')).toBeUndefined();
+    expect((await contacts(app, alice)).some((contact) => contact.id === 'u_bob')).toBe(false);
+    expect((await contacts(app, bob)).some((contact) => contact.id === 'u_alice')).toBe(false);
 
     // After a decline a new request is allowed again: people change their minds.
     const retried = await request(app, alice, 'u_bob');

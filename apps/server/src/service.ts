@@ -384,13 +384,36 @@ export class ChatAgentService {
   // Members (administration) ------------------------------------------------
 
   /** Colleagues of the caller's organization. Tokens are never exposed. */
+  /**
+   * The organization directory: the **discovery** entry point (decision 1C-(a)). The whole
+   * organization stays searchable, but `online` is only attached for yourself and your friends -
+   * presence is a friend-level fact, and a directory that answers "is this colleague at their
+   * desk?" for strangers would make the contact-list filtering cosmetic.
+   *
+   * Name and roles stay for everybody on purpose: the admin console reads roles from this
+   * endpoint, and administration is not a social relation.
+   */
   async listMembers(principal: Principal): Promise<MemberView[]> {
     this.requireMember(principal);
     const online = new Set(this.events.onlinePrincipals());
     const members = await this.directory.list();
-    return members
-      .filter((member) => member.organizationId === principal.organizationId)
-      .map((member) => ({ ...toMemberView(member), online: online.has(member.id) }));
+    const views: MemberView[] = [];
+    for (const member of members) {
+      if (member.organizationId !== principal.organizationId) continue;
+      const view = toMemberView(member);
+      if (member.id === principal.id || (await this.areFriends(principal.id, member.id))) {
+        views.push({ ...view, online: online.has(member.id) });
+        continue;
+      }
+      views.push(view);
+    }
+    return views;
+  }
+
+  /** A friend is a relation the other side accepted, so it is symmetrical by construction. */
+  private async areFriends(a: string, b: string): Promise<boolean> {
+    if (a === b) return true;
+    return (await this.relations.getRelation(a, b))?.friend === true;
   }
 
   /**
@@ -491,7 +514,17 @@ export class ChatAgentService {
     return member;
   }
 
-  /** Contact list for the native client: colleagues plus AI accounts. */
+  /**
+   * Contact list for the native client: the people the caller has a relationship with, plus
+   * AI accounts.
+   *
+   * Decision 1C-(a): this is the *discovery* layer, so it holds friends, anybody with a pending
+   * request in either direction, and anybody the caller blocked (so it can be undone) - but not
+   * the whole organization. Everybody else stays reachable through the directory
+   * (`listMembers`, GET /api/members), which is where a new contact is added from. Direct chat
+   * and group communication are untouched: this filter changes who you *see*, not who you may
+   * talk to (an earlier attempt to gate direct chat broke 35 cases and was reverted).
+   */
   async listContacts(principal: Principal): Promise<MemberView[]> {
     this.requireMember(principal);
     const members = await this.directory.list();
@@ -505,8 +538,14 @@ export class ChatAgentService {
         contacts.push({ ...toMemberView(member), online: online.has(member.id) });
         continue;
       }
-      // The directory still lists the whole organization; the relation says what the caller
-      // has accepted, named or blocked, and is private to the caller.
+      // The relation says what the caller has accepted, named or blocked, and is private to
+      // the caller. Decision 1C-(a): "has a relationship" means the caller acted on this person
+      // at some point - a friend, a block, a private remark - or a request is in flight in
+      // either direction. A colleague they never touched is not hidden from them (the directory
+      // lists the whole organization) but does not sit in their contact list either.
+      const relation = await this.relations.getRelation(principal.id, member.id);
+      const pending = await this.relations.findPending(principal.id, member.id);
+      if (!relation && !pending) continue;
       const view = await this.contactView(principal.id, member);
       contacts.push({ ...view, online: online.has(member.id) });
     }
@@ -1787,16 +1826,21 @@ export class ChatAgentService {
     return { me: byMember.get(principal.id), others };
   }
 
-  /** Presence snapshot: members with an open event stream. */
+  /**
+   * Presence snapshot: members with an open event stream, **limited to yourself and your
+   * friends** (decision 1C-(a)). Keeping this one organization-wide while tiering the contact
+   * list would have been cosmetic - the same question ("is this colleague at their desk?")
+   * would still have had an answer for strangers.
+   */
   async presence(principal: Principal): Promise<{ online: string[] }> {
     this.requireMember(principal);
     const members = await this.directory.list();
-    const sameOrg = new Set(
-      members
-        .filter((member) => member.organizationId === principal.organizationId)
-        .map((member) => member.id),
-    );
-    return { online: this.events.onlinePrincipals().filter((id) => sameOrg.has(id)) };
+    const visible = new Set<string>([principal.id]);
+    for (const member of members) {
+      if (member.organizationId !== principal.organizationId) continue;
+      if (await this.areFriends(principal.id, member.id)) visible.add(member.id);
+    }
+    return { online: this.events.onlinePrincipals().filter((id) => visible.has(id)) };
   }
 
   async searchMessages(

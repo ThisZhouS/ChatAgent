@@ -103,6 +103,13 @@ const addressBook = vi.hoisted(() => ({
   decide: vi.fn(),
   patchContact: vi.fn(),
 }));
+
+/**
+ * The organization directory (GET /api/members). Decision 1C-(a): the contact list only holds
+ * people you have a relationship with, so the directory is where a colleague who is not in it is
+ * found - and it is also how a direct conversation with a non-friend gets a name.
+ */
+const directory = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock('../api', () => ({
   api: {
     contacts: vi.fn(async () => [
@@ -124,6 +131,7 @@ vi.mock('../api', () => ({
       },
     ]),
     patchContact: addressBook.patchContact,
+    members: { list: directory.list },
     friends: {
       requests: addressBook.requests,
       request: addressBook.request,
@@ -210,6 +218,21 @@ beforeEach(() => {
   addressBook.patchContact.mockReset();
   mocks.upload.mockClear();
   addressBook.patchContact.mockResolvedValue({ id: 'u_bob', relation: { state: 'friend' } });
+  // The directory lists the whole organization: Alice herself, Bob (also a contact) and Carol,
+  // who has no relationship with Alice and is therefore not in the contact list.
+  directory.list.mockReset();
+  directory.list.mockResolvedValue([
+    { id: 'u_alice', displayName: 'Alice', organizationId: 'org_local', roles: ['member'], kind: 'member' },
+    { id: 'u_bob', displayName: 'Bob', organizationId: 'org_local', roles: ['member'], kind: 'member' },
+    {
+      id: 'u_carol',
+      displayName: 'Carol',
+      organizationId: 'org_local',
+      roles: ['member'],
+      kind: 'member',
+      online: true,
+    },
+  ] satisfies MemberView[]);
   mocks.markRead.mockClear();
   mocks.send.mockClear();
   mocks.listMessages.mockClear();
@@ -251,6 +274,67 @@ describe('ChatView', () => {
     expect(mocks.listMessages).toHaveBeenCalledWith('conv_bob', { limit: 50 });
     expect(mocks.markRead).toHaveBeenCalledWith('conv_bob');
     expect(wrapper.text()).toContain('早上好，验收前请确认群聊');
+  });
+
+  it('finds a colleague the contact list does not show, and adds them from the directory', async () => {
+    // Decision 1C-(a): the contact list is a relationship list, so somebody you have not added is
+    // only reachable through the organization directory - which makes this entry point the way
+    // the rest of the feature works at all.
+    const wrapper = mountChat();
+    await flushPromises();
+
+    expect(directory.list).toHaveBeenCalled();
+    expect(wrapper.text()).not.toContain('Carol');
+
+    const search = wrapper.find('input[placeholder="搜索组织目录（添加同事）"]');
+    expect(search.exists()).toBe(true);
+    await search.setValue('car');
+    await flushPromises();
+
+    const results = wrapper.findAll('[data-testid="directory-result"]');
+    expect(results).toHaveLength(1);
+    expect(results[0].text()).toContain('Carol');
+    // The result row shows a name and an add button, never presence - even though this colleague
+    // is online, that is not a stranger's fact to read (the server does not send it either).
+    expect(results[0].text()).not.toContain('在线');
+
+    await results[0].find('[data-testid="directory-add"]').trigger('click');
+    await flushPromises();
+    expect(addressBook.request).toHaveBeenCalledWith('u_carol');
+  });
+
+  it('does not offer people who are already in the contact list as directory results', async () => {
+    const wrapper = mountChat();
+    await flushPromises();
+
+    // Bob is a contact (and an AI account is there too); searching the directory for the people
+    // you already have would turn the add-entry point into a duplicate list.
+    await wrapper.find('input[placeholder="搜索组织目录（添加同事）"]').setValue('bob');
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="directory-result"]')).toHaveLength(0);
+    expect(wrapper.find('[data-testid="directory-results"]').text()).toContain('没有匹配的同事');
+  });
+
+  it('names a direct conversation whose peer is not in the contact list', async () => {
+    // Direct chat with a colleague you have not added stays possible (that is the half the
+    // reverted attempt broke), so the sidebar still has to show a name rather than a raw id.
+    // The stored title is removed on purpose: the name must come from the directory lookup.
+    const withoutTitle = { ...mocks.conversation };
+    delete withoutTitle.title;
+    mocks.listConversations.mockResolvedValue([
+      {
+        ...withoutTitle,
+        id: 'conv_carol',
+        chatId: 'native:member:u_alice:u_carol',
+        participantIds: ['u_alice', 'u_carol'],
+        targetId: 'u_carol',
+      },
+    ]);
+    const wrapper = mountChat();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Carol');
+    expect(wrapper.text()).not.toContain('u_carol');
   });
 
 

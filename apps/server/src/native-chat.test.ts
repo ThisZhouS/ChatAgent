@@ -130,7 +130,7 @@ describe('native identity', () => {
     expect(afterLogout.statusCode).toBe(401);
   });
 
-  it('lists colleagues and AI accounts as contacts', async () => {
+  it('lists your own card, your relationships and AI accounts as contacts', async () => {
     const { app } = await bootNative();
     const token = await login(app, 'u_alice', 'alice-token');
 
@@ -139,8 +139,30 @@ describe('native identity', () => {
     ).json() as MemberView[];
 
     expect(contacts.some((c) => c.id === 'u_alice' && c.kind === 'member')).toBe(true);
-    expect(contacts.some((c) => c.id === 'u_bob' && c.kind === 'member')).toBe(true);
     expect(contacts.some((c) => c.kind === 'agent')).toBe(true);
+
+    // Decision 1C-(a): a colleague with no relationship is **not** in the contact list. They are
+    // not hidden - the organization directory still lists them (that is where you add somebody) -
+    // but the contact list is a relationship list, not a copy of the org chart.
+    expect(contacts.some((c) => c.id === 'u_bob')).toBe(false);
+    const directory = (
+      await app.inject({ method: 'GET', url: '/api/members', headers: auth(token) })
+    ).json() as MemberView[];
+    expect(directory.some((m) => m.id === 'u_bob')).toBe(true);
+
+    // A request in flight brings them in (so the answer has somewhere to land), and accepting it
+    // keeps them there as a friend.
+    const requested = await app.inject({
+      method: 'POST',
+      url: '/api/friend-requests',
+      headers: auth(token),
+      payload: { toMemberId: 'u_bob' },
+    });
+    expect(requested.statusCode, requested.body).toBe(201);
+    const afterRequest = (
+      await app.inject({ method: 'GET', url: '/api/contacts', headers: auth(token) })
+    ).json() as MemberView[];
+    expect(afterRequest.find((c) => c.id === 'u_bob')?.relation?.state).toBe('request_out');
   });
 });
 
@@ -619,12 +641,30 @@ describe('standalone by default', () => {
 });
 
 describe('presence', () => {
-  it('reports a member as online only while their event stream is open', async () => {
+  it('reports a member as online only while their event stream is open, and only to friends', async () => {
     const { app } = await bootNative();
     await app.listen({ port: 0, host: '127.0.0.1' });
     const base = serverBase(app);
     const aliceToken = await login(app, 'u_alice', 'alice-token');
     const bobToken = await login(app, 'u_bob', 'bob-token');
+    const carolToken = await login(app, 'u_carol', 'carol-token');
+
+    // Bob and Alice are friends; Carol is a colleague neither of them has a relationship with.
+    // Decision 1C-(a) makes presence a friend-level fact, so Carol is the control here.
+    const requested = await app.inject({
+      method: 'POST',
+      url: '/api/friend-requests',
+      headers: auth(aliceToken),
+      payload: { toMemberId: 'u_bob' },
+    });
+    expect(requested.statusCode, requested.body).toBe(201);
+    const accepted = await app.inject({
+      method: 'POST',
+      url: `/api/friend-requests/${(requested.json() as { id: string }).id}/decision`,
+      headers: auth(bobToken),
+      payload: { decision: 'accept' },
+    });
+    expect(accepted.statusCode, accepted.body).toBe(200);
 
     const before = await app.inject({ method: 'GET', url: '/api/presence', headers: auth(bobToken) });
     expect(before.statusCode, before.body).toBe(200);
@@ -656,6 +696,32 @@ describe('presence', () => {
       (contact) => contact.id === 'u_alice',
     );
     expect(alice?.online).toBe(true);
+
+    // A colleague with no relationship gets neither answer: not in the contact list, and not in
+    // the presence snapshot that the contact list is derived from.
+    const strangerPresence = await app.inject({
+      method: 'GET',
+      url: '/api/presence',
+      headers: auth(carolToken),
+    });
+    expect(strangerPresence.json().online).not.toContain('u_alice');
+    const strangerContacts = await app.inject({
+      method: 'GET',
+      url: '/api/contacts',
+      headers: auth(carolToken),
+    });
+    expect((strangerContacts.json() as Array<{ id: string }>).some((c) => c.id === 'u_alice')).toBe(false);
+    // The directory still lists her (that is where Carol would add her) - just without presence.
+    const strangerDirectory = await app.inject({
+      method: 'GET',
+      url: '/api/members',
+      headers: auth(carolToken),
+    });
+    const aliceInDirectory = (strangerDirectory.json() as Array<{ id: string; online?: boolean }>).find(
+      (member) => member.id === 'u_alice',
+    );
+    expect(aliceInDirectory).toBeTruthy();
+    expect(aliceInDirectory?.online).toBeUndefined();
 
     controller.abort();
     const offlineDeadline = Date.now() + 5000;

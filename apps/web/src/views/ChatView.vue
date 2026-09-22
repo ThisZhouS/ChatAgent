@@ -48,6 +48,15 @@ async function refreshWindowState() {
   }
 }
 const contacts = ref<MemberView[]>([]);
+/**
+ * The organization directory (GET /api/members). Decision 1C-(a) makes this the discovery
+ * surface: the contact list only holds people you have a relationship with, so the directory is
+ * where a colleague is found, added to a group, or named in a conversation you already share.
+ * It also carries no presence for people who are not your friends.
+ */
+const directory = ref<MemberView[]>([]);
+/** What the user typed into the directory search box in the contacts card. */
+const directoryQuery = ref('');
 const conversations = ref<ConversationSummary[]>([]);
 const activeId = ref('');
 const messages = ref<ChatMessage[]>([]);
@@ -123,6 +132,21 @@ const visibleContacts = computed(() => {
   return list.filter((contact) => contact.displayName.toLowerCase().includes(needle));
 });
 
+/**
+ * Directory search results: colleagues the viewer has no relationship with yet, which is exactly
+ * the set the contact list no longer shows. Only a name and an "add" action are offered - no
+ * presence, no roles badge beyond what the directory already returns.
+ */
+const directoryResults = computed(() => {
+  const needle = directoryQuery.value.trim().toLowerCase();
+  if (!needle) return [];
+  const known = new Set(contacts.value.map((contact) => contact.id));
+  return directory.value
+    .filter((member) => member.id !== meId.value && !known.has(member.id))
+    .filter((member) => member.displayName.toLowerCase().includes(needle))
+    .slice(0, 20);
+});
+
 const isAgentConversation = computed(() => activeConversation.value?.targetKind === 'agent');
 
 const QUICK_PROMPTS = [
@@ -133,7 +157,13 @@ const QUICK_PROMPTS = [
 
 function peerOf(conversation: ConversationSummary): MemberView | undefined {
   const peerId = conversation.participantIds.find((id) => id !== meId.value);
-  return contacts.value.find((contact) => contact.id === peerId);
+  // A friend is in the contact list; a colleague with no relationship is not, but they are still
+  // a participant of this conversation - so the directory has to be able to name them, otherwise
+  // a direct chat with somebody you have not added would show a raw id.
+  return (
+    contacts.value.find((contact) => contact.id === peerId) ??
+    directory.value.find((member) => member.id === peerId)
+  );
 }
 
 function titleOf(conversation: ConversationSummary): string {
@@ -529,11 +559,12 @@ async function removeMember(memberId: string) {
 }
 const participantList = ref<Array<{ id: string; displayName: string; kind: string }>>([]);
 
-/** Names of the current participants, resolved from the contact list. */
+/** Names of the current participants, resolved from the contact list and the directory. */
 async function loadGroupMembers(conversationId: string) {
   try {
     // Read the conversation from the server: the cached list can be stale after
     // somebody else invited a member.
+    if (directory.value.length === 0) await loadDirectory();
     const [contacts, fresh] = await Promise.all([
       api.contacts(),
       api.chat.conversation(conversationId).catch(() => undefined),
@@ -541,8 +572,11 @@ async function loadGroupMembers(conversationId: string) {
     const conversation = fresh ?? conversations.value.find((item) => item.id === conversationId);
     const ids = conversation?.participantIds ?? [];
     participantList.value = ids.map((id) => {
-      const contact = contacts.find((item) => item.id === id);
-      return { id, displayName: contact?.displayName ?? id, kind: contact?.kind ?? 'member' };
+      // Group members are visible by virtue of sharing the room, whether or not they are friends.
+      const known =
+        contacts.find((item) => item.id === id) ??
+        directory.value.find((item) => item.id === id);
+      return { id, displayName: known?.displayName ?? id, kind: known?.kind ?? 'member' };
     });
   } catch {
     participantList.value = [];
@@ -606,9 +640,15 @@ async function leaveGroup() {
   }
 }
 
-const groupCandidates = computed(() =>
-  contacts.value.filter((contact) => contact.id !== meId.value),
-);
+/**
+ * Who can be put into a new group: the whole organization (minus yourself) plus the AI accounts.
+ * Group membership is not gated on friendship - decision 1C-(a) moved visibility into the
+ * discovery layer only, so a colleague you have not added is still somebody you can work with.
+ */
+const groupCandidates = computed(() => [
+  ...directory.value.filter((member) => member.id !== meId.value),
+  ...contacts.value.filter((contact) => contact.kind === 'agent'),
+]);
 
 /** AI accounts that participate in the active group and can be summoned. */
 const groupAgents = computed(() => {
@@ -707,9 +747,23 @@ async function loadContacts() {
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   }
+  await loadDirectory();
   // The address book rides along with the contact list: the same view is what makes the
   // relation state (friend / pending / blocked) visible at a glance.
   await loadFriendRequests();
+}
+
+/**
+ * The organization directory. Loaded next to the contact list because the two answer different
+ * questions: who I have a relationship with (contacts) and who exists in my organization
+ * (directory, decision 1C-(a)). A failure here must not hide the conversations, so it is silent.
+ */
+async function loadDirectory() {
+  try {
+    directory.value = await api.members.list();
+  } catch {
+    directory.value = [];
+  }
 }
 
 /** Incoming and outgoing friend requests, kept next to the contact list. */
@@ -1582,14 +1636,54 @@ onUnmounted(() => {
               </el-button>
             </div>
           </template>
-          <div class="side-list">
+          <!--
+            Directory search: the contact list only holds people you have a relationship with, so
+            this is the way to find and add a colleague you have not added yet (decision 1C-(a)).
+            Results show a name and an add button - never presence.
+          -->
+          <el-input
+            v-model="directoryQuery"
+            size="small"
+            clearable
+            placeholder="搜索组织目录（添加同事）"
+            data-testid="directory-search"
+            class="directory-search"
+          />
+          <div v-if="directoryQuery.trim()" class="side-list" data-testid="directory-results">
+            <div v-if="directoryResults.length === 0" class="side-empty">没有匹配的同事</div>
+            <div
+              v-for="person in directoryResults"
+              :key="person.id"
+              class="side-item"
+              data-testid="directory-result"
+            >
+              <el-avatar :size="34" style="background: #909399">
+                {{ person.displayName.slice(0, 1) }}
+              </el-avatar>
+              <div class="side-item-main">
+                <div class="side-item-title">
+                  <span class="ellipsis">{{ person.displayName }}</span>
+                </div>
+                <div class="side-item-sub ellipsis">成员</div>
+              </div>
+              <el-button
+                size="small"
+                text
+                type="primary"
+                data-testid="directory-add"
+                @click.stop="requestFriend(person)"
+              >
+                加好友
+              </el-button>
+            </div>
+          </div>
+          <div class="side-list" data-testid="contact-list">
             <div
               v-for="contact in visibleContacts"
               :key="contact.id"
               class="side-item"
               @click="openContact(contact)"
-            >
-              <el-badge
+            >              <el-badge
                 :is-dot="contact.kind === 'member' && contact.online === true"
                 type="success"
                 class="presence-badge"
@@ -2203,6 +2297,17 @@ onUnmounted(() => {
   max-height: 280px;
   overflow: auto;
   margin-top: 8px;
+}
+
+/* Directory search sits above the contact list: same card, different question. */
+.directory-search {
+  margin-bottom: 4px;
+}
+
+.side-empty {
+  padding: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .side-item {

@@ -279,3 +279,6 @@ pnpm dev
 
 - [x] **第 5 条：队列栈粒度改为每人一份**（2026-09-22 按所有者答复「用户设置」实现，差距矩阵 §3.19）：契约 `MemberPreferences` + `memberPreferencesSchema`（1–200、`.strict()`、空 patch 拒绝、越界 400）；新 `MemberPreferencesStore`（`data/member-preferences.json`，只存显式改动）；`GET/PATCH /api/preferences`（无成员 id 参数 = 只能改自己，PATCH 写审计 `member.preferences_updated`）；生效点两处——`AgentIntakeGate.contextLimitFor(requesterId)` 决定入队上下文、`appendInput(..., {limit})` 决定澄清追加历史。证据：`preferences.test.ts` 6 例、`agent-intake.test.ts` +3 例、根套件 **53 文件 / 426 用例**、`tsc` 0 错。
   - [ ] **同条的下一片：客户端入口**。设置页还没有这两个数字的界面（服务端语义已生效，成员目前只能用 API 改），做完才能对用户宣称「可设置」。
+
+- [x] **第 1 条：好友可见性落在发现层（1C-(a) 组织目录可搜）**（2026-09-22 实现，差距矩阵 §3.20）：联系人列表只含「有关系记录的人」（好友 / 任一方向的待处理申请 / 被拉黑或起过备注的人）+ AI 账号；`GET /api/members` 成为发现入口（全组织可列，`online` 只给自己与好友）；`GET /api/presence` 同样收窄；客户端联系人卡片新增目录搜索（姓名 + 「加好友」，不显示状态），`peerOf`/群成员名回落到目录，新建群候选改为目录。**沟通层不动**：与未加好友的同事单聊、拉群、@、收发消息照常（用例钉死）。证据：新增 `contact-visibility.test.ts` 4 例、改到 4 个编码旧假设的既有断言、`scripts/smoke.mjs` 对端改取目录（否则会静默跳过撤回验收）、根套件 **54 文件 / 430 用例**、web **77 用例**、`tsc`/`vue-tsc` 0 错。
+  - [ ] **同条的下一片：8B 唯一 handle**（组织内唯一、`[a-z0-9._-]` 3–24 字、保留词拒绝、改名冷却 30 天且旧 handle 保留 90 天、只返回 handle 与显示名），做完后目录搜索要支持按 handle 搜。

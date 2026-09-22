@@ -749,7 +749,12 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     return service.updatePreferences(request.principal, parsed.data);
   });
 
-  // Member administration (org admin only; tokens are returned once) --------
+  // Organization directory and member administration -----------------------
+  /**
+   * Discovery, not administration: any member may list their organization so a colleague can be
+   * found and added (decision 1C-(a)). Presence is only attached for yourself and your friends.
+   * The write routes below are organizer-admin only and tokens are returned once.
+   */
   app.get('/api/members', async (request) => service.listMembers(request.principal));
 
   app.post('/api/members', async (request, reply) => {
