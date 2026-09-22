@@ -335,6 +335,22 @@
 - 结果：**38/38 全部通过**（真实 Electron 客户端 + 重建的 web 包）。其中与本轮直接相关的几条：`view "设置" renders — cards: 8`（新增「我的个人助手偏好」与「我的个人 ID」两张卡片后，卡片数由 6 变 8）、`view "成员" renders`、`no error toasts visible`、`no horizontal page overflow`、`no clipped text in bubbles or sidebar`、亮/暗主题对比度 ≥ 4.5、1024×720 布局保持。
 - 边界：E2E 覆盖的是客户端行为与界面结构，**不覆盖** handle 的唯一性/冷却、偏好越界 400 这类服务端语义（那些由 `handles.test.ts`、`preferences.test.ts` 与运行态实测覆盖）；也不等于 Gate 7A.3。
 
+### 3.23 第 57 轮的桌面壳回归（Electron 七项，2026-09-22）
+
+本轮改过 web 视图与契约类型，桌面壳也要证明没被牵连。七项全部在 HEAD 上复跑，**全部通过**（共 86 项检查）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `node scripts/electron-lock-check.mjs` | **18/18** |
+| `node scripts/electron-receipt-sync-check.mjs` | **21/21** |
+| `electron scripts/electron-host-smoke.cjs` | **6/6** |
+| `electron scripts/electron-workbench-check.cjs` | **13/13** |
+| `electron scripts/electron-quit-check.mjs` | **10/10** |
+| `electron scripts/electron-csp-check.mjs` | **5/5** |
+| `electron scripts/electron-nav-check.mjs` | **13/13** |
+
+覆盖到的关键点（来自脚本自身的断言名）：本机任务库的单写者锁、回执同步的分级退避、宿主冒烟含「产物落在工作根内」与「重启后仍可读」、工作台在断网时的保留/授权/回执提示、退出后任务终态仍落盘、CSP 注入与不覆盖服务端策略、页面桥只有固定动词且跨源跳转被拦。七项都不依赖网络与真实模型，因此它们能在本机作为**回归证据**重复执行。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。

@@ -111,3 +111,7 @@
 ## 追加交付（第 57 轮之五）：端到端复验（打包后客户端 E2E 38/38）
 
 本轮动过服务端、契约与两个 web 视图，因此按交接文档第 5 步补上真实客户端复验：重建 `apps/web/dist` 与 `apps/server/dist` → `scripts/restart-server.mjs` 重启开发实例 → `node scripts/ui-e2e.mjs`，结果 **38/38 通过**（含 `view "设置" renders — cards: 8`，即新增两卡片后的界面结构；以及无错误提示、无横向溢出、无文字截断、亮/暗主题对比度、1024×720 布局）。开发实例的进程因此已从「改动前」变为 HEAD 构建——这一点已同步进交接文档，避免下一个人按旧提醒去重启。边界：E2E 覆盖客户端行为与结构，不覆盖服务端语义（由各服务端用例与运行态实测覆盖），也不等于 Gate 7A.3。
+
+## 追加交付（第 57 轮之六）：桌面壳七项回归 86/86
+
+既然本轮动过 web 视图与契约，桌面壳就不能只靠「理论上有测试」：在 HEAD 上复跑 Electron 七项（`electron-lock-check` 18/18、`electron-receipt-sync-check` 21/21、`electron-host-smoke` 6/6、`electron-workbench-check` 13/13、`electron-quit-check` 10/10、`electron-csp-check` 5/5、`electron-nav-check` 13/13），合计 **86/86 通过**，全部退出码 0。七项都不依赖网络与真实模型，因此是可重复的本机回归证据；差距矩阵 §3.23 记录了覆盖点。边界不变：它们不覆盖真实 Hermes 与真实模型凭据（Gate 7A.3），也不覆盖双机局域网与安装包 GUI 人工验收。
