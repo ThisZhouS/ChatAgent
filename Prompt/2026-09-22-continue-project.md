@@ -86,3 +86,22 @@
 | 是否外发 | 否（未启动服务、未调用模型；未跑打包后 E2E 与 Electron 检查） |
 | 幂等/取消语义 | 不涉及发送与任务状态机；只读接口的可见范围变化，对已存在的会话与消息无回滚要求 |
 | 测试 profile | 离线 MockProvider；`contact-visibility.test.ts` 4 例 + 4 处旧断言改写 + web 3 例 |
+
+## 追加交付（第 57 轮之四）：第 8 条 = 组织内唯一的个人 handle
+
+九问的最后一条。按设计稿的四条建议值实现，未临时改口径。
+
+- 契约：`handle` 规则（3–24 字、首字母、字母表、保留词）与 `checkHandle`/`normalizeHandle` 一处定义；`memberHandleSchema` **先规范化再校验形状**，保留词留给服务端判定，这样被拒的请求带的是 `handle_reserved` 这样的原因码而不是一句泛泛的字段错误。
+- 存储：`MemberDirectory` 增 handle、改名时间、保留表；`data/members.json` 由裸数组变为 `{members, retiredHandles}` 且**两种形态都能读**；过期保留项在两处（load 与查询）都被丢弃——这是本轮唯一一个由用例抓出来的真实缺陷：先只在 load 判过期，于是「0 天保留」要等重启才生效。
+- 服务端：`PATCH /api/auth/handle`（无成员 id = 只能改自己）；组织内唯一 409、保留期 409、冷却 429、格式/保留词 400；老成员在 `GET /api/auth/me` 与 `GET /api/members` 上惰性派生（数字开头或含非法字符的 id 会被修好）。
+- 客户端：设置页「我的个人 ID」卡片（当前值来自服务端，被拒时显示服务端原因且当前值不变）；目录搜索同时匹配显示名与 handle，结果行显示 `@handle`。
+- 验证：`handles.test.ts` 6 例、`SettingsView.test.ts` +2 例、`ChatView.test.ts` +1 例、根套件 **55 文件 / 436 用例**、web **83 用例**、`tsc`/`vue-tsc` 0 错。
+
+| 项 | 值 |
+| --- | --- |
+| 受影响 package/符号 | `packages/contracts`（handle 常量与校验、`memberHandleSchema`、`MemberRecord/MemberView.handle`）；`apps/server/src/auth.ts`（`MemberDirectory.setHandle/ensureHandles/isRetired/findByHandle`、存储形态）；`apps/server/src/service.ts`（`setMyHandle`、`ensureOrgHandles`、`toMemberView`）；`apps/server/src/app.ts`；`apps/server/src/config.ts`（两个窗口）；`apps/web/src/api.ts`、`SettingsView.vue`、`ChatView.vue` |
+| 前置权限 | 已认证成员；接口无成员 id，只能改自己；handle 不参与任何授权判定 |
+| 数据分类 | 展示名与两个时间戳（改名时间、保留到期）；不含凭据；审计只记 `旧->新` |
+| 是否外发 | 否 |
+| 幂等/取消语义 | 设置同一个 handle 幂等且不消耗冷却；并发下由目录的单点写入串行化；保留项到期自动释放 |
+| 测试 profile | 离线 MockProvider；冷却/保留期通过配置置 0 覆盖，不使用真实等待 |

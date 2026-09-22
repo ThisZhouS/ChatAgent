@@ -34,6 +34,23 @@ const mocks = vi.hoisted(() => ({
   // Per-member assistant preferences (product decision 5). The server answers with resolved
   // values, so these defaults are what a member who never changed anything sees.
   preferencesGet: vi.fn(async () => ({ agentContextMessages: 20, clarifyHistoryLimit: 50 })),
+  // Personal id (question 8): the card loads the member's own profile and renames through it.
+  me: vi.fn(async () => ({
+    id: 'u_alice',
+    displayName: 'Alice',
+    organizationId: 'org_local',
+    roles: ['member'],
+    kind: 'member' as const,
+    handle: 'alice',
+  })),
+  setHandle: vi.fn(async (handle: string) => ({
+    id: 'u_alice',
+    displayName: 'Alice',
+    organizationId: 'org_local',
+    roles: ['member'],
+    kind: 'member' as const,
+    handle,
+  })),
   preferencesUpdate: vi.fn(async (payload: { agentContextMessages?: number; clarifyHistoryLimit?: number }) => ({
     agentContextMessages: payload.agentContextMessages ?? 20,
     clarifyHistoryLimit: payload.clarifyHistoryLimit ?? 50,
@@ -47,6 +64,8 @@ vi.mock('../api', () => ({
       sessions: mocks.sessions,
       revokeSession: mocks.revokeSession,
       revokeOtherSessions: mocks.revokeOtherSessions,
+      me: mocks.me,
+      setHandle: mocks.setHandle,
     },
     audit: { list: mocks.audit },
     agentStatus: mocks.agentStatus,
@@ -78,6 +97,8 @@ const auditSeed = [
 
 beforeEach(() => {
   mocks.rotateToken.mockClear();
+  mocks.me.mockClear();
+  mocks.setHandle.mockClear();
   mocks.preferencesGet.mockClear();
   mocks.preferencesGet.mockResolvedValue({ agentContextMessages: 20, clarifyHistoryLimit: 50 });
   mocks.preferencesUpdate.mockClear();
@@ -466,5 +487,45 @@ describe('SettingsView assistant preferences', () => {
     expect(wrapper.find('[data-testid="preference-error"]').text()).toContain('no preference to update');
     // The confirmed values keep showing: a failed save must not change what is in force.
     expect(wrapper.find('[data-testid="preferences-card"]').text()).toContain('当前生效：20 / 50');
+  });
+});
+
+describe('SettingsView personal id', () => {
+  it('shows the handle the server has for this member and saves a new one', async () => {
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+
+    expect(mocks.me).toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="handle-card"]').text()).toContain('当前：@alice');
+
+    // Element Plus binds attributes onto the inner input element, so the test id is the input.
+    const input = wrapper.find('input[data-testid="handle-input"]');
+    await input.setValue('alice.wang');
+    await wrapper.find('[data-testid="handle-save"]').trigger('click');
+    await flushPromises();
+
+    expect(mocks.setHandle).toHaveBeenCalledWith('alice.wang');
+    expect(wrapper.find('[data-testid="handle-note"]').text()).toContain('已保存');
+    expect(wrapper.find('[data-testid="handle-card"]').text()).toContain('当前：@alice.wang');
+  });
+
+  it('shows why a rename was refused instead of guessing', async () => {
+    mocks.setHandle.mockRejectedValueOnce(new Error('this handle is already taken'));
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+
+    await wrapper.find('input[data-testid="handle-input"]').setValue('bob');
+    await wrapper.find('[data-testid="handle-save"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="handle-error"]').text()).toContain('already taken');
+    // The confirmed name keeps showing: a refused rename did not change anything.
+    expect(wrapper.find('[data-testid="handle-card"]').text()).toContain('当前：@alice');
   });
 });

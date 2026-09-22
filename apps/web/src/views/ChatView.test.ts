@@ -223,13 +223,22 @@ beforeEach(() => {
   directory.list.mockReset();
   directory.list.mockResolvedValue([
     { id: 'u_alice', displayName: 'Alice', organizationId: 'org_local', roles: ['member'], kind: 'member' },
-    { id: 'u_bob', displayName: 'Bob', organizationId: 'org_local', roles: ['member'], kind: 'member' },
+    {
+      id: 'u_bob',
+      displayName: 'Bob',
+      organizationId: 'org_local',
+      roles: ['member'],
+      kind: 'member',
+      handle: 'bob',
+    },
     {
       id: 'u_carol',
       displayName: 'Carol',
       organizationId: 'org_local',
       roles: ['member'],
       kind: 'member',
+      // A handle, because that is what makes a colleague findable when display names repeat.
+      handle: 'carol.q',
       online: true,
     },
   ] satisfies MemberView[]);
@@ -301,6 +310,19 @@ describe('ChatView', () => {
     await results[0].find('[data-testid="directory-add"]').trigger('click');
     await flushPromises();
     expect(addressBook.request).toHaveBeenCalledWith('u_carol');
+  });
+
+  it('finds a colleague by their personal id, not only by display name', async () => {
+    const wrapper = mountChat();
+    await flushPromises();
+
+    await wrapper.find('input[placeholder="搜索组织目录（添加同事）"]').setValue('carol.q');
+    await flushPromises();
+    const results = wrapper.findAll('[data-testid="directory-result"]');
+    expect(results).toHaveLength(1);
+    expect(results[0].text()).toContain('Carol');
+    // The handle is what the colleague can be reached by, so the row shows it.
+    expect(results[0].text()).toContain('@carol.q');
   });
 
   it('does not offer people who are already in the contact list as directory results', async () => {

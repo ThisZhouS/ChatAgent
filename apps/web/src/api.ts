@@ -160,6 +160,15 @@ export const api = {
       request<{ revoked: number }>('/auth/sessions', { method: 'DELETE' }),
     rotateToken: () => request<{ token: string }>('/auth/token/rotate', { method: 'POST' }),
     me: () => request<MemberView>('/auth/me'),
+    /**
+     * Your own personal id (handle). No member id in the path: the server decides for whoever is
+     * signed in, so a client cannot even express "rename somebody else".
+     */
+    setHandle: (handle: string) =>
+      request<MemberView>('/auth/handle', {
+        method: 'PATCH',
+        body: JSON.stringify({ handle }),
+      }),
   },
 
   contacts: () => request<MemberView[]>('/contacts'),

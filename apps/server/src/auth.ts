@@ -9,7 +9,7 @@ import type {
   TaskArtifact,
   TaskRecord,
 } from '@chatagent/contracts';
-import { isValidMemberId } from '@chatagent/contracts';
+import { checkHandle, isValidMemberId, normalizeHandle } from '@chatagent/contracts';
 import type { AuthConfig } from './config';
 import type { SessionStore } from './stores';
 
@@ -78,8 +78,23 @@ export interface MemberDirectoryOptions {
  * Minimal single-organization member directory. Tokens are only ever stored
  * as sha256 hashes; plaintext tokens live in the environment of the caller.
  */
+/**
+ * Handles that were given up by a rename and are still inside their retention window. They are
+ * kept so somebody else cannot take a name people already associate with a colleague; the window
+ * is bounded, because a name nobody uses any more should not be lost forever.
+ */
+export interface RetiredHandle {
+  handle: string;
+  organizationId: string;
+  /** The member who gave it up, so they can take their own name back. */
+  memberId: string;
+  /** Last moment the name stays reserved. */
+  until: string;
+}
+
 export class MemberDirectory {
   private readonly members = new Map<string, MemberRecord>();
+  private readonly retired = new Map<string, RetiredHandle>();
   private loaded = false;
 
   constructor(private readonly options: MemberDirectoryOptions) {}
@@ -105,7 +120,9 @@ export class MemberDirectory {
 
   async upsert(
     input: Pick<MemberRecord, 'id' | 'organizationId' | 'displayName'> &
-      Partial<Pick<MemberRecord, 'roles' | 'agentIds' | 'tokenHash'>>,
+      Partial<
+        Pick<MemberRecord, 'roles' | 'agentIds' | 'tokenHash' | 'handle' | 'handleChangedAt'>
+      >,
   ): Promise<MemberRecord> {
     await this.load();
     const now = new Date().toISOString();
@@ -116,6 +133,8 @@ export class MemberDirectory {
       displayName: input.displayName,
       roles: input.roles ?? existing?.roles ?? ['member'],
       agentIds: input.agentIds ?? existing?.agentIds ?? [],
+      handle: input.handle ?? existing?.handle,
+      handleChangedAt: input.handleChangedAt ?? existing?.handleChangedAt,
       tokenHash: input.tokenHash ?? existing?.tokenHash,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -135,14 +154,152 @@ export class MemberDirectory {
     });
   }
 
+  /** The member holding this handle, if any. Lookup is case-insensitive by construction. */
+  async findByHandle(organizationId: string, rawHandle: string): Promise<MemberRecord | undefined> {
+    await this.load();
+    const handle = normalizeHandle(rawHandle);
+    for (const member of this.members.values()) {
+      if (member.organizationId === organizationId && member.handle === handle) {
+        return clone(member);
+      }
+    }
+    return undefined;
+  }
+
+  /** The name is inside somebody's retention window (their own name never blocks them). */
+  async isRetired(
+    organizationId: string,
+    rawHandle: string,
+    forMemberId?: string,
+  ): Promise<RetiredHandle | undefined> {
+    await this.load();
+    const handle = normalizeHandle(rawHandle);
+    const entry = this.retired.get(`${organizationId}:${handle}`);
+    if (!entry) return undefined;
+    // The window is bounded: an expired reservation is forgotten here as well as on load, so a
+    // zero-day retention really releases the name instead of holding it until a restart.
+    if (Date.parse(entry.until) <= Date.now()) {
+      this.retired.delete(`${organizationId}:${handle}`);
+      return undefined;
+    }
+    if (entry.memberId === forMemberId) return undefined;
+    return { ...entry };
+  }
+
+  /**
+   * Sets a member's handle. Reasons are returned instead of thrown, because "already taken" and
+   * "still reserved" are answers the caller has to render, not failures of the store.
+   */
+  async setHandle(
+    memberId: string,
+    rawHandle: string,
+    retentionDays: number,
+  ): Promise<
+    { ok: true; member: MemberRecord } | { ok: false; reason: 'taken' | 'retired' | 'missing' }
+  > {
+    await this.load();
+    const existing = this.members.get(memberId);
+    if (!existing) return { ok: false, reason: 'missing' };
+    const handle = normalizeHandle(rawHandle);
+    const holder = await this.findByHandle(existing.organizationId, handle);
+    if (holder && holder.id !== memberId) return { ok: false, reason: 'taken' };
+    const retired = await this.isRetired(existing.organizationId, handle, memberId);
+    if (retired) return { ok: false, reason: 'retired' };
+
+    const now = new Date().toISOString();
+    const previous = existing.handle;
+    if (previous && previous !== handle) {
+      this.retired.set(`${existing.organizationId}:${previous}`, {
+        handle: previous,
+        organizationId: existing.organizationId,
+        memberId,
+        until: new Date(
+          Date.now() + Math.max(0, retentionDays) * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      });
+    }
+    const record: MemberRecord = {
+      ...existing,
+      handle,
+      // The cooldown counts changes of an existing name; the first assignment is not a change.
+      handleChangedAt: previous && previous !== handle ? now : existing.handleChangedAt,
+      updatedAt: now,
+    };
+    this.members.set(record.id, record);
+    await this.persist();
+    return { ok: true, member: clone(record) };
+  }
+
+  /**
+   * Gives every member of the organization a handle, derived from their id when they never chose
+   * one. This is the lazy half of the migration: members that existed before handles did get a
+   * usable name on the first read, without a separate migration step somebody could forget.
+   * Returns how many were assigned.
+   */
+  async ensureHandles(organizationId: string, retentionDays: number): Promise<number> {
+    await this.load();
+    let assigned = 0;
+    for (const member of [...this.members.values()]) {
+      if (member.organizationId !== organizationId || member.handle) continue;
+      const candidate = await this.deriveHandle(organizationId, member);
+      const result = await this.setHandle(member.id, candidate, retentionDays);
+      if (result.ok) assigned += 1;
+    }
+    return assigned;
+  }
+
+  /** A readable, valid, still-free name derived from the member id (then their display name). */
+  private async deriveHandle(organizationId: string, member: MemberRecord): Promise<string> {
+    const seeds = [
+      slugifySeed(member.id),
+      slugifySeed(member.displayName),
+    ].filter((seed) => seed.length >= 3);
+    for (const seed of seeds) {
+      for (let suffix = 0; suffix < 50; suffix += 1) {
+        const candidate = normalizeHandle(suffix === 0 ? seed : `${seed}-${suffix + 1}`);
+        if (checkHandle(candidate) !== undefined) continue;
+        const holder = await this.findByHandle(organizationId, candidate);
+        if (holder && holder.id !== member.id) continue;
+        if (await this.isRetired(organizationId, candidate, member.id)) continue;
+        return candidate;
+      }
+    }
+    // Last resort: a deterministic, obviously generated name is better than a member who can
+    // never be found.
+    for (let counter = 0; counter < 1000; counter += 1) {
+      const candidate = `u-${slugifySeed(member.id).slice(0, 12) || 'member'}-${counter}`;
+      if (
+        checkHandle(candidate) === undefined &&
+        !(await this.findByHandle(organizationId, candidate)) &&
+        !(await this.isRetired(organizationId, candidate, member.id))
+      ) {
+        return candidate;
+      }
+    }
+    throw new Error('could not derive a handle');
+  }
+
   private async load(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
     await mkdir(dirname(this.options.filePath), { recursive: true });
     try {
       const raw = await readFile(this.options.filePath, 'utf8');
-      const parsed = JSON.parse(raw) as MemberRecord[];
-      for (const member of parsed) this.members.set(member.id, member);
+      const parsed = JSON.parse(raw) as
+        | MemberRecord[]
+        | { members?: MemberRecord[]; retiredHandles?: RetiredHandle[] };
+      // The file used to be a bare array; both shapes are accepted so an existing deployment is
+      // read as-is and rewritten in the new shape on the next write.
+      const members = Array.isArray(parsed) ? parsed : (parsed.members ?? []);
+      for (const member of members) this.members.set(member.id, member);
+      const retired = Array.isArray(parsed) ? [] : (parsed.retiredHandles ?? []);
+      const now = Date.now();
+      for (const entry of retired) {
+        // An expired reservation is simply forgotten: the window is bounded on purpose.
+        if (entry && typeof entry.handle === 'string' && Date.parse(entry.until) > now) {
+          this.retired.set(`${entry.organizationId}:${entry.handle}`, entry);
+        }
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
@@ -151,10 +308,24 @@ export class MemberDirectory {
   private async persist(): Promise<void> {
     await writeFile(
       this.options.filePath,
-      JSON.stringify([...this.members.values()], null, 2),
+      JSON.stringify(
+        { members: [...this.members.values()], retiredHandles: [...this.retired.values()] },
+        null,
+        2,
+      ),
       'utf8',
     );
   }
+}
+
+/** Lowercased, restricted to the handle alphabet, forced to start with a letter. */
+function slugifySeed(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '-')
+    .replace(/^[^a-z]+/, 'u')
+    .slice(0, 20)
+    .replace(/[._-]+$/, '');
 }
 
 export function toPrincipal(member: MemberRecord): Principal {

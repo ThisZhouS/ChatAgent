@@ -314,6 +314,17 @@
 
 **运行态实测（2026-09-22，独立实例）**：`node ../../node_modules/tsup/dist/cli-default.js` 重建 `apps/server/dist` 后，用**临时数据目录**在 `:8791` 起了第二个实例（不动开发实例 `:8787`，探完即停并删除临时目录），实测：`GET /api/preferences` → `{agentContextMessages:20, clarifyHistoryLimit:50}`；`PATCH {agentContextMessages:7}` → 200 `{7,50}`；`PATCH {agentContextMessages:201}` → **400**（zod 字段错误，回读仍是 `{7,50}`，说明拒绝确实没写入）；`GET /api/contacts` → 只有自己与 AI 账号（陌生人不在联系人里）；`GET /api/members` → 全组织成员且**非好友没有 `online` 字段**；`GET /api/presence` → `{online:[]}`（没有好友时为空）。这些是**同一台机器上真实构建产物**的 HTTP 证据，不等于 Gate 7A.3，也不覆盖浏览器端（web 侧由组件用例与生产构建覆盖）。
 
+### 3.21 个人 ID（唯一 handle，产品决定 8B，2026-09-22 实现）
+
+- 口径：所有者选 **B（可自定义、可搜索的唯一 handle）**，按设计稿的四条建议值落地；这是九问里的最后一条。
+- 规则（契约里一处定义，客户端与服务端共用）：`[a-z0-9._-]`、3–24 字、**首字符必须是字母**、保留词拒绝（`ai`/`admin`/`owner`/`system`/`everyone` 等 17 个）；**先规范化再校验**（`Alice.Wang` → `alice.wang`），因为句柄本来就是大小写不敏感的，拒绝一个可以顺手规范化的输入只是无谓摩擦。
+- 唯一性与防冒充：组织内唯一（**409 `handle_taken`**）；改名后旧名字进入**保留期**（默认 90 天，`CHATAGENT_HANDLE_RETENTION_DAYS`），期间**别人**拿到它是 **409 `handle_retired`**，但本人可以随时拿回自己的旧名；保留期到期后自动释放（`isRetired` 与 load 两处都判过期，所以 0 天保留是真的立刻放开，而不是等重启）。
+- 改名冷却：默认 30 天（`CHATAGENT_HANDLE_CHANGE_COOLDOWN_DAYS`，0 表示关闭），冷却内改名 **429 `handle_change_cooldown`**，错误信息带上可以再次修改的时间；**首次分配不算改名**（老成员不会被自己的初始名锁住）。
+- 老成员惰性分配：`MemberDirectory.ensureHandles` 在 `GET /api/auth/me` 与 `GET /api/members` 上触发，从成员 id（必要时用显示名）派生一个合法且未被占用的名字；id 以数字开头或含非法字符时会被修好（用例用 `7carol!x` 钉住）。**没有单独的迁移步骤**，因此也没有「忘了跑迁移」这种状态。
+- 接口：`PATCH /api/auth/handle`，**请求里没有成员 id**——「只能改自己」是结构性的；审计写 `member.handle_set`（detail 只记 `旧->新`）。目录（`GET /api/members`）与联系人里都带 handle，前端目录搜索同时匹配显示名与 handle，结果行显示 `@handle`。
+- 存储：`data/members.json` 由「裸数组」变为 `{members, retiredHandles}`，**两种形态都能读**（老部署原样读入，下一次写入时改成新形态）；过期保留项在读取时被丢弃，文件不会随着改名史无限增长。
+- 验证：新增 `handles.test.ts` **6 例**（派生与幂等、设置后全组织可见、格式/保留词拒绝且不落库、跨大小写重名 409、冷却 429 且 0 天时放行、旧名保留期内他人 409 而本人可取回且 0 天保留即刻释放）；web 侧 `SettingsView.test.ts` +2 例（显示服务端确认的当前 handle 并保存、被拒时显示服务端原因且当前值不变）与 `ChatView.test.ts` +1 例（按 handle 搜到同事）；根套件 **55 文件 / 436 用例**、web **83 用例**、`tsc`/`vue-tsc` 0 错。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。

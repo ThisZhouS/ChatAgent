@@ -67,6 +67,15 @@ export interface MemberRecord {
   displayName: string;
   roles: string[];
   agentIds: string[];
+  /**
+   * The member's searchable personal id (question 8, answer B). Display names may repeat and the
+   * login id is internal, so this is the one name a colleague can be found and added by. It is
+   * always lowercase, unique inside the organization, and assigned lazily for members that
+   * existed before handles did.
+   */
+  handle?: string;
+  /** When the handle was last changed; drives the change cooldown (absent = never changed). */
+  handleChangedAt?: string;
   tokenHash?: string;
   createdAt: string;
   updatedAt: string;
@@ -402,6 +411,53 @@ export interface ContactRelationView {
   requestId?: string;
 }
 
+/**
+ * Personal-id rules (question 8, answer B). One shared definition, because the client validates
+ * before sending and the server validates again: a rule that only lives in the UI is not a rule.
+ */
+export const HANDLE_MIN_LENGTH = 3;
+export const HANDLE_MAX_LENGTH = 24;
+/** Lowercase letters, digits, dot, underscore and dash; must start with a letter. */
+export const HANDLE_PATTERN = /^[a-z][a-z0-9._-]{2,23}$/;
+/**
+ * Names that would read as the product, a role or a broadcast target rather than a person.
+ * Reserved words are refused instead of silently suffixed: "admin" must never resolve to somebody.
+ */
+export const RESERVED_HANDLES: readonly string[] = [
+  'ai',
+  'admin',
+  'administrator',
+  'owner',
+  'system',
+  'everyone',
+  'all',
+  'here',
+  'me',
+  'root',
+  'support',
+  'chatagent',
+  'null',
+  'undefined',
+  'group',
+  'groups',
+  'help',
+];
+
+/** Trimmed and lowercased; every comparison and every store uses this form. */
+export function normalizeHandle(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
+/** Why a handle was refused, so the caller can say something specific. */
+export type HandleRejection = 'format' | 'reserved';
+
+export function checkHandle(raw: string): HandleRejection | undefined {
+  const handle = normalizeHandle(raw);
+  if (!HANDLE_PATTERN.test(handle)) return 'format';
+  if (RESERVED_HANDLES.includes(handle)) return 'reserved';
+  return undefined;
+}
+
 export interface MemberView {
   /** True while the member has at least one authenticated event stream open. */
   online?: boolean;
@@ -409,6 +465,8 @@ export interface MemberView {
   displayName: string;
   organizationId: string;
   roles: string[];
+  /** Present for members (AI accounts have no handle); assigned lazily on first read. */
+  handle?: string;
   kind: 'member' | 'agent';
   /** Present for `agent` entries. */
   accountId?: string;

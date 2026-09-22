@@ -27,6 +27,7 @@ import {
   inboundMessageSchema,
   localTaskSyncSchema,
   loginSchema,
+  memberHandleSchema,
   memberPreferencesSchema,
   nativeMessageSchema,
   openConversationSchema,
@@ -701,6 +702,17 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
   });
 
   app.get('/api/auth/me', async (request) => service.me(request.principal));
+
+  /**
+   * The caller's own personal id. Like the preference routes there is no member id anywhere in
+   * the request, so this can only ever rename the caller - the checks that remain are about the
+   * name itself (format, reserved words, uniqueness, cooldown, retention).
+   */
+  app.patch('/api/auth/handle', async (request, reply) => {
+    const parsed = memberHandleSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.setMyHandle(request.principal, parsed.data.handle);
+  });
 
   app.get('/api/contacts', async (request) => service.listContacts(request.principal));
 

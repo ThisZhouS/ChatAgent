@@ -64,6 +64,18 @@ export interface AgentIntakeConfig {
   maxAttempts: number;
 }
 
+/**
+ * Personal-id rules (question 8, answer B). Both windows are configuration rather than constants
+ * so an operator can shorten them for a pilot, and so the tests can exercise the rules without
+ * waiting thirty days.
+ */
+export interface HandleConfig {
+  /** How often one member may rename their handle, in days (0 disables the cooldown). */
+  changeCooldownDays: number;
+  /** How long a given-up handle stays reserved for its previous owner, in days. */
+  retentionDays: number;
+}
+
 export interface NativeConfig {
   /** Native client session lifetime. */
   sessionTtlSeconds: number;
@@ -90,6 +102,7 @@ export interface ServerConfig {
   approval: ApprovalConfig;
   native: NativeConfig;
   agentIntake: AgentIntakeConfig;
+  handles: HandleConfig;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -157,6 +170,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       sessionTtlSeconds: Number(env.CHATAGENT_SESSION_TTL_SECONDS ?? 12 * 60 * 60),
       recallWindowSeconds: Number(env.CHATAGENT_RECALL_WINDOW_SECONDS ?? 120),
       externalChannels: env.CHATAGENT_ENABLE_EXTERNAL_CHANNELS === 'true',
+    },
+    handles: {
+      changeCooldownDays: clampInt(env.CHATAGENT_HANDLE_CHANGE_COOLDOWN_DAYS, 30, 0, 365),
+      retentionDays: clampInt(env.CHATAGENT_HANDLE_RETENTION_DAYS, 90, 0, 3650),
     },
     agentIntake: {
       // Only the exact string 'immediate' opts out; anything else stays deferred, so a

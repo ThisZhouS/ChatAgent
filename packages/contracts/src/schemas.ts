@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { MEMBER_PREFERENCE_MAX, MEMBER_PREFERENCE_MIN, STICKER_IDS } from './types';
+import {
+  HANDLE_PATTERN,
+  MEMBER_PREFERENCE_MAX,
+  MEMBER_PREFERENCE_MIN,
+  STICKER_IDS,
+  normalizeHandle,
+} from './types';
 
 export const channelTypeSchema = z.enum([
   'native',
@@ -253,6 +259,27 @@ export const memberPreferencesSchema = z
     { message: 'no preference to update' },
   );
 
+/**
+ * Setting one's own handle. The format is checked here as well as in `checkHandle` so a request
+ * with an uppercase or over-long handle is refused at the edge with a field error, rather than
+ * being normalized into somebody else's handle.
+ */
+export const memberHandleSchema = z
+  .object({
+    // Normalised first, then checked: a handle is stored in one spelling only, and refusing
+    // "Alice.Wang" when "alice.wang" is available would be friction without a safety benefit.
+    // The check covers length, the alphabet, the leading letter and the reserved words.
+    handle: z
+      .string()
+      .transform(normalizeHandle)
+      // Shape only. Reserved words are a domain rule and stay with the service, so a refused
+      // request carries a reason code (`handle_reserved`) instead of a bare field error.
+      .refine((value) => HANDLE_PATTERN.test(value), {
+        message: 'handle must be 3-24 characters, start with a letter and use only a-z 0-9 . _ -',
+      }),
+  })
+  .strict();
+
 export const nativeMessageSchema = z.object({
   /** A sticker id from the shared catalogue; anything else is refused. */
   sticker: z.enum(STICKER_IDS).optional(),
@@ -294,6 +321,7 @@ export type GroupAdminInput = z.infer<typeof groupAdminSchema>;
 export type FriendDecisionInput = z.infer<typeof friendDecisionSchema>;
 export type ContactPatchInput = z.infer<typeof contactPatchSchema>;
 export type MemberPreferencesInput = z.infer<typeof memberPreferencesSchema>;
+export type MemberHandleInput = z.infer<typeof memberHandleSchema>;
 export type CreateAccountInput = z.infer<typeof createAccountSchema>;
 export type UpdateAccountInput = z.infer<typeof updateAccountSchema>;
 export type InboundMessagePayload = z.infer<typeof inboundMessageSchema>;

@@ -344,6 +344,51 @@ async function loadAudit() {
   }
 }
 
+// --- My personal id / handle (question 8, answer B) ---------------------------
+/**
+ * The searchable name colleagues find you by. Loaded from the server rather than taken from the
+ * `me` prop, because the server is also where a member that predates handles gets one assigned -
+ * showing an empty box for a member who already has a name would be the wrong kind of honest.
+ */
+const handleDraft = ref('');
+const handleCurrent = ref('');
+const handleNote = ref('');
+const handleError = ref('');
+const handleBusy = ref(false);
+
+async function loadHandle() {
+  try {
+    const profile = await api.auth.me();
+    handleCurrent.value = profile.handle ?? '';
+    handleDraft.value = profile.handle ?? '';
+  } catch (err) {
+    handleError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function saveHandle() {
+  const wanted = handleDraft.value.trim();
+  if (wanted === '') {
+    handleError.value = '请输入个人 ID';
+    return;
+  }
+  handleBusy.value = true;
+  handleNote.value = '';
+  handleError.value = '';
+  try {
+    const updated = await api.auth.setHandle(wanted);
+    handleCurrent.value = updated.handle ?? '';
+    handleDraft.value = updated.handle ?? '';
+    handleNote.value = '已保存：同事现在可以按这个名字找到你。';
+  } catch (err) {
+    // The server's messages are the useful ones here: taken, still reserved, or too soon after
+    // the last change. Showing our own guess instead would hide which rule was hit.
+    handleError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    handleBusy.value = false;
+  }
+}
+
 // --- My assistant preferences (per member, product decision 5) ----------------
 /**
  * The two "queue stack" limits, as this member set them. The server always answers with
@@ -412,6 +457,7 @@ onMounted(async () => {
     error.value = err instanceof Error ? err.message : String(err);
   }
   await loadPreferences();
+  await loadHandle();
   if (isAdmin.value) await loadAudit();
   await loadSessions();
   await loadHost();
@@ -555,6 +601,41 @@ onMounted(async () => {
 CHATAGENT_MODEL_API_KEY=...
 CHATAGENT_MODEL_NAME=your-model</pre>
           <p class="stat-label">支持任意 OpenAI 兼容网关（vLLM / Ollama / 内网模型服务）。未配置时使用离线 MockProvider。</p>
+        </el-card>
+
+        <!--
+          Personal id (question 8, answer B). Display names may repeat and the login id is
+          internal, so this is the one name a colleague can search for and add.
+        -->
+        <el-card shadow="never" data-testid="handle-card">
+          <template #header>我的个人 ID</template>
+          <p class="stat-label">
+            同事按这个名字找到你：3–24 个字符，字母开头，只允许小写字母、数字与 <code>. _ -</code>，且不能是保留词（如 admin、owner）。改名有冷却期，改掉的名字会为你保留一段时间，别人不能冒用。
+          </p>
+          <div class="preference-row">
+            <span class="preference-label">个人 ID</span>
+            <el-input
+              v-model="handleDraft"
+              size="small"
+              style="width: 220px"
+              placeholder="例如 alice.wang"
+              data-testid="handle-input"
+            />
+          </div>
+          <div class="row-title">
+            <el-button
+              size="small"
+              type="primary"
+              :loading="handleBusy"
+              data-testid="handle-save"
+              @click="saveHandle"
+            >
+              保存
+            </el-button>
+            <span class="muted">{{ handleCurrent ? `当前：@${handleCurrent}` : '当前：未设置' }}</span>
+          </div>
+          <p v-if="handleNote" class="muted" data-testid="handle-note">{{ handleNote }}</p>
+          <p v-if="handleError" class="error" data-testid="handle-error">{{ handleError }}</p>
         </el-card>
 
         <!--

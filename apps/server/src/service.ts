@@ -27,7 +27,7 @@ import type {
   TaskEvent,
   TaskRecord,
 } from '@chatagent/contracts';
-import { DEFAULT_CLARIFY_HISTORY_LIMIT } from '@chatagent/contracts';
+import { DEFAULT_CLARIFY_HISTORY_LIMIT, checkHandle, normalizeHandle } from '@chatagent/contracts';
 import type { ImGateway, NormalizedInbound, WebhookVerificationResult } from '@chatagent/im-gateway';
 import type { AuditEvent } from './audit';
 import type { HermesAgentRuntime, ModelMessage, RunResult, ToolCallRecord } from '@chatagent/hermes';
@@ -320,9 +320,87 @@ export class ChatAgentService {
 
   async me(principal: Principal): Promise<MemberView> {
     this.requireMember(principal);
+    // Reading your own identity is where the lazy handle assignment happens, so a member that
+    // predates handles gets a usable name the first time they look at their profile.
+    await this.ensureOrgHandles(principal.organizationId);
     const member = await this.directory.get(principal.id);
     if (!member) throw new ServiceError(401, 'authentication required');
     return { ...toMemberView(member), online: this.events.onlinePrincipals().includes(member.id) };
+  }
+
+  /**
+   * The caller's own personal id (question 8, answer B). There is no member id in this method or
+   * its route, so "only your own handle" is structural; the checks below are about the *name*,
+   * not about authority: format, reserved words, uniqueness inside the organization, a rename
+   * cooldown, and the retention window that keeps a just-given-up name out of somebody else's
+   * hands.
+   */
+  async setMyHandle(principal: Principal, rawHandle: string): Promise<MemberView> {
+    this.requireMember(principal);
+    const handle = normalizeHandle(rawHandle);
+    const rejection = checkHandle(handle);
+    if (rejection === 'format') {
+      throw new ServiceError(
+        400,
+        'handle must start with a letter and use a-z 0-9 . _ -',
+        'handle_format',
+      );
+    }
+    if (rejection === 'reserved') {
+      throw new ServiceError(400, 'this handle is reserved', 'handle_reserved');
+    }
+
+    const member = await this.directory.get(principal.id);
+    if (!member) throw new ServiceError(401, 'authentication required');
+
+    const cooldownMs = Math.max(0, this.config.handles.changeCooldownDays) * 24 * 60 * 60 * 1000;
+    if (member.handle && member.handle !== handle && member.handleChangedAt && cooldownMs > 0) {
+      const nextAllowed = Date.parse(member.handleChangedAt) + cooldownMs;
+      if (Date.now() < nextAllowed) {
+        throw new ServiceError(
+          429,
+          `this handle can be changed again on ${new Date(nextAllowed).toISOString()}`,
+          'handle_change_cooldown',
+        );
+      }
+    }
+
+    const result = await this.directory.setHandle(
+      principal.id,
+      handle,
+      this.config.handles.retentionDays,
+    );
+    if (!result.ok) {
+      if (result.reason === 'taken') {
+        throw new ServiceError(409, 'this handle is already taken', 'handle_taken');
+      }
+      if (result.reason === 'retired') {
+        throw new ServiceError(
+          409,
+          'this handle was used recently and is still reserved',
+          'handle_retired',
+        );
+      }
+      throw new ServiceError(404, 'member not found');
+    }
+    this.audit?.({
+      action: 'member.handle_set',
+      outcome: 'ok',
+      actorId: principal.id,
+      detail: `${member.handle ?? 'none'}->${handle}`,
+    });
+    return {
+      ...toMemberView(result.member),
+      online: this.events.onlinePrincipals().includes(principal.id),
+    };
+  }
+
+  /**
+   * Assigns the derived handle to every member of the organization that has none. Idempotent and
+   * cheap after the first call, which is why the read paths can just call it.
+   */
+  private async ensureOrgHandles(organizationId: string): Promise<void> {
+    await this.directory.ensureHandles(organizationId, this.config.handles.retentionDays);
   }
 
   // Agent preferences (per member) -------------------------------------------
@@ -395,6 +473,9 @@ export class ChatAgentService {
    */
   async listMembers(principal: Principal): Promise<MemberView[]> {
     this.requireMember(principal);
+    // The directory is searchable by handle, so it has to be complete: members that never chose
+    // one get their derived name here, before anybody searches for them.
+    await this.ensureOrgHandles(principal.organizationId);
     const online = new Set(this.events.onlinePrincipals());
     const members = await this.directory.list();
     const views: MemberView[] = [];
@@ -3571,12 +3652,14 @@ function toMemberView(member: {
   displayName: string;
   organizationId: string;
   roles: string[];
+  handle?: string;
 }): MemberView {
   return {
     id: member.id,
     displayName: member.displayName,
     organizationId: member.organizationId,
     roles: [...member.roles],
+    handle: member.handle,
     kind: 'member',
   };
 }

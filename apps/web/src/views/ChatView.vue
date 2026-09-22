@@ -143,7 +143,13 @@ const directoryResults = computed(() => {
   const known = new Set(contacts.value.map((contact) => contact.id));
   return directory.value
     .filter((member) => member.id !== meId.value && !known.has(member.id))
-    .filter((member) => member.displayName.toLowerCase().includes(needle))
+    // A personal id is the reason the directory is searchable at all: display names repeat, and
+    // the login id is internal. Both are matched, so either one finds the person.
+    .filter(
+      (member) =>
+        member.displayName.toLowerCase().includes(needle) ||
+        (member.handle ?? '').toLowerCase().includes(needle),
+    )
     .slice(0, 20);
 });
 
@@ -1664,7 +1670,9 @@ onUnmounted(() => {
                 <div class="side-item-title">
                   <span class="ellipsis">{{ person.displayName }}</span>
                 </div>
-                <div class="side-item-sub ellipsis">成员</div>
+                <div class="side-item-sub ellipsis">
+                  {{ person.handle ? `@${person.handle}` : '成员' }}
+                </div>
               </div>
               <el-button
                 size="small"
