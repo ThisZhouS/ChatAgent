@@ -335,7 +335,11 @@
 - 结果：**38/38 全部通过**（真实 Electron 客户端 + 重建的 web 包）。其中与本轮直接相关的几条：`view "设置" renders — cards: 8`（新增「我的个人助手偏好」与「我的个人 ID」两张卡片后，卡片数由 6 变 8）、`view "成员" renders`、`no error toasts visible`、`no horizontal page overflow`、`no clipped text in bubbles or sidebar`、亮/暗主题对比度 ≥ 4.5、1024×720 布局保持。
 - 边界：E2E 覆盖的是客户端行为与界面结构，**不覆盖** handle 的唯一性/冷却、偏好越界 400 这类服务端语义（那些由 `handles.test.ts`、`preferences.test.ts` 与运行态实测覆盖）；也不等于 Gate 7A.3。
 
-### 3.23 第 57 轮的桌面壳回归（Electron 七项，2026-09-22）
+### 3.23 第 57 轮的两条可重复验证（2026-09-22）
+
+**运行态边界自检**：在 HEAD 构建的开发实例上复跑 `node scripts/live-boundary-check.mjs` → **7/7，退出码 0**（健康、回环开发主体注入、认不出的凭据 401、投喂预算字段、审批带 digest、非参与者发送 403、字节与扩展名不符 415）。脚本本身也打印「这只是运行态行为，不是 Gate 7A.3」。
+
+**桌面壳回归（Electron 七项）**
 
 本轮改过 web 视图与契约类型，桌面壳也要证明没被牵连。七项全部在 HEAD 上复跑，**全部通过**（共 86 项检查）：
 
