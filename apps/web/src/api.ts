@@ -9,6 +9,7 @@ import type {
   DocumentSummary,
   FriendRequestRecord,
   LocalTaskReceipt,
+  MemberPreferences,
   MemberView,
   OutboxRecord,
   TaskEvent,
@@ -162,6 +163,20 @@ export const api = {
   },
 
   contacts: () => request<MemberView[]>('/contacts'),
+
+  /**
+   * The caller's own agent preferences: how much history an assistant is handed with one
+   * request, and how much a resumed task keeps. Both are per member (product decision 5), so
+   * there is no member id in the path - the server answers for whoever is signed in.
+   */
+  preferences: {
+    get: () => request<MemberPreferences>('/preferences'),
+    update: (payload: Partial<MemberPreferences>) =>
+      request<MemberPreferences>('/preferences', {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }),
+  },
 
   /** The caller's own address-book entry for one contact (remark, block). */
   patchContact: (id: string, payload: { remark?: string | null; blocked?: boolean }) =>

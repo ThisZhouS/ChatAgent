@@ -31,6 +31,13 @@ const mocks = vi.hoisted(() => ({
     tasks: { total: 0, byState: {} },
     tools: [],
   })),
+  // Per-member assistant preferences (product decision 5). The server answers with resolved
+  // values, so these defaults are what a member who never changed anything sees.
+  preferencesGet: vi.fn(async () => ({ agentContextMessages: 20, clarifyHistoryLimit: 50 })),
+  preferencesUpdate: vi.fn(async (payload: { agentContextMessages?: number; clarifyHistoryLimit?: number }) => ({
+    agentContextMessages: payload.agentContextMessages ?? 20,
+    clarifyHistoryLimit: payload.clarifyHistoryLimit ?? 50,
+  })),
 }));
 
 vi.mock('../api', () => ({
@@ -43,6 +50,10 @@ vi.mock('../api', () => ({
     },
     audit: { list: mocks.audit },
     agentStatus: mocks.agentStatus,
+    preferences: {
+      get: mocks.preferencesGet,
+      update: mocks.preferencesUpdate,
+    },
   },
 }));
 
@@ -67,6 +78,15 @@ const auditSeed = [
 
 beforeEach(() => {
   mocks.rotateToken.mockClear();
+  mocks.preferencesGet.mockClear();
+  mocks.preferencesGet.mockResolvedValue({ agentContextMessages: 20, clarifyHistoryLimit: 50 });
+  mocks.preferencesUpdate.mockClear();
+  mocks.preferencesUpdate.mockImplementation(
+    async (payload: { agentContextMessages?: number; clarifyHistoryLimit?: number }) => ({
+      agentContextMessages: payload.agentContextMessages ?? 20,
+      clarifyHistoryLimit: payload.clarifyHistoryLimit ?? 50,
+    }),
+  );
 });
 
 describe('SettingsView', () => {
@@ -394,5 +414,57 @@ describe('SettingsView', () => {
 
     await actionInput.setValue('');
     expect(rows()).toBe(3);
+  });
+});
+
+describe('SettingsView assistant preferences', () => {
+  it('shows the values the server will actually use, not blanks', async () => {
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+
+    expect(mocks.preferencesGet).toHaveBeenCalled();
+    // A member who never changed anything reads the deployment defaults: the card must say what
+    // is in force, otherwise "saved" and "not saved" look the same.
+    expect(wrapper.find('[data-testid="preferences-card"]').text()).toContain('当前生效：20 / 50');
+  });
+
+  it('saves both numbers and reports what the server confirmed', async () => {
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+
+    const contextInput = wrapper.find('[data-testid="preference-context"] input');
+    await contextInput.setValue('5');
+    await contextInput.trigger('change');
+    await wrapper.find('[data-testid="preference-save"]').trigger('click');
+    await flushPromises();
+
+    expect(mocks.preferencesUpdate).toHaveBeenCalledWith({
+      agentContextMessages: 5,
+      clarifyHistoryLimit: 50,
+    });
+    expect(wrapper.find('[data-testid="preference-note"]').text()).toContain('已保存');
+    expect(wrapper.find('[data-testid="preferences-card"]').text()).toContain('当前生效：5 / 50');
+  });
+
+  it('surfaces a refused save instead of pretending it worked', async () => {
+    mocks.preferencesUpdate.mockRejectedValueOnce(new Error('no preference to update'));
+    const wrapper = mount(SettingsView, {
+      props: { me },
+      global: { plugins: [ElementPlus] },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="preference-save"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="preference-error"]').text()).toContain('no preference to update');
+    // The confirmed values keep showing: a failed save must not change what is in force.
+    expect(wrapper.find('[data-testid="preferences-card"]').text()).toContain('当前生效：20 / 50');
   });
 });

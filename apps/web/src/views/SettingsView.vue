@@ -344,6 +344,60 @@ async function loadAudit() {
   }
 }
 
+// --- My assistant preferences (per member, product decision 5) ----------------
+/**
+ * The two "queue stack" limits, as this member set them. The server always answers with
+ * resolved values, so what is shown is what the assistant will actually use - a member who
+ * never changed anything sees the deployment defaults rather than blanks.
+ */
+const preferences = ref<{ agentContextMessages: number; clarifyHistoryLimit: number } | null>(null);
+/**
+ * Editable copy of the two numbers. Kept apart from `preferences` on purpose: the "currently in
+ * force" line must keep showing what the server confirmed, even while the user is typing or
+ * after a save the server refused.
+ */
+const preferencesDraft = ref({ agentContextMessages: 20, clarifyHistoryLimit: 50 });
+const preferencesBusy = ref(false);
+const preferencesNote = ref('');
+const preferencesError = ref('');
+
+async function loadPreferences() {
+  try {
+    const loaded = await api.preferences.get();
+    preferences.value = loaded;
+    preferencesDraft.value = {
+      agentContextMessages: loaded.agentContextMessages,
+      clarifyHistoryLimit: loaded.clarifyHistoryLimit,
+    };
+  } catch (err) {
+    preferencesError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function savePreferences() {
+  preferencesBusy.value = true;
+  preferencesNote.value = '';
+  preferencesError.value = '';
+  try {
+    // Both numbers are sent: they are this member's whole preference set and the endpoint is
+    // idempotent, so there is no "did only one of them get saved" state to get wrong.
+    const saved = await api.preferences.update({
+      agentContextMessages: preferencesDraft.value.agentContextMessages,
+      clarifyHistoryLimit: preferencesDraft.value.clarifyHistoryLimit,
+    });
+    preferences.value = saved;
+    preferencesDraft.value = {
+      agentContextMessages: saved.agentContextMessages,
+      clarifyHistoryLimit: saved.clarifyHistoryLimit,
+    };
+    preferencesNote.value = '已保存：从下一条请求开始生效。';
+  } catch (err) {
+    preferencesError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    preferencesBusy.value = false;
+  }
+}
+
 function outcomeType(outcome?: string): 'success' | 'warning' | 'danger' | 'info' {
   if (outcome === 'ok') return 'success';
   if (outcome === 'denied') return 'warning';
@@ -357,6 +411,7 @@ onMounted(async () => {
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   }
+  await loadPreferences();
   if (isAdmin.value) await loadAudit();
   await loadSessions();
   await loadHost();
@@ -501,6 +556,52 @@ CHATAGENT_MODEL_API_KEY=...
 CHATAGENT_MODEL_NAME=your-model</pre>
           <p class="stat-label">支持任意 OpenAI 兼容网关（vLLM / Ollama / 内网模型服务）。未配置时使用离线 MockProvider。</p>
         </el-card>
+
+        <!--
+          Per-member assistant preferences (product decision 5). These two numbers used to be
+          one deployment-wide default; they are now each member's own setting, so they belong on
+          a personal settings page rather than in the server's environment.
+        -->
+        <el-card shadow="never" data-testid="preferences-card">
+          <template #header>我的助手偏好</template>
+          <p class="stat-label">
+            只影响你自己发出的请求：助手能看到多少条历史，以及它反问后你补充时保留多少条。范围 1–200，越界会被服务端直接拒绝。
+          </p>
+          <div class="preference-row">
+            <span class="preference-label">每次请求带入的历史条数</span>
+            <el-input-number
+              v-model="preferencesDraft.agentContextMessages"
+              :min="1"
+              :max="200"
+              size="small"
+              data-testid="preference-context"
+            />
+          </div>
+          <div class="preference-row">
+            <span class="preference-label">澄清补充后保留的历史条数</span>
+            <el-input-number
+              v-model="preferencesDraft.clarifyHistoryLimit"
+              :min="1"
+              :max="200"
+              size="small"
+              data-testid="preference-clarify"
+            />
+          </div>
+          <div class="row-title">
+            <el-button
+              size="small"
+              type="primary"
+              :loading="preferencesBusy"
+              data-testid="preference-save"
+              @click="savePreferences"
+            >
+              保存
+            </el-button>
+            <span class="muted">{{ preferences ? `当前生效：${preferences.agentContextMessages} / ${preferences.clarifyHistoryLimit}` : '未加载' }}</span>
+          </div>
+          <p v-if="preferencesNote" class="muted" data-testid="preference-note">{{ preferencesNote }}</p>
+          <p v-if="preferencesError" class="error" data-testid="preference-error">{{ preferencesError }}</p>
+        </el-card>
       </el-col>
     </el-row>
 
@@ -639,6 +740,19 @@ CHATAGENT_MODEL_NAME=your-model</pre>
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* One preference per line: the label explains the number, so they stay readable together. */
+.preference-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.preference-label {
+  font-size: 13px;
 }
 
 .audit-filters {
