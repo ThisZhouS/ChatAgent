@@ -27,6 +27,7 @@ import {
   inboundMessageSchema,
   localTaskSyncSchema,
   loginSchema,
+  memberPreferencesSchema,
   nativeMessageSchema,
   openConversationSchema,
   updateAccountSchema,
@@ -69,6 +70,7 @@ import {
   ArtifactStore,
   ConversationStore,
   LocalTaskReceiptStore,
+  MemberPreferencesStore,
   MessageStore,
   RelationStore,
   ReadStateStore,
@@ -143,6 +145,13 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
   const outbox = new OutboxStore(join(config.dataDir, 'outbox.json'));
   const readState = new ReadStateStore(
     join(config.dataDir, 'read-state.json'),
+    150,
+    onStoreError,
+  );
+  // Per-member agent preferences ("queue stack" limits). Absent rows mean "the deployment
+  // default", so the file only grows for members who actually changed something.
+  const preferences = new MemberPreferencesStore(
+    join(config.dataDir, 'member-preferences.json'),
     150,
     onStoreError,
   );
@@ -261,6 +270,7 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     sessions,
     events,
     readState,
+    preferences,
     relations,
     new AgentIntakeGate({
       store: agentIntakeStore,
@@ -268,6 +278,8 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       // The recall window IS the deferral: one number, so they cannot drift apart.
       deferMs: Math.max(0, config.native.recallWindowSeconds) * 1000,
       contextMessages: config.agentIntake.contextMessages,
+      // Read at handoff time: the requester's own context window, when they set one.
+      contextLimitFor: (requesterId) => service.agentContextOverride(requesterId),
       maxAttempts: config.agentIntake.maxAttempts,
       lookupMessage: (messageId) => messages.findById(messageId),
       buildHistory: (conversationId, limit) => service.buildAgentHistory(conversationId, limit),
@@ -721,6 +733,20 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       (request.params as { id: string }).id,
       parsed.data,
     );
+  });
+
+  // Per-member agent preferences --------------------------------------------
+  /**
+   * The caller's own agent preferences, already resolved against the deployment defaults.
+   * There is no member id in either route: a member can only ever read and write their own,
+   * which is the whole authorization story for a personal setting.
+   */
+  app.get('/api/preferences', async (request) => service.getPreferences(request.principal));
+
+  app.patch('/api/preferences', async (request, reply) => {
+    const parsed = memberPreferencesSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    return service.updatePreferences(request.principal, parsed.data);
   });
 
   // Member administration (org admin only; tokens are returned once) --------

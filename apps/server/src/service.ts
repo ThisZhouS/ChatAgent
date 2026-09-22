@@ -19,6 +19,7 @@ import type {
   FriendRequestRecord,
   MemberRecord,
   MemberView,
+  MemberPreferences,
   NativeEvent,
   OutboxRecord,
   Principal,
@@ -26,6 +27,7 @@ import type {
   TaskEvent,
   TaskRecord,
 } from '@chatagent/contracts';
+import { DEFAULT_CLARIFY_HISTORY_LIMIT } from '@chatagent/contracts';
 import type { ImGateway, NormalizedInbound, WebhookVerificationResult } from '@chatagent/im-gateway';
 import type { AuditEvent } from './audit';
 import type { HermesAgentRuntime, ModelMessage, RunResult, ToolCallRecord } from '@chatagent/hermes';
@@ -63,6 +65,8 @@ import type {
   SessionStore,
   WebhookDedupeStore,
   AgentIntakeRecord,
+  MemberPreferencesStore,
+  MemberPreferencesRecord,
 } from './stores';
 import { AgentIntakeGate, type AgentIntakeStatus } from './agent-intake';
 import { matchContentHooks, validateHookList } from './content-hooks';
@@ -185,6 +189,8 @@ export class ChatAgentService {
     private readonly sessions: SessionStore,
     private readonly events: NativeEventHub,
     private readonly readState: ReadStateStore,
+    /** Per-member agent preferences ("queue stack" limits); absent means deployment default. */
+    private readonly preferences: MemberPreferencesStore,
     /** Address book: friend requests, private remarks and blocks. */
     private readonly relations: RelationStore,
     /** Queue that holds a message until its recall window has elapsed. */
@@ -317,6 +323,62 @@ export class ChatAgentService {
     const member = await this.directory.get(principal.id);
     if (!member) throw new ServiceError(401, 'authentication required');
     return { ...toMemberView(member), online: this.events.onlinePrincipals().includes(member.id) };
+  }
+
+  // Agent preferences (per member) -------------------------------------------
+
+  /**
+   * The caller's agent preferences, resolved: a member who never changed a knob reads the
+   * deployment defaults, so the client never has to know them and a changed default still
+   * reaches everybody who never overrode it.
+   */
+  async getPreferences(principal: Principal): Promise<MemberPreferences> {
+    this.requireMember(principal);
+    return this.preferencesFor(principal.id);
+  }
+
+  /**
+   * Changes the caller's own preferences. Neither the route nor this method takes a member
+   * id, so "only your own" is structural rather than an authorization check that could be
+   * forgotten; the audit row records the before/after so a support question ("why does my
+   * assistant suddenly read less history?") has an answer.
+   */
+  async updatePreferences(
+    principal: Principal,
+    patch: { agentContextMessages?: number; clarifyHistoryLimit?: number },
+  ): Promise<MemberPreferences> {
+    this.requireMember(principal);
+    const before = await this.preferencesFor(principal.id);
+    const stored = await this.preferences.set(principal.id, patch);
+    const after = this.resolvePreferences(stored);
+    this.audit?.({
+      action: 'member.preferences_updated',
+      outcome: 'ok',
+      actorId: principal.id,
+      detail: `context:${before.agentContextMessages}->${after.agentContextMessages};clarify:${before.clarifyHistoryLimit}->${after.clarifyHistoryLimit}`,
+    });
+    return after;
+  }
+
+  /**
+   * The requester's explicit context-window override, if they set one. The intake gate reads
+   * this at handoff time and falls back to the deployment default itself, so there is exactly
+   * one place that knows the default (the config).
+   */
+  async agentContextOverride(memberId: string): Promise<number | undefined> {
+    return (await this.preferences.get(memberId))?.agentContextMessages;
+  }
+
+  private resolvePreferences(record?: MemberPreferencesRecord): MemberPreferences {
+    return {
+      agentContextMessages:
+        record?.agentContextMessages ?? this.config.agentIntake.contextMessages,
+      clarifyHistoryLimit: record?.clarifyHistoryLimit ?? DEFAULT_CLARIFY_HISTORY_LIMIT,
+    };
+  }
+
+  private async preferencesFor(memberId: string): Promise<MemberPreferences> {
+    return this.resolvePreferences(await this.preferences.get(memberId));
   }
 
   // Members (administration) ------------------------------------------------
@@ -1304,13 +1366,19 @@ export class ChatAgentService {
       if (openQuestion) {
         const answer = input.text.trim();
         if (answer !== '' || input.attachments.length > 0) {
-          await this.taskEngine.appendInput(openQuestion.id, {
-            role: 'user',
-            content:
-              answer !== ''
-                ? `补充信息：${answer}`
-                : `补充信息：${input.attachments.map((file) => file.name).join('、')}`,
-          });
+          // The resumed task keeps as much history as this requester's own preference allows.
+          const clarifyLimit = (await this.preferencesFor(principal.id)).clarifyHistoryLimit;
+          await this.taskEngine.appendInput(
+            openQuestion.id,
+            {
+              role: 'user',
+              content:
+                answer !== ''
+                  ? `补充信息：${answer}`
+                  : `补充信息：${input.attachments.map((file) => file.name).join('、')}`,
+            },
+            { limit: clarifyLimit },
+          );
           const resumed = await this.taskEngine.resume(openQuestion.id);
           if (resumed.ok) {
             // The waiting task is the task this message belongs to; no new handoff is queued.
@@ -2164,7 +2232,10 @@ export class ChatAgentService {
       if (conversation.accountId !== account.id) {
         throw new ServiceError(400, 'conversation does not belong to account');
       }
-      history = await this.buildHistory(conversation.id, this.config.agentIntake.contextMessages);
+      history = await this.buildHistory(
+        conversation.id,
+        (await this.preferencesFor(principal.id)).agentContextMessages,
+      );
     }
 
     return this.taskEngine.submit({

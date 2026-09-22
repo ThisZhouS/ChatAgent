@@ -290,6 +290,17 @@
 - 宿主与配置：`LocalAgentHost` 新增 `grantedWorkRoots`（默认空 = 与改动前完全一致），桌面主进程从 `CHATAGENT_AGENT_GRANTED_ROOTS` 读取（按平台路径分隔符切分）。
 - 验证：新增 `workdir-grant.test.ts` **4 例**（授权目录放行而其它仍拒绝、授权根内 `..` 逃逸仍拒绝、前缀相似目录不放行、空白授权被忽略、软链接先解析）；根套件 **52 文件 / 417 用例**、`tsc` 0 错；`gate7a-verify` **21 passed / 0 failed / 1 blocked**（Flow8 仍缺真实 Hermes 运行时），其中 **Flow6「工作目录逃逸被拒绝」仍然 PASS**——这是放开一条不变量后最关键的一条回归证据；Electron 宿主冒烟 **6/6**（含「产物落在工作根内」与「重启后仍可读」）。
 - 仍未做：授权根的**使用**没有单独的审计行（任务记录里已有 `workDir`，但不会标注用了哪条授权）。若要，下一步给宿主加审计回调。
+
+### 3.19 队列栈粒度改为每人一份（产品决定 5，2026-09-22 实现）
+
+- 语义：所有者对第 5 条（「队列栈」粒度）的答复是「用户设置」，据此定案为**每个成员自己的一份**——不是每个 AI 账号一份（那是我的建议 A，被原话覆盖），也不是继续写死的部署默认。
+- 契约：新增 `MemberPreferences{ agentContextMessages, clarifyHistoryLimit }` 与 `memberPreferencesSchema`（`.strict()`、1–200 整数、**空 patch 拒绝**）。越界一律 **400 而不是静默夹紧**：夹紧会让「设了但没生效」看起来像生效。
+- 存储：新增 `MemberPreferencesStore`（`data/member-preferences.json`，Map + `JsonFileWriter`，模板沿用 `ReadStateStore`），**只存显式改过的字段**。未设置的字段在读取时回落到部署默认值，因此调整 `CHATAGENT_AGENT_CONTEXT_MESSAGES` 仍会影响所有没设过的人；把默认值抄进每一行等于把昨天的数字冻在成员身上。
+- 接口：`GET/PATCH /api/preferences`。两条路由都**不接受成员 id**——「只能改自己」是结构性的，而不是一处可能被忘记的授权判断；PATCH 写审计 `member.preferences_updated`，detail 记录改动前后（回答「我的助手怎么突然读得少了」这类问题）。
+- 生效点（这才是功能所在，两处）：① **入队上下文**：`AgentIntakeGate` 新增 `contextLimitFor(requesterId)`，投喂时按请求者取覆盖值，缺失 / 查不到 / 越界都回落到配置默认；② **澄清追加**：`appendInput(..., { limit })` 改用请求者的 `clarifyHistoryLimit`（缺省仍是引擎的 50）。
+- 验证：新增 `preferences.test.ts` **6 例**（默认值可读；单字段改动不影响另一项且不影响他人；0/201/5.5/字符串/空 patch/带 `memberId` 的 patch 全部 400 且什么都没存；重启后仍在；**入队只带 3 条**且更旧的消息确实被切掉、未设置的成员仍是部署默认；**澄清后历史被切到 2 条**且最后一条是这条回答）；`agent-intake.test.ts` **+3 例**（按请求者取窗口、越界夹回 1–200、偏好读取抛错时仍以默认投喂而不是不回话）。根套件 **53 文件 / 426 用例全绿**、`tsc` 0 错。
+- **仍未做（不得宣称「用户可设置」已完整交付）**：客户端还没有这两个数字的入口——服务端语义已生效并被用例钉住，但成员目前只能用 API 改。界面入口记在 `docs/tasks.md` 的待办里，作为本条的下一片。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。

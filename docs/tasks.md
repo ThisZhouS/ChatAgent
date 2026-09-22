@@ -276,3 +276,6 @@ pnpm dev
 - [x] **9C 管理员预置允许目录**（2026-09-21 所有者确认后实现）：宿主新增 `grantedWorkRoots`（默认空 = 旧行为），桌面从 `CHATAGENT_AGENT_GRANTED_ROOTS` 读取；授权根先 realpath、空白条目跳过、前缀相似不放行。证据：`workdir-grant.test.ts` 4 例、根套件 52 文件 / 417 用例、`gate7a-verify` Flow6 逃逸仍被拒、Electron 宿主冒烟 6/6。
 
 - [ ] **1C 好友可见性**：按建议先试的「非好友不能开单聊」会让 **10 文件 / 35 用例**失败，说明它改变的是沟通模型而非加一层可见性，**已回退**；修正建议是落在发现层（联系人列表/搜索不可见，群内成员仍可见）。等你选，见 docs/design-1c-8b-5-2026-09-21.md。
+
+- [x] **第 5 条：队列栈粒度改为每人一份**（2026-09-22 按所有者答复「用户设置」实现，差距矩阵 §3.19）：契约 `MemberPreferences` + `memberPreferencesSchema`（1–200、`.strict()`、空 patch 拒绝、越界 400）；新 `MemberPreferencesStore`（`data/member-preferences.json`，只存显式改动）；`GET/PATCH /api/preferences`（无成员 id 参数 = 只能改自己，PATCH 写审计 `member.preferences_updated`）；生效点两处——`AgentIntakeGate.contextLimitFor(requesterId)` 决定入队上下文、`appendInput(..., {limit})` 决定澄清追加历史。证据：`preferences.test.ts` 6 例、`agent-intake.test.ts` +3 例、根套件 **53 文件 / 426 用例**、`tsc` 0 错。
+  - [ ] **同条的下一片：客户端入口**。设置页还没有这两个数字的界面（服务端语义已生效，成员目前只能用 API 改），做完才能对用户宣称「可设置」。

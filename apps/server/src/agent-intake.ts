@@ -72,6 +72,13 @@ export interface AgentIntakeGateOptions {
   deferMs: number;
   /** How many recent messages around the request the agent may read. */
   contextMessages: number;
+  /**
+   * Per-requester override of {@link contextMessages} ("queue stack" preference). Returns
+   * `undefined` when the requester never set one, so the deployment default still applies.
+   * A lookup that fails must not fail the handoff: the preference is a nicety, the answer
+   * is the product, so the gate logs and falls back to the configured default.
+   */
+  contextLimitFor?: (requesterId: string) => Promise<number | undefined> | number | undefined;
   /** Retry budget per handoff; defaults to DEFAULT_MAX_ATTEMPTS. */
   maxAttempts?: number;
   lookupMessage: (messageId: string) => Promise<ChatMessage | undefined>;
@@ -223,7 +230,7 @@ export class AgentIntakeGate {
       // between is already gone from the conversation and never reaches the model.
       const history = await this.options.buildHistory(
         record.conversationId,
-        this.contextMessages,
+        await this.contextLimitFor(record.requesterId),
       );
       const { taskId } = await this.options.submit({ record, history });
       const updated: AgentIntakeRecord = {
@@ -277,6 +284,30 @@ export class AgentIntakeGate {
       await this.store.save(updated);
       return updated;
     }
+  }
+
+  /**
+   * The context window this handoff gets: the requester's own preference when they set one,
+   * otherwise the deployment default. Bounded again here (1-200) because the gate is the last
+   * place before the value becomes a prompt, and a stored out-of-range number - a hand-edited
+   * data file, an older build - must not become an unbounded read.
+   */
+  private async contextLimitFor(requesterId: string): Promise<number> {
+    const lookup = this.options.contextLimitFor;
+    if (!lookup) return this.contextMessages;
+    let override: number | undefined;
+    try {
+      override = await lookup(requesterId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger?.warn('agent intake preference lookup failed; using the deployment default', {
+        requesterId,
+        detail,
+      });
+      return this.contextMessages;
+    }
+    if (typeof override !== 'number' || !Number.isFinite(override)) return this.contextMessages;
+    return Math.min(200, Math.max(1, Math.trunc(override)));
   }
 
   private async cancel(

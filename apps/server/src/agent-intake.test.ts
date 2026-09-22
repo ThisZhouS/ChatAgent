@@ -57,7 +57,13 @@ interface Harness {
 }
 
 async function harness(
-  options: { deferMs?: number; mode?: 'deferred' | 'immediate'; contextMessages?: number } = {},
+  options: {
+    deferMs?: number;
+    mode?: 'deferred' | 'immediate';
+    contextMessages?: number;
+    /** Per-requester window override, as the app wires the member preference. */
+    contextLimitFor?: (requesterId: string) => Promise<number | undefined> | number | undefined;
+  } = {},
 ): Promise<Harness> {
   const dir = await scratch();
   const store = new AgentIntakeStore(join(dir, 'intake.json'));
@@ -73,6 +79,7 @@ async function harness(
     mode: options.mode ?? 'deferred',
     deferMs: options.deferMs ?? 120_000,
     contextMessages: options.contextMessages ?? 20,
+    contextLimitFor: options.contextLimitFor,
     now: () => clock,
     lookupMessage: async (id) => messages.get(id),
     buildHistory: async (_conversationId, limit) => {
@@ -323,5 +330,44 @@ describe('agent intake gate', () => {
     h.advance(5_001);
     expect(await h.gate.tick()).toBe(1);
     expect(await h.gate.status()).toMatchObject({ pending: 0, submitted: 1, failed: 0, stalled: 0 });
+  });
+
+  it('hands over the requester\'s own context window when they set one', async () => {
+    const h = await harness({
+      mode: 'immediate',
+      contextLimitFor: (requesterId) => (requesterId === 'u_alice' ? 5 : undefined),
+    });
+    await h.gate.defer(deferInput);
+    expect(h.historyLimits).toEqual([5]);
+
+    // A requester who never set one still gets the deployment default.
+    const other = await harness({ mode: 'immediate', contextLimitFor: () => undefined });
+    await other.gate.defer({ ...deferInput, requesterId: 'u_bob' });
+    expect(other.historyLimits).toEqual([20]);
+  });
+
+  it('clamps a stored window back into bounds instead of trusting the row', async () => {
+    const tooLarge = await harness({ mode: 'immediate', contextLimitFor: () => 10_000 });
+    await tooLarge.gate.defer(deferInput);
+    expect(tooLarge.historyLimits).toEqual([200]);
+
+    const tooSmall = await harness({ mode: 'immediate', contextLimitFor: () => 0 });
+    await tooSmall.gate.defer(deferInput);
+    expect(tooSmall.historyLimits).toEqual([1]);
+  });
+
+  it('still answers with the deployment default when the preference lookup fails', async () => {
+    // A broken preference store is not a reason to stop handing over work: the answer is the
+    // product, the window is a nicety, so the handoff proceeds with the configured default.
+    const h = await harness({
+      mode: 'immediate',
+      contextLimitFor: () => {
+        throw new Error('member-preferences.json is unreadable');
+      },
+    });
+    const record = await h.gate.defer(deferInput);
+    expect(h.historyLimits).toEqual([20]);
+    expect(h.submits).toHaveLength(1);
+    expect(record.state).toBe('submitted');
   });
 });

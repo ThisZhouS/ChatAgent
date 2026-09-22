@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { STICKER_IDS } from './types';
+import { MEMBER_PREFERENCE_MAX, MEMBER_PREFERENCE_MIN, STICKER_IDS } from './types';
 
 export const channelTypeSchema = z.enum([
   'native',
@@ -226,6 +226,33 @@ export const contactPatchSchema = z
   })
   .strict();
 
+/**
+ * Per-member agent preferences. Every field is optional so a client can change one knob
+ * without restating the other, and an empty patch is refused rather than answered with
+ * "ok" - a no-op that looks applied is how a setting ends up not existing. Out-of-range
+ * values are a 400, never a silent clamp: the member has to see that nothing was stored.
+ */
+export const memberPreferencesSchema = z
+  .object({
+    agentContextMessages: z
+      .number()
+      .int()
+      .min(MEMBER_PREFERENCE_MIN)
+      .max(MEMBER_PREFERENCE_MAX)
+      .optional(),
+    clarifyHistoryLimit: z
+      .number()
+      .int()
+      .min(MEMBER_PREFERENCE_MIN)
+      .max(MEMBER_PREFERENCE_MAX)
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (value) => value.agentContextMessages !== undefined || value.clarifyHistoryLimit !== undefined,
+    { message: 'no preference to update' },
+  );
+
 export const nativeMessageSchema = z.object({
   /** A sticker id from the shared catalogue; anything else is refused. */
   sticker: z.enum(STICKER_IDS).optional(),
@@ -266,6 +293,7 @@ export type GroupAnnouncementInput = z.infer<typeof groupAnnouncementSchema>;
 export type GroupAdminInput = z.infer<typeof groupAdminSchema>;
 export type FriendDecisionInput = z.infer<typeof friendDecisionSchema>;
 export type ContactPatchInput = z.infer<typeof contactPatchSchema>;
+export type MemberPreferencesInput = z.infer<typeof memberPreferencesSchema>;
 export type CreateAccountInput = z.infer<typeof createAccountSchema>;
 export type UpdateAccountInput = z.infer<typeof updateAccountSchema>;
 export type InboundMessagePayload = z.infer<typeof inboundMessageSchema>;

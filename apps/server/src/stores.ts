@@ -1402,6 +1402,83 @@ export class ReadStateStore {
   }
 }
 
+export interface MemberPreferencesRecord {
+  memberId: string;
+  /**
+   * Explicit overrides only. An absent field means "use the deployment default", so a
+   * changed default in the environment still reaches everybody who never set the knob -
+   * a copied default would freeze yesterday's number into every member's row.
+   */
+  agentContextMessages?: number;
+  clarifyHistoryLimit?: number;
+  updatedAt: string;
+}
+
+/**
+ * Per-member agent preferences ("queue stack" knobs). One row per member who changed
+ * something, so the file stays as small as the number of people who actually configured
+ * a value; the deployment defaults are applied when the row is read, never stored.
+ */
+export class MemberPreferencesStore {
+  private readonly rows = new Map<string, MemberPreferencesRecord>();
+  private readonly writer: JsonFileWriter<MemberPreferencesRecord[]>;
+  private loaded = false;
+
+  constructor(
+    private readonly filePath: string,
+    writerDelayMs = 150,
+    onWriteError?: (error: unknown) => void,
+  ) {
+    this.writer = new JsonFileWriter<MemberPreferencesRecord[]>(
+      filePath,
+      writerDelayMs,
+      onWriteError,
+    );
+  }
+
+  async flush(): Promise<void> {
+    await this.writer.flush();
+  }
+
+  get health(): StorageHealth {
+    return this.writer.health;
+  }
+
+  async get(memberId: string): Promise<MemberPreferencesRecord | undefined> {
+    await this.load();
+    const record = this.rows.get(memberId);
+    return record ? { ...record } : undefined;
+  }
+
+  /** Applies the given overrides to one member's row and returns what is stored. */
+  async set(
+    memberId: string,
+    patch: { agentContextMessages?: number; clarifyHistoryLimit?: number },
+  ): Promise<MemberPreferencesRecord> {
+    await this.load();
+    const existing = this.rows.get(memberId);
+    const record: MemberPreferencesRecord = {
+      memberId,
+      agentContextMessages: patch.agentContextMessages ?? existing?.agentContextMessages,
+      clarifyHistoryLimit: patch.clarifyHistoryLimit ?? existing?.clarifyHistoryLimit,
+      updatedAt: new Date().toISOString(),
+    };
+    this.rows.set(memberId, record);
+    this.writer.schedule([...this.rows.values()]);
+    await this.writer.flush();
+    return { ...record };
+  }
+
+  private async load(): Promise<void> {
+    if (this.loaded) return;
+    this.loaded = true;
+    const list = await readJson<MemberPreferencesRecord[]>(this.filePath, []);
+    for (const record of Array.isArray(list) ? list : []) {
+      if (record && typeof record.memberId === 'string') this.rows.set(record.memberId, record);
+    }
+  }
+}
+
 /**
  * Server-side mirror of tasks executed by on-device agent hosts. The device is
  * authoritative: receipts arrive through authenticated member sessions and are

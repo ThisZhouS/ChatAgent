@@ -418,6 +418,29 @@ export interface MemberView {
 }
 
 /**
+ * Per-member agent preferences: the "queue stack" knobs the owner asked to be user
+ * configurable, instead of one deployment-wide default for everybody. Both values are
+ * always *resolved* when read - a member who never changed anything sees the deployment
+ * default - and both are bounded, so a typo cannot ask for an unbounded prompt.
+ */
+export interface MemberPreferences {
+  /** Recent messages handed to the assistant together with a queued request (1-200). */
+  agentContextMessages: number;
+  /** History entries a resumed task keeps after a clarification answer (1-200). */
+  clarifyHistoryLimit: number;
+}
+
+/** Inclusive bounds of every member preference; the API refuses anything outside them. */
+export const MEMBER_PREFERENCE_MIN = 1;
+export const MEMBER_PREFERENCE_MAX = 200;
+
+/**
+ * Fallback for `clarifyHistoryLimit`. The task engine keeps the same value when a caller
+ * gives no limit, so a task resumed by a path that has no member context behaves identically.
+ */
+export const DEFAULT_CLARIFY_HISTORY_LIMIT = 50;
+
+/**
  * What happened to a message on its way to an agent. The host hands a message over
  * only after the recall window has elapsed, so `pending` means "not yet read by the
  * agent" and `cancelled` means it never will be (the sender withdrew it).
