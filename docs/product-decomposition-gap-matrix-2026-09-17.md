@@ -312,6 +312,8 @@
 - 验证：新增 `contact-visibility.test.ts` **4 例**（无关系者：不在联系人里、在目录里、发申请后双方可见、接受后是好友；备注/拉黑后仍可见因而可撤销；presence 只给自己与好友而目录对陌生人无 `online`；**非好友的单聊与群聊照常可用**——这条正是被打回过的那个语义，回归钉死）。改到 4 个既有用例，都是**编码了旧「全组织可见」假设**的断言：`native-chat.test.ts` 的「联系人包含同事 Bob」与 presence 用例、`friends.test.ts` 的「拒绝申请后关系为 none」（现在应为**不在联系人里**）。`scripts/smoke.mjs` 的 1:1 对端改从 `/api/members` 取，否则一旦没有好友，那段撤回验收会被**静默跳过**。根套件 **54 文件 / 430 用例**、web **77 用例**、`tsc`/`vue-tsc` 0 错。
 - 仍未做：`docs/gate6-access-control-fixes.md` P4 那句「`/api/members` 同样填充 online」是旧口径，已被本条取代（该文件是历史记录，保留原文）；`8B` 唯一 handle 之后要让目录搜索支持按 handle 搜。
 
+**运行态实测（2026-09-22，独立实例）**：`node ../../node_modules/tsup/dist/cli-default.js` 重建 `apps/server/dist` 后，用**临时数据目录**在 `:8791` 起了第二个实例（不动开发实例 `:8787`，探完即停并删除临时目录），实测：`GET /api/preferences` → `{agentContextMessages:20, clarifyHistoryLimit:50}`；`PATCH {agentContextMessages:7}` → 200 `{7,50}`；`PATCH {agentContextMessages:201}` → **400**（zod 字段错误，回读仍是 `{7,50}`，说明拒绝确实没写入）；`GET /api/contacts` → 只有自己与 AI 账号（陌生人不在联系人里）；`GET /api/members` → 全组织成员且**非好友没有 `online` 字段**；`GET /api/presence` → `{online:[]}`（没有好友时为空）。这些是**同一台机器上真实构建产物**的 HTTP 证据，不等于 Gate 7A.3，也不覆盖浏览器端（web 侧由组件用例与生产构建覆盖）。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。

@@ -33,6 +33,21 @@
 - `apps/server/src/preferences.test.ts`（新增）、`apps/server/src/agent-intake.test.ts`（+3 例）。
 - 文档：`docs/product-decomposition-gap-matrix-2026-09-17.md` §3.19、`docs/tasks.md`、`docs/handoff-2026-09-18.md`。
 
+## 运行态实测（第 57 轮，独立实例）
+
+代码改完后没有停在「测试绿了」：用 tsup 重建 `apps/server/dist`，在 **临时数据目录** 上以 `:8791` 起了**第二个实例**（`:8787` 上正在跑的开发实例没有动，探完即停并删除临时目录），用 HTTP 实测两条新语义：
+
+| 探测 | 结果 |
+| --- | --- |
+| `GET /api/preferences` | `{agentContextMessages:20, clarifyHistoryLimit:50}`（解析后的部署默认值） |
+| `PATCH /api/preferences {agentContextMessages:7}` | 200 → `{7,50}`；随后回读仍是 `{7,50}` |
+| `PATCH /api/preferences {agentContextMessages:201}` | **400**（zod 字段错误），且回读没有变化——拒绝确实没有写入 |
+| `GET /api/contacts` | 只有自己 + AI 账号（没有关系记录的同事不在联系人里） |
+| `GET /api/members` | 全组织成员，且非好友**不带 `online` 字段** |
+| `GET /api/presence` | `{online:[]}`（自己之外没有好友时为空） |
+
+边界：这是**同一台机器上的真实构建产物**的 HTTP 证据，不等于 Gate 7A.3（真实 Hermes + 真实模型凭据），也不覆盖浏览器端；web 侧由组件用例与生产构建覆盖。
+
 ## 未决与边界
 
 - **第 8 条（唯一 handle）本轮未动代码**：落地方案见 `docs/design-1c-8b-5-2026-09-21.md`；做完后目录搜索要支持按 handle 搜。
