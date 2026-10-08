@@ -79,6 +79,18 @@ export interface AgentIntakeGateOptions {
    * is the product, so the gate logs and falls back to the configured default.
    */
   contextLimitFor?: (requesterId: string) => Promise<number | undefined> | number | undefined;
+  /**
+   * Whether this requester may still have their message handed to an assistant. A contact
+   * tier can change while a handoff waits - the owner moves someone to `ignore` - so the
+   * rule is asked again here, at the moment the message would reach an assistant, rather
+   * than trusted from queue time. Absent means "no gate at this layer" (the caller already
+   * gated when the message was queued).
+   *
+   * A lookup that THROWS is deliberately not treated as permission: it propagates into the
+   * retry path below, so the handoff waits and is retried instead of being handed over
+   * unverified, and it eventually parks as `failed` with a reason instead of vanishing.
+   */
+  mayIntake?: (record: AgentIntakeRecord) => Promise<boolean> | boolean;
   /** Retry budget per handoff; defaults to DEFAULT_MAX_ATTEMPTS. */
   maxAttempts?: number;
   lookupMessage: (messageId: string) => Promise<ChatMessage | undefined>;
@@ -226,6 +238,12 @@ export class AgentIntakeGate {
     if (!message) return this.cancel(record, 'message_missing');
     if (message.recalledAt) return this.cancel(record, 'recalled');
     try {
+      // Recall is re-checked above for the same reason the tier is re-checked here: the
+      // world can change while a handoff waits. Without this, moving a contact to `ignore`
+      // inside the recall window only stops their *next* message - the queued one would
+      // still be read and answered, contradicting "the message never reaches an assistant".
+      // (An already-submitted handoff is still left alone, exactly like a recall.)
+      if (!(await this.mayIntake(record))) return this.cancel(record, 'tier_ignored');
       // History is read at handoff time, not at send time: whatever was withdrawn in
       // between is already gone from the conversation and never reaches the model.
       const history = await this.options.buildHistory(
@@ -308,6 +326,17 @@ export class AgentIntakeGate {
     }
     if (typeof override !== 'number' || !Number.isFinite(override)) return this.contextMessages;
     return Math.min(200, Math.max(1, Math.trunc(override)));
+  }
+
+  /**
+   * Whether the handoff may proceed. With no `mayIntake` option the gate invents no rule of
+   * its own (the caller already gated at queue time). The lookup is intentionally NOT wrapped
+   * in a try: "could not check" must never read as "allowed" (see the option doc).
+   */
+  private async mayIntake(record: AgentIntakeRecord): Promise<boolean> {
+    const check = this.options.mayIntake;
+    if (!check) return true;
+    return (await check(record)) === true;
   }
 
   private async cancel(

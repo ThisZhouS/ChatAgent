@@ -325,6 +325,8 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private readonly auditMaxLines?: number;
   private readonly auditMaxBytes?: number;
   private readonly auditSlackLines?: number;
+  /** Test seam; see the option doc. Never set by a production caller. */
+  private readonly beforeLockCommit?: () => void | Promise<void>;
   private prunedRecords = 0;
   private retentionAuditFailures = 0;
   private lastRetentionAuditError?: string;
@@ -340,6 +342,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       maxAgeMs?: number;
       /** Overridable for tests: how often the holder refreshes its lock. */
       heartbeatMs?: number;
+      /**
+       * Test seam, never set in production. Called inside a beat, after the heartbeat
+       * scratch file is written and before the last ownership re-read - that is, inside
+       * the window the content comparison exists to close. Without it that window is a
+       * race no test can win deterministically, so the check would be unpinned: reverting
+       * it to the old mtime comparison would leave the suite green.
+       */
+      beforeLockCommit?: () => void | Promise<void>;
       /**
        * Per-record retention audit. Enabled by default: dropping task history
        * without a trace turns housekeeping into silent data loss, and the sink is
@@ -363,6 +373,7 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     this.maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
     this.maxAgeMs = options.maxAgeMs;
     this.heartbeatMs = options.heartbeatMs ?? LOCK_HEARTBEAT_MS;
+    this.beforeLockCommit = options.beforeLockCommit;
     const audit = options.retentionAudit ?? true;
     this.retentionAuditPath =
       audit === false
@@ -913,6 +924,10 @@ export class JsonFileAgentHostStore implements AgentHostStore {
           await rm(tmp, { force: true }).catch(() => undefined);
           return;
         }
+        // Test seam (never set in production): lets a test land a foreign lock here, in the
+        // window between the read above and the re-read below. That window is otherwise a
+        // race no test can win, which left the content comparison below unpinned.
+        await this.beforeLockCommit?.();
         // Last look before the commit point. This compares the lock's *content*,
         // not its mtime: filesystem timestamps on Windows can have ~15ms
         // granularity (and NTFS can hand two writes the same stamp), so a foreign

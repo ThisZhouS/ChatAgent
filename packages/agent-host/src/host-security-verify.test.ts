@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -174,9 +174,18 @@ describe('V-02 a live holder keeps its lock', () => {
   it('does not release a lock that another process now owns', async () => {
     const root = await makeRoot();
     const file = join(root, 'tasks.json');
-    // A fast heartbeat makes "the holder noticed it lost the lock" observable.
-    const store = new JsonFileAgentHostStore(file, { heartbeatMs: 20 });
+    // A long interval keeps the timer out of the way. A short one used to be used here "so
+    // the loss is observable", but the explicit `refreshLock()` below is what runs the beat:
+    // the timer only raced it, so which of the two ownership checks fired depended on
+    // whether a beat happened to be mid-flight when the foreign lock landed. That is why
+    // this test used to accept either lostReason, and why it never pinned the commit-time
+    // check - see the deterministic test below.
+    const store = new JsonFileAgentHostStore(file, { heartbeatMs: 60_000 });
     await store.load();
+    // Drain the beat that acquiring the lock schedules: while one is in flight, a foreign
+    // lock landing mid-window is caught by the commit-time check instead, which is a
+    // different branch (and made this test's outcome depend on timing).
+    await store.refreshLock();
     // Another writer took the lock over while this instance was idle.
     const foreign = JSON.stringify({ pid: process.pid + 1, startedAt: new Date().toISOString() });
     await writeFile(`${file}.lock`, foreign, 'utf8');
@@ -187,11 +196,55 @@ describe('V-02 a live holder keeps its lock', () => {
     await store.refreshLock();
     const status = store.lockStatus();
     expect(status.held, JSON.stringify(status)).toBe(false);
-    // Two independent detections, whichever happens first: the file itself says
-    // another pid owns it, or it changed between the read and the commit.
-    expect(String(status.lostReason)).toMatch(/held by pid|taken over while heartbeating/);
+    // This exercises the READ-TIME detection only: the foreign lock is on disk before
+    // `refreshLock()` is called, so the first ownership check sees it and the beat never
+    // reaches the commit. The commit-time check (the one that compares content instead of
+    // mtime) is covered by the test below - asserting a regex that matches either branch
+    // here would have looked like coverage without being it.
+    expect(String(status.lostReason)).toContain('held by pid');
     await store.close();
     // Not deleted, and not overwritten by our heartbeat.
+    await expect(readFile(`${file}.lock`, 'utf8')).resolves.toBe(foreign);
+    await rm(`${file}.lock`, { force: true });
+  });
+
+  it('detects a foreign lock whose timestamp cannot be told apart from ours', async () => {
+    const root = await makeRoot();
+    const file = join(root, 'tasks.json');
+    const foreign = JSON.stringify({ pid: process.pid + 1, startedAt: new Date().toISOString() });
+    // Both files get the SAME fixed timestamp, so whatever rounding the filesystem applies
+    // applies to both and an mtime comparison genuinely cannot tell them apart. That is the
+    // hole the content comparison closes: Windows timestamps are ~15 ms coarse and NTFS can
+    // hand two writes the same stamp, so the old check would rename our payload over
+    // another writer's lock.
+    const stamp = new Date(1_700_000_000_000);
+    let armed = false;
+    const store = new JsonFileAgentHostStore(file, {
+      heartbeatMs: 60_000,
+      // Land the foreign lock INSIDE the commit window - between the ownership read and the
+      // commit - and stamp it like our own. This seam is the only way to reach that branch
+      // deterministically; hence the option exists at all.
+      beforeLockCommit: async () => {
+        if (!armed) return;
+        armed = false;
+        await writeFile(`${file}.lock`, foreign, 'utf8');
+        await utimes(`${file}.lock`, stamp, stamp);
+      },
+    });
+    await store.load();
+    // Drain the beat that acquiring the lock schedules, so the beat under test is the
+    // explicit one below, then pin our own lock's timestamp.
+    await store.refreshLock();
+    await utimes(`${file}.lock`, stamp, stamp);
+    armed = true;
+
+    await store.refreshLock();
+    const status = store.lockStatus();
+    expect(status.held, JSON.stringify(status)).toBe(false);
+    expect(String(status.lostReason)).toContain('taken over while heartbeating');
+    await store.close();
+    // The foreign lock survives untouched: the beat removed its scratch file and never
+    // renamed over another writer's lock.
     await expect(readFile(`${file}.lock`, 'utf8')).resolves.toBe(foreign);
     await rm(`${file}.lock`, { force: true });
   });

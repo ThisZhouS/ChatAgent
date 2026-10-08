@@ -281,6 +281,10 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       contextMessages: config.agentIntake.contextMessages,
       // Read at handoff time: the requester's own context window, when they set one.
       contextLimitFor: (requesterId) => service.agentContextOverride(requesterId),
+      // Also read at handoff time: a contact the owner moved to `ignore` inside the recall
+      // window must not have their already-queued message read and answered. The queue-time
+      // gate cannot see a downgrade that lands after the message was accepted.
+      mayIntake: (record) => service.contactMayIntake(record.accountId, record.requesterId),
       maxAttempts: config.agentIntake.maxAttempts,
       lookupMessage: (messageId) => messages.findById(messageId),
       buildHistory: (conversationId, limit) => service.buildAgentHistory(conversationId, limit),
@@ -306,6 +310,20 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
             outcome: 'failed',
             target: event.messageId,
             detail: `${event.reason ?? 'failed'};attempts=${event.attempts ?? 0}`,
+          });
+        } else if (event.state === 'cancelled' && event.reason !== 'recalled') {
+          // A dropped handoff has to be checkable afterwards, with its reason and without
+          // the message body. `recalled` is deliberately excluded: the recall path audits
+          // `agent_intake.cancelled` itself, where it knows the acting member, so auditing
+          // it here too would double-count every recall. Every OTHER cancellation reaches
+          // this branch only - including `tier_ignored`, where the owner's instruction to
+          // ignore a contact is honoured at handoff time rather than only for the next
+          // message.
+          audit.record({
+            action: 'agent_intake.cancelled',
+            outcome: 'ok',
+            target: event.messageId,
+            detail: event.reason ? `reason:${event.reason}` : undefined,
           });
         }
       },

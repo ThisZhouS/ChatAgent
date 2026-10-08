@@ -238,4 +238,50 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 20_000): P
     // The delay IS the recall window: they cannot drift apart.
     expect(status.intake).toMatchObject({ mode: 'deferred', deferMs: 30_000, contextMessages: 20 });
   });
+
+  intakeIt('never hands over a queued message from a contact moved to ignore inside the window', async () => {
+    const { app, dataDir } = await boot(2);
+    const alice = await login(app, 'u_alice', 'alice-token');
+    const conversation = await openAgentConversation(app, alice);
+    const account = (
+      await app.inject({ method: 'GET', url: '/api/accounts', headers: auth(alice) })
+    ).json()[0] as AgentAccount;
+
+    const sent = await app.inject({
+      method: 'POST',
+      url: `/api/conversations/${conversation.id}/messages`,
+      headers: auth(alice),
+      payload: { text: '帮我整理一份周报' },
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    // Queued rather than submitted: at this moment the tier still allows intake.
+    expect((sent.json() as { intake?: { state: string } }).intake?.state).toBe('pending');
+
+    // The owner moves Alice to `ignore` while her handoff is still waiting out the window.
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: `/api/accounts/${account.id}`,
+      payload: { contactTiers: { u_alice: 'ignore' } },
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+
+    // Past the window the handoff must be DROPPED, not submitted. The tier is read again at
+    // handoff time for the same reason recall is re-checked there: the world changes while a
+    // handoff waits. Without that re-check the queued message is still read and answered, so
+    // the owner's instruction would only ever apply to the *next* message - the strictest
+    // tier would be the least enforced one.
+    await new Promise((resolve) => setTimeout(resolve, 5_500));
+    expect(await tasks(app, alice)).toHaveLength(0);
+    expect(await intakeStatus(app, alice)).toMatchObject({
+      pending: 0,
+      cancelled: 1,
+      submitted: 0,
+    });
+
+    // The drop is auditable, and the withdrawn request body never reaches the trail.
+    const audit = await waitForAudit(dataDir, (text) => text.includes('tier_ignored'));
+    expect(audit).toContain('agent_intake.cancelled');
+    expect(audit).toContain('tier_ignored');
+    expect(audit).not.toContain('帮我整理一份周报');
+  });
 });

@@ -45,11 +45,42 @@ describe('audit log durability', () => {
     const entries = lines(await readFile(filePath, 'utf8'));
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ action: 'auth.login', outcome: 'ok', actorId: 'u_alice' });
-    // The token never appears: callers pass identifiers, the log truncates, and
-    // this assertion is the one that keeps a future caller from passing a secret.
-    audit.record({ action: 'auth.login', outcome: 'failed', actorId: 'u_bob', detail: 'bad_token' });
+    // The log writes the fields it knows and copies nothing else: an event object carrying
+    // an extra property (a caller forwarding a parsed request body, say) must not have that
+    // property land in the trail. That is the property checkable HERE. AuditLog does not
+    // detect secrets - it simply refuses to copy a field it has no name for - so this
+    // assertion fails the moment the writer starts spreading the caller's object verbatim,
+    // which is the regression worth pinning.
+    //
+    // (An earlier version of this test asserted the trail omits a literal no call in this
+    // file ever passes - it could not fail for ANY AuditLog implementation. Keeping tokens
+    // out of the trail at all is the call sites' job, and that IS guarded end to end by
+    // security-hardening.test.ts, which posts a real token to the real login route.)
+    audit.record({
+      action: 'auth.login',
+      outcome: 'failed',
+      actorId: 'u_bob',
+      detail: 'bad_token',
+      token: 'super-secret-token',
+    } as never);
     await audit.flush();
-    expect(await readFile(filePath, 'utf8')).not.toContain('super-secret-token');
+    const raw = await readFile(filePath, 'utf8');
+    // The field it was given is written; the field it has no name for is not.
+    expect(raw).toContain('bad_token');
+    expect(raw).not.toContain('super-secret-token');
+  });
+
+  it('truncates every field, so one long value cannot dominate the trail', async () => {
+    const root = await tempRoot();
+    const filePath = join(root, 'audit.jsonl');
+    const audit = new AuditLog(filePath);
+    // The class documents "every field is truncated"; without it a caller passing a long
+    // blob would write it whole, and the trail stops being something a person can read.
+    audit.record({ action: 'a'.repeat(500), outcome: 'ok', detail: 'd'.repeat(500) });
+    await audit.flush();
+    const [entry] = lines(await readFile(filePath, 'utf8'));
+    expect((entry.action as string).length).toBeLessThanOrEqual(65);
+    expect((entry.detail as string).length).toBeLessThanOrEqual(201);
   });
 
   it('keeps recording after the file (and its directory) disappears mid-process', async () => {

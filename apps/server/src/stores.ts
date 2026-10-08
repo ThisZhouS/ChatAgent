@@ -912,7 +912,12 @@ export interface AgentIntakeRecord {
   createdAt: string;
   updatedAt: string;
   taskId?: string;
-  cancelReason?: 'recalled' | 'message_missing' | 'conversation_missing';
+  /**
+   * Why a handoff never reached an assistant. `tier_ignored` is the late-downgrade case:
+   * the contact was at a tier that allows intake when the message was queued, and the owner
+   * moved them to `ignore` before the recall window elapsed.
+   */
+  cancelReason?: 'recalled' | 'message_missing' | 'conversation_missing' | 'tier_ignored';
   /** Delivery attempts of the handoff itself (not of the task). */
   attempts: number;
   /**

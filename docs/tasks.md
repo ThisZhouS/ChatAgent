@@ -291,7 +291,7 @@ pnpm dev
 
 起点是基线测量：干净 HEAD 上根套件并非全绿（首跑 2 文件失败、复跑换成另一文件），三个失败用例各指向一处真实缺陷。
 
-- [x] **锁心跳的归属校验由 mtime 改为内容比较**（`store.ts`）：NTFS 时间戳粒度 ~15ms（独立复核实测同戳：plain write 40/300、write+rename 27/300），同一 tick 内落地的外来锁会被漏检并由 rename 覆盖——等于静默接替第二个写者。现在比较 pid + 本次 token；`host-security-verify.test.ts` 的 lostReason 断言同步更新。
+- [x] **锁心跳的归属校验由 mtime 改为内容比较**（`store.ts`）：NTFS 时间戳粒度 ~15ms（独立复核实测同戳：plain write 40/300、write+rename 27/300），同一 tick 内落地的外来锁会被漏检并由 rename 覆盖——等于静默接替第二个写者。现在比较 pid + 本次 token；`host-security-verify.test.ts` 的 lostReason 断言同步更新。**订正（第 61 轮）**：那句「断言同步更新」不成立——它匹配的是**读时**检查，提交点检查从未被走到（改回 mtime 套件仍全绿）；第 61 轮补了确定性用例并变异验证，见 §第 61 轮。
 - [x] **只有 ENOENT 才算「锁文件消失」**：`readFile` 的瞬时失败（EBUSY/EPERM）不再导致 `loseLock()` 永久退出持有；并让 `refreshLock()` 走与定时器相同的串行链（此前它与定时器共用 `.beat` 临时文件、可并发截断载荷）。
 - [x] **`AuditLog` 首条记录不再丢**（`apps/server/src/audit.ts`）：删掉 `ready` 缓存（`mkdir` 与 `appendFile` 是两次 await，首条 append 若在目录建好前失败，标志已置位，此后整个进程的审计行全部静默失败），改为每次 append 都 mkdir（幂等）。证据：新增 `apps/server/src/audit.test.ts` 4 例。
 - [x] **8 处审计读取的 ENOENT 竞态**：`membership-security` / `security-hardening` / `agent-intake-wiring` / `contact-tier` 统一改走 `test-helpers.waitForAudit()`（容忍 ENOENT、轮询到预算耗尽、失败表现为缺行而不是文件系统错误）；删掉三处「再读一次要求内容相等」的新竞态断言。
@@ -313,3 +313,18 @@ pnpm dev
 - [x] **运行器不再相信脚本自报的分母**：`desktop-shell-checks.mjs` 给七个脚本各钉了预期条数（18 / 21 / 6 / 19 / 10 / 5 / 13）。上面那次退化就是反例——脚本自报的 `14/15` 本身是自洽的，一个只看「N/M 都过」的合计会把 15 当成完整的 15 项吸收掉，合计照样「全绿」而证据已经少了两成。分母不等于钉死值即判失败（`the script's assertion set changed`）。
 
 **本轮验证**：根套件 **57 文件 / 464 用例**、`tsc` 0 错、web **83 用例** + `vue-tsc` 0 错；桌面壳七项 **92/92、退出码 0**（lock 18、receipt-sync 21、host-smoke 6、workbench **19**、quit 10、csp 5、nav 13），由单条命令 `node scripts/desktop-shell-checks.mjs` 复现，**连跑两轮同结果**（第二轮即幂等性验证：改前第二轮的 receipt-sync 会因残留进程崩溃或退化成 14/15）。**未验证**：与第 59 轮相同（Gate 7A.3、双机局域网、安装包 GUI 人工验收、长跑设备）；本轮只改检查脚本与文档，未触碰产品源码。
+
+## 第 61 轮：扇出审计收下的三个缺陷（2026-10-08，差距矩阵 §3.27）
+
+起点是「fan out subagents 继续」：六个只读发现子代理按面各自报缺陷（桌面壳检查 / 宿主存储与锁 / 宿主授权 / 服务端对象授权与审计 / 投喂闸门 / 测试质量），每条再由 **3 个独立复核子代理**从「能否复现 / 有没有守卫 / 影响是否成立」三个角度对抗，多数否证即丢弃。
+
+**过程留痕（两个失败，都不掩饰）**：① 首轮跑到 13 个结果时进程中断，**没有产出综合报告**，结果从 workflow journal 里逐条取回；② 第二轮的 25 个子代理**全部因用量配额 429 失败**（`agents_done: 0`），所以只有首轮拿到裁决的发现进入了本轮，其余原样记为**未验证**。③ 首轮的复核子代理**违反了只读约束**：往仓库里写了探针测试与日志，还手工复制了一整份 `packages/agent-host/src/iso/`（会被 `vitest.config.ts` 的 `packages/*/src/**/*.test.ts` 收集成测试）。已把探针证据移到 `Temp/agent-probes/` 并从仓库删除，`git status` 归零、套件复跑全绿；第二轮已把「只在仓库外的临时目录里复现」写成硬规则。
+
+- [x] **`ignore` 级在「排队中的投喂」上不生效**（真缺陷，3 个复核全部确认并端到端复现）：延迟模式下，confirm 级联系人发来消息 → 所有者在撤回窗口内把他改成 `ignore` → 窗口到点后该投喂**照样提交**，任务完成并把助手回复发进了会话。最严的一档反而最不被执行，所有者的指令只对「下一条消息」有效。根因：`deliver()` 只复查 `recalledAt` 不复查 tier；`runTask()` 里 `const policy = tierPolicy(tier)` 是**死变量**（算了从不读）。修法：`AgentIntakeGate` 新增 `mayIntake` 选项，在 `deliver()` **提交前**复查（与 `recalledAt` 同一位置、同一理由），不通过按 `tier_ignored` 取消；`mayIntake` 抛错时**不当作放行**——抛进既有重试路径，让投喂等待重试而不是被未验证地交出。证据：新增 `agent-intake-wiring.test.ts` 用例（排队 → 降级 → 窗口过后：无任务、`cancelled=1`、`submitted=0`）；**变异验证**：短路该检查后用例失败（`expected [...] to have a length of +0 but got 1`）。
+- [x] **非撤回类的投喂取消不留审计**（真缺陷，修上一条时发现）：闸门 `onEvent` 只对 `failed` 写审计，`cancelled` 一律不写；撤回路径之所以有 `agent_intake.cancelled`，是服务端在撤回处自己补的。所以 `tier_ignored` 取消**在审计里毫无痕迹**（实测审计文件只有 `auth.login` 与 `message.sent`）。修法：闸门 `onEvent` 对 `cancelled` 也写一行（含 reason、不含正文），**排除 `recalled`**——那条由撤回路径自己写（它知道行为人），否则每次撤回都重复计数。
+- [x] **两处「审计不写密钥」断言里有一处是死的**（测试质量）：`audit.test.ts` 断言审计文件不含 `super-secret-token`，但那个字面量在该测试里**从来不是输入**，任何实现都能通过。修法：改成真的传一个多余字段（`token: 'super-secret-token'`）并断言它**不落盘**——这才是 writer「只写认识的字段」的不变量；另加「每个字段都被截断」一例。**变异验证**：writer 改成 `{at, ...event}` 时两条都失败（token 出现、长度 500 > 65）。**同轮否证**：复核称姊妹用例 `security-hardening.test.ts` 那条「同样空洞」——**不成立**：它是集成用例（真 token POST 给真登录路由），把路由改成记录 token 会让它失败（实测 1 失败）；它守的是调用点，不是 AuditLog。
+- [x] **第 59 轮的锁内容修复此前没有会失败的用例**（测试质量，见上文订正）：补 `beforeLockCommit` 测试缝（生产不传，与 `heartbeatMs` 同类），在提交窗口内落一把外来锁，并把两个文件设成**同一时间戳**，让 mtime 比较真的分辨不出。**变异验证**：把提交点改回 mtime 比较，该用例失败（`held: true`——旧检查看不出来，会照样 rename 覆盖）。顺带把既有那条改成确定性命中**读时**分支（先 drain `load()` 排出的 beat 再写外来锁）——它此前两种结局都可能，所以断言才写成了容忍正则。
+
+**本轮验证**：根套件 **57 文件 / 467 用例**（+3）、`tsc`/`vue-tsc` 0 错、web **83 用例**；改过 `packages/agent-host` 后重建 `agent-host.bundle.cjs`，桌面壳七项复跑 **92/92、退出码 0**（lock 18、receipt-sync 21、host-smoke 6、workbench 19、quit 10、csp 5、nav 13）。
+
+**未验证（配额耗尽，既未确认也未否证，不得当作已解决）**：`GET /api/audit` 是否跨组织（若成立最严重）、审批决定是否不写审计、webhook 发送者是否恒被解析为 owner 档、审批的决定期与发送期规则是否互相矛盾；以及一条探针线索（外来锁是否会被心跳覆盖，疑似探针假象，见 `Temp/agent-probes/probe-log.txt`）。

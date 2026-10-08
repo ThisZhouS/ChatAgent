@@ -378,7 +378,7 @@
 本轮起点不是功能清单，而是**基线测量**：根套件在干净 HEAD 上并不是 57/57 全绿——首跑 2 文件失败（`lock-takeover` 稳定失败、`membership-security` 之一为竞态），复跑失败文件换成了 `host-security-verify`。三个失败用例分别指向三处真实问题，逐个定位后连同审计文件的增长治理一起收口。
 
 **1. 锁心跳的最终归属校验用了 mtime，粒度不足（真缺陷）**
-`store.ts` 的 beat 在提交（rename）前用 `stat().mtimeMs` 比较「文件是否被改过」。Windows/NTFS 的时间戳粒度约 15ms（且两次写入可能拿到同一个戳），所以在这一个 tick 内落地的**外来锁会被漏检**，随后 rename 会把它覆盖掉——等于第二个写者被静默接替。改为**比较锁内容**（pid + 本次获取的 token）：不变量是「文件还是我们的」，而不是「字节没变」，因此自己下一次 beat 落地不会被误判。`host-security-verify.test.ts` 的 lostReason 断言随之更新（`taken over while heartbeating`）。
+`store.ts` 的 beat 在提交（rename）前用 `stat().mtimeMs` 比较「文件是否被改过」。Windows/NTFS 的时间戳粒度约 15ms（且两次写入可能拿到同一个戳），所以在这一个 tick 内落地的**外来锁会被漏检**，随后 rename 会把它覆盖掉——等于第二个写者被静默接替。改为**比较锁内容**（pid + 本次获取的 token）：不变量是「文件还是我们的」，而不是「字节没变」，因此自己下一次 beat 落地不会被误判。~~`host-security-verify.test.ts` 的 lostReason 断言随之更新（`taken over while heartbeating`）~~ **订正（第 61 轮）**：那处断言其实匹配不到提交点分支——测试在 `refreshLock()` 之前就写好外来锁，读到的是**读时**检查（`held by pid`），提交点检查从未被走到；把提交点改回 mtime 比较，套件照样全绿。第 61 轮补了确定性用例（`beforeLockCommit` 测试缝 + 两个文件同一时间戳），并用变异验证：改回 mtime 时该用例失败（`held: true`）。
 
 **2. 心跳把「读不到锁文件」当成「锁没了」（真缺陷，独立复核提出）**
 改成读文件后，`readFile` 的瞬时失败（杀毒/备份占用导致 EBUSY/EPERM）会被当成「文件消失」→ `loseLock()` 永久退出持有。现在**只有 ENOENT 才算消失**，其他读取失败计一次 `heartbeatFailures` 并跳过本次 beat（与 `stat` 时代的行为一致）。顺带修掉一个潜伏问题：`refreshLock()` 直接调 beat、绕过串行链，而所有 beat 共用同一个 `.beat` 临时文件，两个并发 beat 可能发布截断的锁载荷；现在 `refreshLock()` 走与定时器相同的串行链。
@@ -439,6 +439,34 @@
 上面那次退化是决定性的反例：脚本自报的 `14/15` **本身自洽**，一个只检查「N/M 都过」的合计会把 15 当成完整的 15 项吸收掉——合计照样全绿，而证据已经少了两成。所以 `desktop-shell-checks.mjs` 给七个脚本各钉了预期条数（18 / 21 / 6 / 19 / 10 / 5 / 13），分母不等于钉死值即判失败（`the script's assertion set changed`）。这与第 2 条同一个道理：**自洽的合计不等于完整的合计**。
 
 **边界**：本轮只改检查脚本与文档，未触碰产品源码；桌面壳七项仍受本机沙箱限制（无窗口管理器 → 置顶只能验证「不谎报」，见 §3.25 边界）。
+
+### 3.27 第 61 轮：扇出审计收下的三个缺陷（2026-10-08）
+
+六个只读发现子代理按面报缺陷，每条再由 3 个独立复核子代理从「能否复现 / 有没有守卫 / 影响是否成立」对抗，多数否证即丢弃。首轮跑到 13 个结果时进程中断（无综合报告，结果从 journal 取回）；第二轮 25 个子代理**全部 429**，所以只有首轮拿到裁决的发现进入本轮。
+
+**1. `ignore` 级在「排队中的投喂」上不生效（真缺陷，3 个复核确认并端到端复现）**
+延迟模式下，confirm 级联系人发来消息；所有者在撤回窗口内把他改成 `ignore`；窗口到点后投喂**照样提交**，任务跑完并把助手回复发进会话。最严的一档反而最不被执行——所有者的指令只对「下一条消息」有效。根因：`deliver()`（`agent-intake.ts`）只复查 `recalledAt`，不复查 tier；`runTask()`（`service.ts:3400`）里 `const policy = tierPolicy(tier)` 是**死变量**，算了从不读。这是既有的四处 `tierPolicy(...).intake` 硬门之外的第五条路径——闸门的 `submit` 直接接到 `taskEngine.submit`，绕过了 `submitTask` 的门。
+
+修法：`AgentIntakeGate` 新增 `mayIntake` 选项（`app.ts` 接到新的 `service.contactMayIntake`），在 `deliver()` **提交前**复查一次，理由与 `recalledAt` 完全相同——世界会在投喂等待时改变。不通过则按 `tier_ignored` 取消；`mayIntake` **抛错时不当作放行**，而是抛进既有重试路径，让投喂等待重试，而不是被未验证地交出。已提交的投喂仍不受影响（与撤回语义一致：跑起来的活不被事后撤销）。
+
+**证据**：`agent-intake-wiring.test.ts` 新增用例（排队 → 降级 → 窗口过后：无任务、`cancelled=1`、`submitted=0`、审计含 `tier_ignored` 不含正文）。**变异验证**：短路该检查 → 用例失败（`expected [...] to have a length of +0 but got 1`，任务真的被创建）。
+
+**2. 非撤回类的投喂取消不留审计（真缺陷，修第 1 条时发现）**
+闸门 `onEvent` 只对 `failed` 写审计行，`cancelled` 一律不写；撤回路径之所以有 `agent_intake.cancelled`，是服务端在撤回处自己补的一条。所以第 1 条的 `tier_ignored` 取消**在审计里毫无痕迹**（实测审计文件只有 `auth.login` 与 `message.sent`）。修法：`onEvent` 对 `cancelled` 也写一行（含 reason、不含正文），**排除 `recalled`**——那条由撤回路径自己写且知道行为人，否则每次撤回都重复计数。
+
+**3. 两处「审计不写密钥」断言里有一处是死的（测试质量）**
+`audit.test.ts` 断言审计文件不含 `super-secret-token`，但该字面量在这个测试里**从来不是输入**，任何 `AuditLog` 实现都能通过。修法：真的传一个多余字段并断言它**不落盘**——这才是 writer「只写它认识的字段」的不变量；另加「每个字段都被截断」一例。**变异验证**：writer 改成 `{at, ...event}` 时两条都失败（token 出现、长度 500 > 65）。
+**同轮否证**：复核称姊妹用例 `security-hardening.test.ts`「同样空洞」——**不成立**。它是集成用例（真 token POST 给真登录路由），把路由改成记录 token 会让它失败（实测 1 失败）。它守的是调用点，不是 `AuditLog`；复核把「对 AuditLog 的变异无效」误当成了「对系统无效」。
+
+**4. 第 59 轮的锁内容修复此前没有会失败的用例（测试质量，见 §3.25 订正）**
+`host-security-verify.test.ts` 在 `refreshLock()` 之前就写好外来锁，读到的是**读时**检查（`held by pid`），提交点检查从未被走到；断言写成容忍正则 `/held by pid|taken over while heartbeating/`，看起来覆盖了两条分支，其实只覆盖一条——把提交点改回 mtime 比较，套件照样全绿。（进一步实测：那条用例的结局此前**取决于 `load()` 排出的 beat 是否正好在飞**，所以两种结局都可能。）
+修法：新增 `beforeLockCommit` 测试缝（生产不传，与 `heartbeatMs` 同类），在提交窗口内落一把外来锁，并把两个文件设成**同一时间戳**，让 mtime 比较真的分辨不出。**变异验证**：提交点改回 mtime → 该用例失败（`held: true`，旧检查看不出来会照样 rename 覆盖）。既有那条改成确定性命中读时分支（先 drain 再写外来锁），断言收紧为 `held by pid`。
+
+**过程留痕（不掩饰）**：首轮的复核子代理**违反了只读约束**，往仓库写了探针测试与日志，并手工复制了一整份 `packages/agent-host/src/iso/`——它会被 `vitest.config.ts` 的 `packages/*/src/**/*.test.ts` 收集成测试。证据已移到 `Temp/agent-probes/` 并从仓库删除（`git status` 归零、套件复跑全绿）；第二轮把「只在仓库外的临时目录里复现」写成硬规则。
+
+**本轮未验证（配额耗尽，既未确认也未否证）**：`GET /api/audit` 是否跨组织（若成立最严重）、审批决定是否不写审计、webhook 发送者是否恒被解析为 owner 档、审批的决定期与发送期规则是否互相矛盾；以及一条探针线索（外来锁是否会被心跳覆盖，疑似探针假象）。
+
+**证据汇总**：根套件 **57 文件 / 467 用例**（+3）、`tsc`/`vue-tsc` 0 错、web **83 用例**；重建 `agent-host.bundle.cjs` 后桌面壳七项复跑 **92/92、退出码 0**。
 
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。

@@ -2124,6 +2124,22 @@ export class ChatAgentService {
   }
 
   /**
+   * Whether this requester's tier still lets a message reach an assistant right now.
+   *
+   * The intake gate asks this at HANDOFF time, not only at queue time, because the tier can
+   * change while a handoff waits out the recall window: an owner who moves a contact to
+   * `ignore` must not have the already-queued message read and answered. An unknown account
+   * returns false - the safe direction for a gate - and an unknown contact falls back the
+   * same way `tierFor` does, so this is never more permissive than the queue-time gate.
+   */
+  async contactMayIntake(accountId: string, requesterId: string): Promise<boolean> {
+    const account = await this.accounts.get(accountId);
+    if (!account) return false;
+    const tier = await this.tierFor(account, requesterId);
+    return tierPolicy(tier).intake;
+  }
+
+  /**
    * Remembers what a send produced so a retry with the same key returns it. Bounded and
    * time-limited; entries for a different sender or conversation can never collide because
    * the sender and conversation are part of the key.
