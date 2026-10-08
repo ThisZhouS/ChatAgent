@@ -1,8 +1,7 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { createTestApp, type TestMemberSeed } from './test-helpers';
+import { createTestApp, waitForAudit, type TestMemberSeed } from './test-helpers';
 
 let active: FastifyInstance[] = [];
 
@@ -150,9 +149,10 @@ describe('audit trail', () => {
       payload: { memberId: 'u_alice', token: 'alice-token' },
     });
 
-    // The audit log is appended asynchronously; give the queue a tick.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const raw = await readFile(join(dataDir, 'audit.jsonl'), 'utf8');
+    // The audit log is appended asynchronously; wait for the line instead of
+    // guessing a sleep (and instead of throwing ENOENT when the file's first line
+    // is still on the writer's queue).
+    const raw = await waitForAudit(dataDir, (text) => text.includes('"outcome":"ok"'));
 
     expect(raw).toContain('"action":"auth.login"');
     expect(raw).toContain('"outcome":"failed"');

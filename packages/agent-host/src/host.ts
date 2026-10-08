@@ -243,6 +243,14 @@ export class LocalAgentHost {
           retentionAuditPath: retention?.auditPath,
           retentionAuditFailures: retention?.auditFailures,
           retentionAuditError: retention?.lastAuditError,
+          // The trail has its own budget now: these say whether it was ever trimmed,
+          // how much older history that cost, and what the budget actually is, so a
+          // bounded audit file is not mistaken for "this device produced exactly
+          // this much".
+          retentionAuditRotations: retention?.auditRotations,
+          retentionAuditLinesDropped: retention?.auditLinesDropped,
+          retentionAuditMaxLines: retention?.auditMaxLines,
+          retentionAuditMaxBytes: retention?.auditMaxBytes,
           corruptFile: report.corruptFile,
         };
       })(),

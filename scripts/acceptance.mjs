@@ -15,7 +15,6 @@
  * Exit code is non-zero when any step fails, so it can gate a release.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -102,26 +101,24 @@ if (!skipE2e) {
     ),
   );
   // Gate 7A.2: the on-device agent must work (and stop cleanly) with the
-  // organization server irrelevant to it. These two run under the real Electron
-  // runtime, so they are launched with the desktop app's electron binary.
-  const electronBin = join(root, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'electron.exe');
-  if (existsSync(electronBin)) {
-    for (const [label, script] of [
-      ['local agent workbench (Electron)', 'electron-workbench-check.cjs'],
-      ['local agent quit path (Electron)', 'electron-quit-check.mjs'],
-      ['local receipt sync (Electron)', 'electron-receipt-sync-check.mjs'],
-      ['single-writer lock (Electron)', 'electron-lock-check.mjs'],
-      ['remote page CSP (Electron)', 'electron-csp-check.mjs'],
-      ['navigation + bridge (Electron)', 'electron-nav-check.mjs'],
-    ]) {
-      steps.push(() =>
-        run(label, electronBin, [join(root, 'scripts', script)], {
-          capture: true,
-          summary: /\d+\/\d+ checks passed/,
-        }),
-      );
-    }
-  }
+  // organization server irrelevant to it. The seven desktop-shell checks each
+  // declare their own runtime (five are node scripts that spawn Electron, two run
+  // under Electron), so they are driven by `desktop-shell-checks.mjs` rather than
+  // launched from here — picking the runtime per call site is exactly how this
+  // step used to run the lock check under the wrong binary and hang.
+  steps.push(() =>
+    run('desktop shell checks (7)', process.execPath, [join(root, 'scripts', 'desktop-shell-checks.mjs')], {
+      capture: true,
+      // Pin the summary to the runner's own total line: `N/M checks passed` also
+      // appears once per check and once per summary row, so an unanchored pattern
+      // matches three times. (An earlier unanchored pattern without a capture group
+      // was harmless — `match[1]` was undefined, so the detail fell back to the raw
+      // matched text — but it read `10/10 checks passed` where every other step reads
+      // `N cases`, and it would have summed to 3× the total the moment a group was
+      // added. Anchoring makes the intent explicit.)
+      summary: /\[desktop-shell\] (\d+)\/\d+ checks passed/,
+    }),
+  );
 }
 
 const results = [];

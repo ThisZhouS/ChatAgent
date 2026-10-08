@@ -213,3 +213,33 @@ export async function poll<T>(
   }
   return latest;
 }
+
+/**
+ * Awaits an audit line in `audit.jsonl`, tolerating the two ways a naive read
+ * fails on a busy machine:
+ *
+ * 1. the file does not exist yet — audit writes are queued behind the request
+ *    path, so a read that races the very first write throws ENOENT, which used to
+ *    abort a test before its own assertion could explain itself;
+ * 2. the write has landed but not the line we are waiting for.
+ *
+ * It returns the file content once `predicate` matches, or the last content it
+ * saw when the budget runs out (never a raw ENOENT), so a genuine failure shows up
+ * as the missing audit line rather than as a puzzling file-system error.
+ */
+export async function waitForAudit(
+  dataDir: string,
+  predicate: (raw: string) => boolean,
+  timeoutMs = 20_000,
+  intervalMs = 100,
+): Promise<string> {
+  const filePath = join(dataDir, 'audit.jsonl');
+  const deadline = Date.now() + timeoutMs;
+  let latest = '';
+  for (;;) {
+    latest = await readFile(filePath, 'utf8').catch(() => '');
+    if (predicate(latest)) return latest;
+    if (Date.now() >= deadline) return latest;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}

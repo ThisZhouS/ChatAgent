@@ -23,6 +23,17 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request as httpRequest } from 'node:http';
 
+// This is a *node* script: it spawns the Electron runtime itself (see Usage above).
+// Under Electron `process.execPath` is electron.exe, so the helper processes below
+// (the live holder, the exited pid) would be Electron invocations and the run would
+// hang in the second scenario instead of failing. Refuse the wrong runtime loudly.
+if (process.versions.electron) {
+  console.error(
+    '[gate7a-lock] this is a node script (it spawns Electron itself) — run: node scripts/electron-lock-check.mjs',
+  );
+  process.exit(2);
+}
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const argValue = (name, fallback) => {

@@ -21,7 +21,6 @@ const MAX_DETAIL = 200;
  */
 export class AuditLog {
   private queue: Promise<void> = Promise.resolve();
-  private ready = false;
 
   constructor(private readonly filePath: string) {}
 
@@ -38,10 +37,6 @@ export class AuditLog {
   }
 
   private async append(event: AuditEvent): Promise<void> {
-    if (!this.ready) {
-      await mkdir(dirname(this.filePath), { recursive: true });
-      this.ready = true;
-    }
     const line = JSON.stringify({
       at: new Date().toISOString(),
       action: truncate(event.action, 64),
@@ -52,6 +47,14 @@ export class AuditLog {
       detail: event.detail ? truncate(event.detail, MAX_DETAIL) : undefined,
       ip: event.ip ? truncate(event.ip, 64) : undefined,
     });
+    // The earlier version cached a "the data directory exists" flag after its
+    // first write. When the *first* append raced the directory creation (mkdir and
+    // appendFile are separate awaits), that flag was set even though no line ever
+    // landed, and every later audit line failed silently — an audit trail that
+    // starts empty for the whole process lifetime. Ensuring the directory on every
+    // append costs one mkdir (a no-op once it exists) and makes the first record,
+    // and any record after the file was cleaned up, land for real.
+    await mkdir(dirname(this.filePath), { recursive: true });
     await appendFile(this.filePath, `${line}\n`, 'utf8');
   }
 }

@@ -15,12 +15,22 @@
  *
  * Usage: node scripts/electron-receipt-sync-check.mjs
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request as httpRequest } from 'node:http';
+
+// Node script (spawns Electron itself — see Usage above); under Electron
+// `process.execPath` is electron.exe, which breaks every helper process below.
+if (process.versions.electron) {
+  console.error(
+    '[gate7a-receipt-sync] this is a node script (it spawns Electron itself) — run: node scripts/electron-receipt-sync-check.mjs',
+  );
+  process.exit(2);
+}
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -30,7 +40,13 @@ const argValue = (name, fallback) => {
 };
 const debugPort = Number(argValue('--debug-port', '9346'));
 const serverPort = Number(argValue('--server-port', '8793'));
-const stateDir = join(root, 'Temp', 'receipt-sync-check');
+// A fresh state directory per run, like the workbench check. This check used a
+// fixed `Temp/receipt-sync-check` and reset it with `rmSync(..., {force:true})` at
+// startup — but `force` does not help when a *previous* run's Electron children are
+// still alive holding the profile directory: the reset then throws EPERM (or the run
+// degrades and reports a shorter check list), so the sweep was not idempotent. A
+// unique directory cannot be blocked by anything a prior run left behind.
+const stateDir = mkdtempSync(join(tmpdir(), 'chatagent-receipt-sync-'));
 const hostRootDir = join(stateDir, 'host');
 const profileDir = join(stateDir, 'profile');
 // The runtime can be pointed elsewhere with CHATAGENT_ELECTRON_BIN so an upgrade
@@ -207,7 +223,6 @@ function launchApp() {
 }
 
 async function main() {
-  rmSync(stateDir, { recursive: true, force: true });
   mkdirSync(hostRootDir, { recursive: true });
   if (!existsSync(devElectron)) {
     console.log('SKIP  no Electron runtime available');
@@ -417,11 +432,22 @@ async function main() {
   } catch (error) {
     check(`receipt sync check crashed — ${error.message}`, false);
   } finally {
-    if (!exited) {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        // already gone
+    // Kill the whole tree, not just the launcher: Electron's renderer/GPU/utility
+    // children outlive `child.kill()` and would keep the profile directory busy (and
+    // leak processes) long after the check has finished.
+    if (!exited && child.pid !== undefined) {
+      if (process.platform === 'win32') {
+        try {
+          spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        } catch {
+          // already gone
+        }
+      } else {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // already gone
+        }
       }
     }
     stub.close();

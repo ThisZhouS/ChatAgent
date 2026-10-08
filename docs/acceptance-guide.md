@@ -135,8 +135,11 @@ node scripts/ui-e2e.mjs         # 真实客户端 E2E：38 项检查 + 截图（
 # 登录凭据：--member/--token 或 SMOKE_MEMBER/SMOKE_TOKEN；都没有时用 Temp/e2e-member.json
 # （由 node scripts/ensure-e2e-member.mjs 自动签发的本机专用成员 e2e_local，仓库不含任何令牌）
 node scripts/gate7a-verify.mjs  # 本机 Agent 主机级流程（设 CHATAGENT_HERMES_EXE 含真实 Hermes 契约，22/22）
-node scripts/electron-workbench-check.cjs   # 断网本机工作台 11/11（真实 Electron）
-node scripts/electron-quit-check.mjs        # 显式退出路径 10/10（真实 Electron）
+node scripts/desktop-shell-checks.mjs       # 桌面壳七项，一次跑完并打印合计（92/92）
+# 七项 = lock 18 / receipt-sync 21 / host-smoke 6 / workbench 19 / quit 10 / csp 5 / nav 13
+# 其中 workbench 与 host-smoke 是 electron 脚本，其余五个是 node 脚本、自己 spawn Electron；
+# 运行器由 desktop-shell-checks.mjs 的表格决定，别手工拼（拼错会卡住而不是失败）
+node scripts/desktop-shell-checks.mjs --only lock    # 单项调试；--timeout-ms 控制单脚本上限
 pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 ```
 
@@ -145,7 +148,8 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
 安装/解包后的 ChatAgent 桌面客户端（`apps/desktop/release/win-unpacked/ChatAgent.exe`）或开发态 `pnpm desktop:dev`：
 
 1. **关窗常驻**：登录后关闭窗口 → 进程仍在托盘；此时提交的本机任务继续跑完，重开窗口后状态与产物仍在（自动化：`scripts/electron-host-smoke.cjs` 6/6）。
-2. **离线工作台**：断开/停掉组织服务器，刷新客户端 → 出现“无法连接到 ChatAgent 服务”，点“打开本机工作台”（或托盘菜单“打开本机工作台（不依赖服务器）”）：可看到设备、执行器、任务列表、提交文档任务、取消/重试、暂停/继续，页面不依赖服务器（自动化：`scripts/electron-workbench-check.cjs` 16/16）。
+2. **离线工作台**：断开/停掉组织服务器，刷新客户端 → 出现“无法连接到 ChatAgent 服务”，点“打开本机工作台”（或托盘菜单“打开本机工作台（不依赖服务器）”）：可看到设备、执行器、任务列表、提交文档任务、取消/重试、暂停/继续，页面不依赖服务器（自动化：`scripts/electron-workbench-check.cjs` 19/19）。
+   - **窗口置顶要在这里人工确认**：会话头部点「置顶」→ 窗口应钉在最前（被其他窗口遮挡时仍在最上）。自动化能证明的只是「应用**不会谎报**」：动作执行后回读窗口真实状态，没生效就返回 `{ok:false, error:'window_state_not_applied'}` 并在界面提示（`scripts/electron-nav-check.mjs` 13/13）。在没有可用窗口管理器/合成器的会话里（无桌面、锁屏、部分沙箱），`setAlwaysOnTop` 会被接受但不生效——那时看到的是明确失败提示而不是「已置顶」，这是预期行为。
 3. **副作用任务不会被本机批准**：以“副作用任务”提交 → 立即失败并在“说明”列显示 `delegation_missing`，执行次数为 0；只有组织服务下发委托并由用户批准后才可能执行。
 4. **显式退出即停止**：托盘“退出（停止后台 Agent）”或工作台“退出” → 后台 Agent 与自有子进程树被清理，任务库锁释放，再次启动可正常接管；直接关窗不会停止 Agent（自动化：`node scripts/electron-quit-check.mjs` 10/10，真实应用 + 真实退出路径）。
 5. **稳定设备标识**：设置页本机卡片中的设备号为 `desktop-<uuid>`，重启客户端后不变（存放在用户数据目录 `device.json`）。
@@ -159,7 +163,15 @@ pnpm build:desktop  # 重新打包 Windows exe → apps/desktop/release/
    ```powershell
    Get-Content "$env:APPDATA\ChatAgent\agent-host\tasks.json.retention-audit.jsonl" | Select-Object -Last 3
    ```
-   每行形如 `{"at":"…","action":"task_store.pruned","actor":"local-host","reason":"count","count":20,"tasks":[{"taskId":"…","state":"succeeded","reason":"count","updatedAt":"…"}]}`：`reason` 为 `age`（超过年龄上限，需显式配置）或 `count`（超过条数上限）。界面与设置页只说「N 条」（按产品决定：逐条追溯落审计、不落界面），因此**行里的 taskId 就是唯一的追溯入口**；审计写失败不会让任务写入失败，但会在设置页之外由主进程在控制台打印，并出现在 `status().storeIntegrity.retentionAuditFailures`。自动化：`scripts/electron-workbench-check.cjs` 3 项断言（审计文件结构、审计条数与 `pruned` 逐条相等、被清理的 id 不进页面）。
+   每行形如 `{"at":"…","action":"task_store.pruned","actor":"local-host","reason":"count","count":20,"tasks":[{"taskId":"…","state":"succeeded","reason":"count","updatedAt":"…"}]}`：`reason` 为 `age`（超过年龄上限，需显式配置）或 `count`（超过条数上限）。界面与设置页只说「N 条」（按产品决定：逐条追溯落审计、不落界面），因此**行里的 taskId 就是唯一的追溯入口**；审计写失败不会让任务写入失败，但会在设置页之外由主进程在控制台打印，并出现在 `status().storeIntegrity.retentionAuditFailures`。自动化：`scripts/electron-workbench-check.cjs` 5 项断言（审计文件结构、宿主写入的批次与 `pruned` 逐条相等、裁剪 note 与计数一致且文件不超过 `retentionAuditMaxLines`、被清理的 id 不进页面、**每个种子批次要么还在文件里要么被裁剪计数**——`kept=1196 dropped=904 seeded=2100`，即没有任何一批无声消失）。
+
+   **这个文件也有自己的上限（2026-09-30）**：默认保留最新 1200 行 / 1 MiB，超过「上限 + 32 行」的水位才裁剪、裁回上限。裁剪不是删掉头部，而是写一条 meta 行并保留它的上一条：
+   ```json
+   {"at":"…","action":"task_store.retention_audit_rotated","actor":"local-host","reason":"lines","droppedLines":904,"droppedTasks":["…"],"droppedTasksTruncated":904}
+   ```
+   - `droppedLines` 是**批次行的条数**（不含 note 自己），`droppedTasks` 最多列 200 个 id，被截断时以 `droppedTasksTruncated` 给出精确总数——所以「文件里最老的一批为什么从这里开始」是可读的。
+   - 想知道当前预算与实际裁剪情况：`status().storeIntegrity` 的 `retentionAuditMaxLines` / `retentionAuditMaxBytes` / `retentionAuditRotations` / `retentionAuditLinesDropped`（界面不显示，避免与「界面只说条数」的口径冲突）。
+   - 裁剪失败（例如审计路径不可写）不会让任务写入失败，也不会吞掉那一行：失败计入 `retentionAuditFailures`，主进程打 `console.error`。
 
 ## 9. 已知缺口（不是回归）
 
@@ -187,7 +199,7 @@ node scripts/gate7a-verify.mjs               # 行为流程；0 = 全过，1 = �
 
 - 预检通过**只代表前置条件齐备**，不代表 Gate 7A.3 通过；脚本自己会印出这句话。行为验证仍需真实 Hermes 运行时 + 模型凭据跑通办公闭环。
 - **BLOCKED 一律以退出码 2 结束**：脚本化验收不得把「没跑到 / 没法跑」当成成功。
-- 五份 Electron 检查（csp / lock / nav / quit / receipt-sync）同样遵守这条：机器上**没有 Electron 运行时**时它们会打印 `SKIP ... 未验证` 并以 **2** 退出，而不是伪装成通过。要真正跑它们，先构建好 `apps/desktop/node_modules/electron`（或用 `CHATAGENT_ELECTRON_BIN` 指向别的运行时）。
+- 桌面壳七项同样遵守这条：机器上**没有 Electron 运行时**时，`node scripts/desktop-shell-checks.mjs` 会打印 `SKIP ... 未验证` 并以 **2** 退出（单项脚本自己也这么做），而不是伪装成通过。要真正跑它们，先构建好 `apps/desktop/node_modules/electron`（或用 `CHATAGENT_ELECTRON_BIN` 指向别的运行时）。运行器对每个脚本有超时（默认 300s），超时按**失败**报出并杀掉进程树，不会无限等待。
 - 2026-09-21 在本机实测（未配置运行时而模型）：`21 passed, 0 failed, 1 blocked`，退出码 2，BLOCKED 的是 Flow8「真实 Hermes 运行时契约」。
 node scripts/ui-e2e.mjs          # 38/38
 ```

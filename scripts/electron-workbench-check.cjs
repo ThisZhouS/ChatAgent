@@ -62,6 +62,38 @@ app.whenReady().then(async () => {
     }
     fs.writeFileSync(path.join(root, 'tasks.json'), JSON.stringify(seeded), 'utf8');
 
+    // Seed the retention trail at its own watermark, so the housekeeping below runs
+    // through the real trim path too: a trail that has outgrown its budget must be
+    // cut back with a note that names what went, not silently shortened. (Without
+    // this the run only ever appends, and the trim path is never exercised.)
+    const seededAudit = [];
+    const seededTotal = 2_100;
+    for (let index = 0; index < seededTotal; index += 1) {
+      const stamp = new Date(Date.UTC(2026, 8, 1, 0, 0, index)).toISOString();
+      seededAudit.push(
+        JSON.stringify({
+          at: stamp,
+          action: 'task_store.pruned',
+          actor: 'local-host',
+          store: path.join(root, 'tasks.json'),
+          reason: 'count',
+          count: 1,
+          tasks: [
+            {
+              taskId: `wb-seed-${String(index).padStart(4, '0')}`,
+              state: 'succeeded',
+              reason: 'count',
+              updatedAt: stamp,
+            },
+          ],
+        }),
+      );
+    }
+    fs.writeFileSync(
+      path.join(root, 'tasks.json.retention-audit.jsonl'),
+      `${seededAudit.join('\n')}\n`,
+      'utf8',
+    );
     host = new LocalAgentHost({
       deviceId: 'desktop-workbench-check',
       agentId: 'hermes',
@@ -162,8 +194,13 @@ app.whenReady().then(async () => {
     check('a second writer on the same store is refused', lockedCode === 'agent_host_store_locked', lockedCode);
 
     // Retention housekeeping leaves a per-record trail: the count on screen is
-    // backed by an append-only file naming every dropped id and the rule that
-    // dropped it (round-4 follow-up: a bare count cannot be traced afterwards).
+    // backed by a file naming every dropped id and the rule that dropped it (round-4
+    // follow-up: a bare count cannot be traced afterwards). The trail has its own
+    // budget now, so a saturated trail is trimmed — and a trim must say so, in a
+    // note that names the batches it removed, instead of quietly shortening history.
+    // The trim runs only when the write path trims, so give the queued work a moment
+    // to land before reading the file.
+    await wait(1500);
     const auditPath = path.join(root, 'tasks.json.retention-audit.jsonl');
     const auditLines = fs.existsSync(auditPath)
       ? fs
@@ -173,20 +210,32 @@ app.whenReady().then(async () => {
           .filter(Boolean)
           .map((line) => JSON.parse(line))
       : [];
-    const audited = auditLines.flatMap((entry) => entry.tasks || []);
+    const pruneLines = auditLines.filter((entry) => entry.action === 'task_store.pruned');
+    const notes = auditLines.filter((entry) => entry.action === 'task_store.retention_audit_rotated');
+    // The trail was seeded by this check, so only the batches *this run* wrote say
+    // anything about the host's own bookkeeping: the seeded ones are counted as
+    // "trimmed" the same way a real trim's batches are.
+    const audited = pruneLines
+      .flatMap((entry) => entry.tasks || [])
+      .filter((task) => !String(task.taskId).startsWith('wb-seed-'));
     const status = await host.status();
     const reported = status.storeIntegrity && status.storeIntegrity.pruned;
+    const integrity = status.storeIntegrity || {};
+    const trimmedByTrims = integrity.retentionAuditLinesDropped || 0;
     check(
       'retention writes a per-record audit trail next to the store',
       auditLines.length > 0 &&
+        pruneLines.length > 0 &&
+        pruneLines.every((entry) => entry.actor === 'local-host' && entry.store) &&
         auditLines.every(
           (entry) =>
-            entry.action === 'task_store.pruned' && entry.actor === 'local-host' && entry.store,
+            entry.action === 'task_store.pruned' ||
+            entry.action === 'task_store.retention_audit_rotated',
         ),
-      `lines=${auditLines.length} path=${auditPath}`,
+      `lines=${auditLines.length} prunes=${pruneLines.length} notes=${notes.length} path=${auditPath}`,
     );
     check(
-      'the audit and the reported count agree id by id, each with its rule',
+      'the host-written batches agree with the count on screen, id by id',
       audited.length === reported &&
         audited.every(
           (task) =>
@@ -196,6 +245,50 @@ app.whenReady().then(async () => {
             typeof task.updatedAt === 'string',
         ),
       `audited=${audited.length} reported=${reported}`,
+    );
+    check(
+      'a trail over its budget is trimmed, and the trim names what it dropped',
+      notes.length > 0 &&
+        (integrity.retentionAuditRotations || 0) > 0 &&
+        trimmedByTrims > 0 &&
+        notes.every(
+          (note) =>
+            typeof note.droppedLines === 'number' &&
+            note.droppedLines > 0 &&
+            Array.isArray(note.droppedTasks) &&
+            note.droppedTasks.length > 0,
+        ) &&
+        notes[0].droppedLines === trimmedByTrims &&
+        auditLines.length <= (integrity.retentionAuditMaxLines || 0),
+      `notes=${notes.length} lines=${auditLines.length} maxLines=${integrity.retentionAuditMaxLines} ` +
+        `rotations=${integrity.retentionAuditRotations} trimmed=${trimmedByTrims}`,
+    );
+    check(
+      'the trimmed trail keeps the newest seeded batches and never ends on its own bookkeeping',
+      pruneLines.some((entry) =>
+        (entry.tasks || []).some((task) => task.taskId === `wb-seed-${String(seededTotal - 1).padStart(4, '0')}`),
+      ) &&
+        pruneLines[0].tasks[0].taskId === 'wb-seed-0904' &&
+        auditLines[auditLines.length - 1].action === 'task_store.pruned',
+      `first=${pruneLines[0].tasks[0].taskId} last=${auditLines[auditLines.length - 1].action}`,
+    );
+    // No seeded batch may vanish without being accounted for: each one is either
+    // still in the trail or was dropped by a trim that counted it. The seed file is
+    // written before the host starts and trims drop from the oldest end, so as long
+    // as fewer than `seededTotal` lines were dropped in total every dropped line is
+    // a seeded one — which makes this an exact reconciliation, not an approximation.
+    // (An earlier form of this assertion mixed a count read in-process with one read
+    // from the file and showed a 20-line gap; both numbers here come from the same
+    // two places a reviewer would look: the file, and the status the page reports.)
+    const keptSeedBatches = pruneLines.filter(
+      (entry) =>
+        (entry.tasks || []).length > 0 &&
+        (entry.tasks || []).every((task) => String(task.taskId).startsWith('wb-seed-')),
+    );
+    check(
+      'every seeded batch is either kept or counted as dropped — none vanishes',
+      keptSeedBatches.length + trimmedByTrims === seededTotal,
+      `kept=${keptSeedBatches.length} dropped=${trimmedByTrims} seeded=${seededTotal}`,
     );
     check(
       'pruned ids reach the trail, never the page',

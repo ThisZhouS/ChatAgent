@@ -189,7 +189,7 @@ describe('V-02 a live holder keeps its lock', () => {
     expect(status.held, JSON.stringify(status)).toBe(false);
     // Two independent detections, whichever happens first: the file itself says
     // another pid owns it, or it changed between the read and the commit.
-    expect(String(status.lostReason)).toMatch(/held by pid|changed while heartbeating/);
+    expect(String(status.lostReason)).toMatch(/held by pid|taken over while heartbeating/);
     await store.close();
     // Not deleted, and not overwritten by our heartbeat.
     await expect(readFile(`${file}.lock`, 'utf8')).resolves.toBe(foreign);

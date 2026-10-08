@@ -5,6 +5,7 @@ export * from './adapter';
 export * from './process-tree';
 export * from './lock-takeover';
 export * from './retention';
+export * from './retention-audit';
 export * from './authorization';
 export * from './host';
 export * from './ipc';

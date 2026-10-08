@@ -113,7 +113,10 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8787/api/accounts   # 期望 
 - 回执同步的三条硬约束：去重键必须是“版本+内容”指纹（`updatedAt` 同毫秒会让最终结果永不镜像）；单次请求必须 ≤ 契约上限（100 条，超出即永久 400）；产物必须符合共享契约（无 `sha256` 的产物丢弃、字段截断、非法 state 跳过），否则一条坏记录会毒死整批。
 - 保留策略只淘汰 `succeeded`/`failed`/`cancelled`；`interrupted`（可重试）与进行中的行永不淘汰，且淘汰数量必须可观测（`storeIntegrity.prunable` = 待清理，`storeIntegrity.pruned` = 本次运行已清理，设置页分别提示）。
 - **保留策略的逐条留痕（2026-09-22）**：每个淘汰批次追加一行到 `<tasks.json>.retention-audit.jsonl`（`action: task_store.pruned`、`actor: local-host`、每条的 `taskId/state/reason(age|count)/updatedAt`），默认开启。三条边界：① 只写**已经真正落盘**的淘汰（写入失败回滚的记录不写、计数也不加，修掉了原来「失败也计数」的多报）；② 审计写失败不让调用方的任务写入失败——记账问题不该拖垮任务库——但失败计入 `storeIntegrity.retentionAuditFailures/lastAuditError` 并由主进程 `console.error`，不静默；③ 具体 taskId **只进审计文件，不进界面/状态载荷**（界面只说条数，符合第四轮的「逐条追溯落审计」决定）。
+- **审计文件自己的预算（2026-09-30）**：它是本机唯一还在线性增长的文件，现在有双预算（行 1200 / 字节 1 MiB）与高水位滞后（超 `maxLines + 32` 才裁剪、裁回 `maxLines`，否则饱和后每次任务写入都要重写整个文件）。四条边界：① 裁剪**只丢整批**，最新批次永不丢；② 写一条 meta 行（`task_store.retention_audit_rotated`，含批次数与最多 200 个 id + 精确截断计数）并保留上一条，否则「历史为什么从这里开始」无从判断；③ tmp→fsync→rename，断电只留旧文件或新文件；④ 裁剪失败**不抛**，仍尝试追加（否则真的淘汰了 N 条会连一行痕迹都没有），失败计入 `storeIntegrity.retentionAuditFailures`。界面不变（仍只说「N 条」），`retentionAuditRotations/LinesDropped/MaxLines/MaxBytes` 只在状态载荷里。
+- **锁心跳的归属判定必须比内容，不能比时间戳**：Windows/NTFS 时间戳粒度约 15ms（实测两次相邻写入同戳 40/300、write+rename 27/300），用 mtime 判断「文件是否被别人改过」会漏掉同一 tick 内的外来锁，随后的 rename 会把它覆盖——等于静默接替第二个写者。改为比较 pid + 本次获取的 token（不变量是「文件还是我们的」，不是「字节没变」）；同时**只有 ENOENT 才算锁文件消失**，其他读取失败（EBUSY/EPERM）只计一次心跳失败，不能因此永久放弃持有。
 - 锁的接管只看“持有者是否存活”，年龄不是接管理由；歧义情形必须由人确认并留审计。
+- **窗口动作不谎报成功（2026-09-30）**：`applyWindowAction` 执行后回读窗口真实状态并与请求比对，不一致即 `{ok:false, error:'window_state_not_applied', result}`。动机是实测：`setAlwaysOnTop(true)` 在 Electron 39.8.10 的沙箱会话里被接受却从未生效，而旧实现无论结果如何都回 `ok:true`——界面与检查都会被告知「已置顶」。同理也说明「把请求当结果」是本项目要持续警惕的一类缺陷（与 `status()` 一律读真实状态、审计只在落盘成功后计数同源）。
 
 ## 授权刷新（2026-09-17 第十五轮）
 

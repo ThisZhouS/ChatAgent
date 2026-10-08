@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { AgentAccount, ChatMessage, Conversation, TaskRecord } from '@chatagent/contracts';
 import { allowedToolsForTier, resolveContactTier, tierPolicy, tierPromptRule } from './agent-tier';
-import { createTestApp, type TestMemberSeed } from './test-helpers';
+import { createTestApp, waitForAudit, type TestMemberSeed } from './test-helpers';
 
 let active: FastifyInstance[] = [];
 
@@ -162,9 +162,7 @@ describe('contact tier enforcement', () => {
     expect(body.taskId).toBeUndefined();
     expect(await listTasks(app, alice)).toHaveLength(0);
 
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const audit = await readFile(join(dataDir, 'audit.jsonl'), 'utf8');
+    const audit = await waitForAudit(dataDir, (text) => text.includes('agent_intake.ignored'));
     expect(audit).toContain('agent_intake.ignored');
   });
 

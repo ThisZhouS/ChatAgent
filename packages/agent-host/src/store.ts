@@ -9,6 +9,7 @@ import {
   selectExpiredRecordsDetailed,
 } from './retention';
 import type { ExpiredRecord } from './retention';
+import { DEFAULT_AUDIT_MAX_BYTES, DEFAULT_AUDIT_MAX_LINES, rotateRetentionAudit } from './retention-audit';
 import type { LocalTaskRecord, LocalTaskState } from './types';
 import { TERMINAL_LOCAL_STATES } from './types';
 
@@ -93,6 +94,13 @@ export interface RetentionStats {
   /** Audit appends that failed. The pruning still happened and still stands. */
   auditFailures?: number;
   lastAuditError?: string;
+  /** Times the audit file was trimmed because it had outgrown its budget. */
+  auditRotations?: number;
+  /** Audit lines dropped by those trims (their task ids are in the meta line). */
+  auditLinesDropped?: number;
+  /** Current budget of the audit file; reported so the bound is inspectable. */
+  auditMaxLines?: number;
+  auditMaxBytes?: number;
 }
 
 export interface LockPayload {
@@ -301,7 +309,8 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private lockHeartbeatFailures = 0;
   private lockLostReason?: string;
   private lockBeatTicks?: number;
-  private lockBeatOnce?: () => Promise<void>;
+  /** Serialized beat runner (see `refreshLock`); set while the lock is held. */
+  private runBeat: () => Promise<void> = async () => undefined;
   private lockStartedAt?: string;
   private lockToken?: string;
   private loadReport?: StoreLoadReport;
@@ -313,9 +322,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private readonly maxAgeMs?: number;
   private readonly heartbeatMs: number;
   private readonly retentionAuditPath?: string;
+  private readonly auditMaxLines?: number;
+  private readonly auditMaxBytes?: number;
+  private readonly auditSlackLines?: number;
   private prunedRecords = 0;
   private retentionAuditFailures = 0;
   private lastRetentionAuditError?: string;
+  private auditRotations = 0;
+  private auditLinesDropped = 0;
   private auditQueue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -330,9 +344,17 @@ export class JsonFileAgentHostStore implements AgentHostStore {
        * Per-record retention audit. Enabled by default: dropping task history
        * without a trace turns housekeeping into silent data loss, and the sink is
        * a local JSONL next to the store (same shape as `.lock-audit.jsonl`).
-       * `false` disables it; an object may point it somewhere else.
+       * `false` disables it; an object may point it somewhere else, or give the
+       * trail its own budget (see `retention-audit.ts`: it keeps the newest lines
+       * and writes a meta line naming what the trim dropped).
        */
-      retentionAudit?: boolean | { path?: string };
+      retentionAudit?: boolean | {
+        path?: string;
+        maxLines?: number;
+        maxBytes?: number;
+        /** How far past `maxLines` the trail may drift before a trim (see retention-audit.ts). */
+        slackLines?: number;
+      };
     } = {},
   ) {
     this.filePath = filePath;
@@ -346,6 +368,11 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       audit === false
         ? undefined
         : (audit === true ? undefined : audit.path) ?? `${filePath}.retention-audit.jsonl`;
+    if (audit !== false && audit !== true) {
+      this.auditMaxLines = audit.maxLines;
+      this.auditMaxBytes = audit.maxBytes;
+      this.auditSlackLines = audit.slackLines;
+    }
   }
 
   async load(): Promise<void> {
@@ -464,6 +491,14 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       ...(this.retentionAuditPath ? { auditPath: this.retentionAuditPath } : {}),
       auditFailures: this.retentionAuditFailures,
       ...(this.lastRetentionAuditError ? { lastAuditError: this.lastRetentionAuditError } : {}),
+      ...(this.retentionAuditPath
+        ? {
+            auditRotations: this.auditRotations,
+            auditLinesDropped: this.auditLinesDropped,
+            auditMaxLines: this.auditMaxLines ?? DEFAULT_AUDIT_MAX_LINES,
+            auditMaxBytes: this.auditMaxBytes ?? DEFAULT_AUDIT_MAX_BYTES,
+          }
+        : {}),
     };
   }
 
@@ -473,6 +508,10 @@ export class JsonFileAgentHostStore implements AgentHostStore {
    * cannot give. Best effort by design: an unwritable audit file must not take
    * the task store down with it, so the failure is counted and reported in
    * `retentionStats()` instead of being swallowed or thrown.
+   *
+   * The trail is bounded (see `retention-audit.ts`): before appending, a file that
+   * has outgrown its budget is trimmed to its newest lines and stamped with a meta
+   * line, so the audit can never become the largest thing in the data directory.
    */
   private async appendRetentionAudit(expired: readonly ExpiredRecord[]): Promise<void> {
     const path = this.retentionAuditPath;
@@ -491,8 +530,30 @@ export class JsonFileAgentHostStore implements AgentHostStore {
     });
     // Serialized so the lines describe the drops in the order they happened.
     const run = this.auditQueue.then(async () => {
+      // Rotation and appending are attempted separately on purpose: a trim that
+      // cannot be written must not swallow the line for a prune that really
+      // happened (the append-only path may well still succeed).
       try {
         await mkdir(dirname(path), { recursive: true });
+        const rotation = await rotateRetentionAudit(path, {
+          maxLines: this.auditMaxLines ?? DEFAULT_AUDIT_MAX_LINES,
+          maxBytes: this.auditMaxBytes ?? DEFAULT_AUDIT_MAX_BYTES,
+          ...(this.auditSlackLines !== undefined ? { slackLines: this.auditSlackLines } : {}),
+        });
+        if (rotation.error) {
+          this.retentionAuditFailures += 1;
+          this.lastRetentionAuditError = `rotation: ${rotation.error}`;
+          console.error('[chatagent] retention audit rotation failed:', rotation.error);
+        } else if (rotation.rotated) {
+          this.auditRotations += 1;
+          this.auditLinesDropped += rotation.droppedBatches;
+        }
+      } catch (error) {
+        this.retentionAuditFailures += 1;
+        this.lastRetentionAuditError = error instanceof Error ? error.message : String(error);
+        console.error('[chatagent] retention audit rotation failed:', this.lastRetentionAuditError);
+      }
+      try {
         const handle = await open(path, 'a');
         try {
           await handle.write(`${line}\n`);
@@ -743,9 +804,13 @@ export class JsonFileAgentHostStore implements AgentHostStore {
    * Refresh the heartbeat right now instead of waiting for the interval. A long
    * task write can push the next scheduled beat past the grace window, and a
    * holder that looks frozen invites a human to take its lock away.
+   *
+   * The beat goes through the same serialization chain as the timer: every beat
+   * writes the same `.beat` scratch file, so two overlapping beats could interleave
+   * their writes and publish a truncated lock payload.
    */
   async refreshLock(): Promise<void> {
-    await this.lockBeatOnce?.();
+    await this.runBeat();
   }
 
   /** Reads and classifies the current lock file (no side effects). */
@@ -808,34 +873,66 @@ export class JsonFileAgentHostStore implements AgentHostStore {
         token,
       };
       const tmp = `${this.lockPath}.beat`;
+      // Who the file says owns it right now: our own pid *and* this acquisition's
+      // token. The token matters because a pid can be reused, and a lock we wrote
+      // in an earlier life must not be refreshed as if it were ours.
+      const ownsFile = (raw: string): boolean => {
+        const owner = parseLockText(raw);
+        return owner.pid === process.pid && (owner.token === undefined || owner.token === token);
+      };
+      // Reads the lock for an ownership check. A *missing* file means our lock is
+      // gone, but an unreadable one (EBUSY/EPERM while a scanner or a backup holds
+      // it) does not: treating that as "disappeared" would make a healthy holder
+      // stand down permanently on a transient sharing violation. The old check used
+      // `stat`, which those scanners disturb less; an unreadable file is now a
+      // skipped beat, counted like any other beat failure.
+      const readLock = async (): Promise<{ raw?: string; missing: boolean }> => {
+        try {
+          return { raw: await readFile(this.lockPath, 'utf8'), missing: false };
+        } catch (error) {
+          return { missing: (error as NodeJS.ErrnoException).code === 'ENOENT' };
+        }
+      };
       try {
         // Ownership is re-checked against the file itself, not only against our own
         // flags: a heartbeat must never overwrite a lock that was taken over while
         // this instance was idle, and it must never recreate one we released.
-        const current = await readFile(this.lockPath, 'utf8').catch(() => undefined);
-        if (current === undefined) return this.loseLock('the lock file disappeared');
-        const owner = parseLockText(current);
-        if (owner.pid !== process.pid || (owner.token !== undefined && owner.token !== token)) {
-          return this.loseLock(`the lock is now held by pid ${String(owner.pid)}`);
+        const current = await readLock();
+        if (current.missing) return this.loseLock('the lock file disappeared');
+        if (current.raw === undefined) {
+          this.lockHeartbeatFailures += 1;
+          return;
         }
-        const seenAt = await stat(this.lockPath).then(
-          (info) => info.mtimeMs,
-          () => undefined,
-        );
+        if (!ownsFile(current.raw)) {
+          return this.loseLock(
+            `the lock is now held by pid ${String(parseLockText(current.raw).pid)}`,
+          );
+        }
         await writeFile(tmp, JSON.stringify(payload), 'utf8');
         if (!this.lockHeld || this.lockToken !== token) {
           await rm(tmp, { force: true }).catch(() => undefined);
           return;
         }
-        // Last look before committing: if the file changed since we read it, another
-        // writer is in charge now and the heartbeat must stand down.
-        const nowAt = await stat(this.lockPath).then(
-          (info) => info.mtimeMs,
-          () => undefined,
-        );
-        if (seenAt !== undefined && nowAt !== undefined && nowAt !== seenAt) {
+        // Last look before the commit point. This compares the lock's *content*,
+        // not its mtime: filesystem timestamps on Windows can have ~15ms
+        // granularity (and NTFS can hand two writes the same stamp), so a foreign
+        // writer that landed inside one tick used to go unnoticed and the rename
+        // below would silently clobber a lock that is no longer ours. A scheduled
+        // beat of our own landing in this window is fine — the invariant is that
+        // the file stays *ours*, not that it stays byte-identical.
+        const latest = await readLock();
+        if (latest.missing) {
           await rm(tmp, { force: true }).catch(() => undefined);
-          return this.loseLock('the lock file changed while heartbeating');
+          return this.loseLock('the lock file disappeared');
+        }
+        if (latest.raw === undefined) {
+          await rm(tmp, { force: true }).catch(() => undefined);
+          this.lockHeartbeatFailures += 1;
+          return;
+        }
+        if (!ownsFile(latest.raw)) {
+          await rm(tmp, { force: true }).catch(() => undefined);
+          return this.loseLock('the lock was taken over while heartbeating');
         }
         // Last check before the commit point: if this store was released while the
         // beat was in flight, the lock file must stay gone.
@@ -850,7 +947,7 @@ export class JsonFileAgentHostStore implements AgentHostStore {
         await rm(tmp, { force: true }).catch(() => undefined);
       }
     };
-    const schedule = () => {
+    const schedule = (): Promise<void> => {
       // Heartbeats are serialised. Overlapping beats could each reach their rename,
       // and `releaseLock()` awaits only the newest promise - so an older beat could
       // put the lock file back after a clean release, leaving an orphan lock that
@@ -859,11 +956,13 @@ export class JsonFileAgentHostStore implements AgentHostStore {
       this.lockBeatInFlight = this.lockBeatInFlight
         .then(() => beat())
         .catch(() => undefined);
-      void this.lockBeatInFlight;
+      return this.lockBeatInFlight;
     };
-    this.lockBeatOnce = beat;
-    schedule();
-    this.lockHeartbeat = setInterval(schedule, this.heartbeatMs);
+    // `refreshLock()` (an explicit beat) goes through the same chain as the timer,
+    // so two beats can never share the `.beat` scratch file at once.
+    this.runBeat = schedule;
+    void schedule();
+    this.lockHeartbeat = setInterval(() => void schedule(), this.heartbeatMs);
     // Never keep the process alive just to refresh a lock.
     this.lockHeartbeat.unref?.();
   }

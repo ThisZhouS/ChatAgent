@@ -146,6 +146,10 @@ describe('consented lock takeover', () => {
     const result = await takeOverStoreLock(filePath, {
       actor: 'local-user-consent',
       reason: '上一次运行异常结束，界面提示残留锁，用户点击“接管”',
+      // "A live pid whose heartbeat froze" is the case that needs a human. Which
+      // pids exist on the machine running the suite is not the subject, and a
+      // hard-coded id that happens to be alive flipped this case to `dead_pid`.
+      alive: () => true,
     });
     expect(result.takenOver).toBe(true);
     expect(result.replacedPath).toBeTruthy();
@@ -176,6 +180,26 @@ describe('consented lock takeover', () => {
     }
     const audit = (await readFile(`${filePath}.lock-audit.jsonl`, 'utf8')).trim().split('\n');
     expect(audit).toHaveLength(2);
+  });
+
+  it('records the other ending too: consenting over a lock whose holder is gone', async () => {
+    const filePath = await tempStorePath();
+    // The human clicked "take over" without knowing the holder had already died;
+    // the audit has to say so, otherwise a takeover of a frozen live pid and a
+    // takeover of a leftover look identical afterwards.
+    await writeLock(filePath, { pid: 4242, startedAt: new Date().toISOString() });
+    const result = await takeOverStoreLock(filePath, {
+      actor: 'local-user-consent',
+      reason: '残留锁，用户点击“接管”',
+      alive: () => false,
+    });
+    expect(result.takenOver).toBe(true);
+    const entry = JSON.parse((await readFile(result.auditPath, 'utf8')).trim()) as Record<
+      string,
+      unknown
+    >;
+    expect(entry.lockState).toBe('dead_pid');
+    expect(entry.holderAlive).toBe(false);
   });
 
   it('a lock held by a live process still blocks the store, until consent', async () => {

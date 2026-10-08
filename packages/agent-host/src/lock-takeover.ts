@@ -61,6 +61,12 @@ export interface LockTakeoverOptions {
   /** Human-readable cause shown in the audit entry. */
   reason: string;
   now?: () => Date;
+  /**
+   * Overridable liveness probe. Production always uses the real one; tests inject
+   * it so a case like "a live pid that stopped heartbeating" does not depend on
+   * which pids happen to exist on the machine running the suite.
+   */
+  alive?: (pid: number) => boolean;
 }
 
 /** Salvages a pid from a truncated lock payload (crash while writing). */
@@ -79,6 +85,7 @@ export async function inspectStoreLock(
   filePath: string,
   now = () => new Date(),
   readLock?: (lockPath: string) => Promise<string | undefined>,
+  alive?: (pid: number) => boolean,
 ): Promise<LockInspection> {
   const lockPath = `${filePath}.lock`;
   let raw: string | undefined;
@@ -106,6 +113,7 @@ export async function inspectStoreLock(
     now: now().getTime(),
     graceMs: LOCK_HEARTBEAT_GRACE_MS,
     fileAgeMs,
+    ...(alive ? { alive } : {}),
   });
   const payload = parseLockPayload(raw);
   const startedAt = payload.startedAt ? Date.parse(payload.startedAt) : Number.NaN;
@@ -134,7 +142,7 @@ export async function takeOverStoreLock(
 ): Promise<LockTakeoverResult> {
   const auditPath = `${filePath}.lock-audit.jsonl`;
   const now = options.now ?? (() => new Date());
-  const inspection = await inspectStoreLock(filePath, now);
+  const inspection = await inspectStoreLock(filePath, now, undefined, options.alive);
   if (!inspection.exists) {
     return { takenOver: false, auditPath, reason: 'no lock file to take over' };
   }

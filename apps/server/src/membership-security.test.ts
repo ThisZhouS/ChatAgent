@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { createTestApp, TEST_ORG, type TestMemberSeed } from './test-helpers';
+import { createTestApp, TEST_ORG, waitForAudit, type TestMemberSeed } from './test-helpers';
 
 /**
  * Regression tests for the access-control findings of the adversarial review:
@@ -1499,15 +1499,7 @@ describe('group administration', () => {
     });
     expect(empty.statusCode).toBe(400);
 
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const deadline = Date.now() + 3000;
-    let raw = '';
-    while (Date.now() < deadline) {
-      raw = await readFile(join(dataDir, 'audit.jsonl'), 'utf8');
-      if (raw.includes('conversation.renamed')) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    const raw = await waitForAudit(dataDir, (text) => text.includes('conversation.renamed'));
     expect(raw).toContain('conversation.renamed');
   });
 
@@ -1568,15 +1560,7 @@ describe('group administration', () => {
     expect(bobRead.statusCode).toBe(404);
 
     // The removal is audited, and re-adding him does not happen implicitly.
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const deadline = Date.now() + 3000;
-    let raw = '';
-    while (Date.now() < deadline) {
-      raw = await readFile(join(dataDir, 'audit.jsonl'), 'utf8');
-      if (raw.includes('conversation.member_removed')) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    const raw = await waitForAudit(dataDir, (text) => text.includes('conversation.member_removed'));
     expect(raw).toContain('conversation.member_removed');
     const list = await app.inject({ method: 'GET', url: '/api/conversations', headers: auth(bobToken) });
     expect((list.json() as Array<{ id: string }>).some((item) => item.id === conversationId)).toBe(false);
@@ -1706,15 +1690,7 @@ describe('message audit trail', () => {
     });
     expect(sent.statusCode, sent.body).toBe(200);
 
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const deadline = Date.now() + 3000;
-    let raw = '';
-    while (Date.now() < deadline) {
-      raw = await readFile(join(dataDir, 'audit.jsonl'), 'utf8');
-      if (raw.includes('message.sent')) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    const raw = await waitForAudit(dataDir, (text) => text.includes('message.sent'));
     expect(raw).toContain('message.sent');
     expect(raw).not.toContain('AUDIT-SECRET-BODY');
   });
@@ -1734,23 +1710,16 @@ describe('message audit trail', () => {
     const refused = await app.inject({ method: 'POST', url: '/api/groups', headers: auth(bobToken), payload });
     expect(refused.statusCode, refused.body).toBe(409);
 
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const deadline = Date.now() + 3000;
-    let denied = false;
-    while (Date.now() < deadline) {
-      const raw = await readFile(join(dataDir, 'audit.jsonl'), 'utf8');
-      denied = raw
+    const deniedAt = (raw: string): boolean =>
+      raw
         .split(String.fromCharCode(10))
         .filter((line) => line.trim() !== '')
         .some((line) => {
           const entry = JSON.parse(line) as { action?: string; outcome?: string };
           return entry.action === 'conversation.group_created' && entry.outcome === 'denied';
         });
-      if (denied) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    expect(denied, 'a refused re-creation is audited as denied').toBe(true);
+    const raw = await waitForAudit(dataDir, deniedAt);
+    expect(deniedAt(raw), 'a refused re-creation is audited as denied').toBe(true);
   });
 });
 
@@ -1937,22 +1906,14 @@ describe('membership audit trail', () => {
 
     const { readFile } = await import('node:fs/promises');
     const { join } = await import('node:path');
-    const readActions = async (): Promise<string[]> => {
-      const raw = await readFile(join(dataDir, 'audit.jsonl'), 'utf8');
-      return raw
-        .split(String.fromCharCode(10))
-        .filter((line) => line.trim() !== '')
-        .map((line) => (JSON.parse(line) as { action: string }).action);
-    };
-    // Audit writes are queued and coalesced, so poll instead of assuming they have already
-    // reached the file. The budget has to survive a fully loaded parallel suite.
-    const deadline = Date.now() + 20_000;
-    let actions: string[] = [];
-    while (Date.now() < deadline) {
-      actions = await readActions();
-      if (actions.includes('conversation.left')) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    // Audit writes are queued behind the request path, so poll instead of assuming
+    // they have already reached the file. The budget has to survive a fully loaded
+    // parallel suite.
+    const raw = await waitForAudit(dataDir, (text) => text.includes('conversation.left'));
+    const actions = raw
+      .split(String.fromCharCode(10))
+      .filter((line) => line.trim() !== '')
+      .map((line) => (JSON.parse(line) as { action: string }).action);
     expect(actions).toContain('conversation.group_created');
     expect(actions).toContain('conversation.member_added');
     expect(actions).toContain('conversation.left');

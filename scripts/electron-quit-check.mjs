@@ -19,6 +19,15 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request } from 'node:http';
 
+// Node script (spawns Electron itself — see Usage above); under Electron
+// `process.execPath` is electron.exe, which breaks every helper process below.
+if (process.versions.electron) {
+  console.error(
+    '[gate7a-quit] this is a node script (it spawns Electron itself) — run: node scripts/electron-quit-check.mjs',
+  );
+  process.exit(2);
+}
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const argValue = (name, fallback) => {

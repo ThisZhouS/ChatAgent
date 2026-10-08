@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { AgentAccount, ChatMessage, Conversation, TaskRecord } from '@chatagent/contracts';
-import { createTestApp, type TestMemberSeed } from './test-helpers';
+import { createTestApp, waitForAudit, type TestMemberSeed } from './test-helpers';
 
 let active: FastifyInstance[] = [];
 
@@ -172,9 +172,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 20_000): P
     expect(status).toMatchObject({ pending: 0, cancelled: 1 });
 
     // The cancellation is auditable, and the withdrawn text never entered a task.
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const audit = await readFile(join(dataDir, 'audit.jsonl'), 'utf8');
+    const audit = await waitForAudit(dataDir, (text) => text.includes('agent_intake.cancelled'));
     expect(audit).toContain('agent_intake.cancelled');
     expect(audit).not.toContain('把这份草稿发给客户');
   });

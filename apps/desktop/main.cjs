@@ -762,6 +762,12 @@ function createTray(serverUrl) {
 function applyWindowAction(action) {
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
   if (!win) return { ok: false, error: 'no_window' };
+  // What the action asks for, so the result can be checked against the window's own
+  // state instead of assuming the OS honoured it. `setAlwaysOnTop` is a request to
+  // the window manager: on a session without a usable compositor it can be accepted
+  // and have no effect, and reporting `ok: true` then would tell the user the window
+  // is pinned while it is not (measured on this machine: the state stays false).
+  const expect = { pin: true, unpin: false }[action];
   switch (action) {
     case 'pin':
       win.setAlwaysOnTop(true);
@@ -781,7 +787,11 @@ function applyWindowAction(action) {
     default:
       return { ok: false, error: 'unknown_action' };
   }
-  return { ok: true, result: windowState() };
+  const result = windowState();
+  if (expect !== undefined && result.pinned !== expect) {
+    return { ok: false, error: 'window_state_not_applied', result };
+  }
+  return { ok: true, result };
 }
 
 /** Rebuilds the tray menu (the pin entry depends on the current state). */

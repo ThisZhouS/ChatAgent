@@ -8,6 +8,12 @@ import {
   selectExpiredRecords,
   selectExpiredRecordsDetailed,
 } from './retention';
+import {
+  DEFAULT_AUDIT_MAX_BYTES,
+  DEFAULT_AUDIT_MAX_LINES,
+  DEFAULT_AUDIT_ROTATE_SLACK_LINES,
+  MIN_AUDIT_MAX_LINES,
+} from './retention-audit';
 import { JsonFileAgentHostStore } from './store';
 import type { LocalTaskRecord } from './types';
 
@@ -288,6 +294,96 @@ describe('retention audit (which ids went, and why)', () => {
     expect(store.retentionStats().auditPath).toBeUndefined();
     await expect(readFile(`${filePath}.retention-audit.jsonl`, 'utf8')).rejects.toThrow();
     await store.close();
+  });
+});
+
+describe('the retention audit file is bounded too', () => {
+  function seedStore(records: LocalTaskRecord[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'chatagent-retention-rotate-'));
+    dirs.push(dir);
+    const filePath = join(dir, 'tasks.json');
+    writeFileSync(filePath, JSON.stringify(records, null, 2), 'utf8');
+    return filePath;
+  }
+
+  /**
+   * Drives one prune batch per write with a small line budget (the smallest the
+   * module allows) and the shipped rotation slack: the trail has to stay inside its
+   * watermark however many times the store prunes, the newest batch must always be
+   * readable at the end, and the trims must be amortised rather than paid per write.
+   */
+  it('never grows past its line budget, and keeps naming what it dropped', async () => {
+    const filePath = seedStore([record('old-1', 'succeeded', '2026-01-01T00:00:00.000Z')]);
+    const maxLines = MIN_AUDIT_MAX_LINES;
+    const writes = 60;
+    const store = new JsonFileAgentHostStore(filePath, {
+      maxRecords: 1,
+      retentionAudit: { maxLines, maxBytes: 10_000_000 },
+    });
+    await store.load();
+
+    const auditLines = async (): Promise<Array<Record<string, unknown>>> => {
+      const raw = (await readFile(`${filePath}.retention-audit.jsonl`, 'utf8')).trim();
+      return raw === '' ? [] : raw.split('\n').map((line) => JSON.parse(line));
+    };
+
+    // The watermark is the line budget plus the shipped slack, and a trim fires
+    // before the append that would cross it.
+    const watermark = maxLines + DEFAULT_AUDIT_ROTATE_SLACK_LINES;
+    for (let index = 0; index < writes; index += 1) {
+      await store.put(record(`fresh-${index}`, 'succeeded', `2026-09-16T00:00:${String(index).padStart(2, '0')}.000Z`));
+      await store.flush();
+      const lines = await auditLines();
+      expect(lines.length, `after write ${index + 1}`).toBeLessThanOrEqual(watermark + 1);
+    }
+    await store.close();
+
+    const lines = await auditLines();
+    const stats = store.retentionStats();
+    // Counters are read as invariants rather than as predicted arithmetic: every
+    // batch was pruned, nothing failed, and the trims that happened are counted.
+    expect(stats).toMatchObject({ pruned: writes, auditFailures: 0 });
+    expect(stats.auditRotations).toBeGreaterThan(0);
+    expect(stats.auditLinesDropped).toBeGreaterThan(0);
+    expect(stats.auditMaxLines).toBe(maxLines);
+    expect(stats.lastAuditError).toBeUndefined();
+    // Rotating must not mean rotating every time: the trim leaves headroom for the
+    // appends that follow (the regression an independent review measured was one
+    // full rewrite per task write once the trail saturated).
+    const rewrites = stats.auditRotations ?? 0;
+    expect(rewrites).toBeLessThan(writes / 4);
+    const notes = lines.filter((line) => line.action === 'task_store.retention_audit_rotated');
+    expect(notes.length).toBeGreaterThan(0);
+    for (const note of notes) expect(Array.isArray(note.droppedTasks)).toBe(true);
+    const droppedIds = notes.flatMap((line) => line.droppedTasks as string[]);
+    expect(droppedIds.length).toBeGreaterThan(0);
+    for (const id of droppedIds) expect(id).toMatch(/^(old-1|fresh-\d+)$/);
+    // ...and the newest line is always a real prune batch, never a note: the trail
+    // ends with what just happened, not with its own bookkeeping.
+    const last = lines[lines.length - 1]!;
+    expect(last.action).toBe('task_store.pruned');
+    expect((last.tasks as Array<{ taskId: string }>)[0]!.taskId).toMatch(/^fresh-\d+$/);
+  });
+
+  it('never rotates a trail that is inside the shipped budget', async () => {
+    const filePath = seedStore([record('old-1', 'succeeded', '2026-01-01T00:00:00.000Z')]);
+    const store = new JsonFileAgentHostStore(filePath, { maxRecords: 1 });
+    await store.load();
+    await store.put(record('fresh', 'succeeded', '2026-09-16T00:00:00.000Z'));
+    await store.flush();
+    await store.close();
+    const stats = store.retentionStats();
+    // The common case must stay a pure append: no rewrite, no failure, and the
+    // budget it is being measured against is visible in the status payload.
+    expect(stats).toMatchObject({
+      pruned: 1,
+      auditFailures: 0,
+      auditRotations: 0,
+      auditLinesDropped: 0,
+      auditMaxLines: DEFAULT_AUDIT_MAX_LINES,
+      auditMaxBytes: DEFAULT_AUDIT_MAX_BYTES,
+    });
+    expect(store.retentionStats().lastAuditError).toBeUndefined();
   });
 });
 

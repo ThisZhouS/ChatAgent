@@ -279,6 +279,13 @@ export interface HostStatus {
     /** Audit appends that failed; the drops themselves still happened. */
     retentionAuditFailures?: number;
     retentionAuditError?: string;
+    /** Times the audit trail was trimmed because it had outgrown its budget. */
+    retentionAuditRotations?: number;
+    /** Audit lines dropped by those trims; their task ids sit in the meta line. */
+    retentionAuditLinesDropped?: number;
+    /** The trail's current budget, reported so the bound is inspectable. */
+    retentionAuditMaxLines?: number;
+    retentionAuditMaxBytes?: number;
     repaired: number;
     quarantined: number;
     duplicates: number;

@@ -371,10 +371,76 @@
 
 **桌面壳整体回归**：本轮改的是宿主包（`packages/agent-host`），而桌面壳直接 `require` 它的 bundle，所以七项在 HEAD 上全部复跑，**89/89、全部退出码 0**：lock **18/18**、receipt-sync **21/21**、host-smoke **6/6**、workbench **16/16**、quit **10/10**、csp **5/5**、nav **13/13**。运行方式必须按 §3.23 表格左列：`electron-lock-check.mjs` 与 `electron-receipt-sync-check.mjs` 用 `node` 跑（脚本内部用 `process.execPath` 派生「存活的无关进程」「已死进程」，用 electron 跑会让它变成 electron.exe 并卡住），其余五个必须用 `electron` 跑。
 
-**已知缺口（本轮有意不做）**：审计文件本身是**只追加、不轮转**的——每次「已满后接受一次写入」通常追加一行，一台每天几百个任务的设备长期运行会让它线性增长（相对任务库的 500 条上限，这是唯一还在长的文件）。旋转需要先定策略（按天/按大小的保留窗口、截断动作自身要不要写meta行、崩溃安全的截断方式），属于要产品口径的决定，因此记进 `docs/tasks.md` 的候选，而不是先塞一个半成品。
+**已知缺口（本轮有意不做）**：审计文件本身是**只追加、不轮转**的——每次「已满后接受一次写入」通常追加一行，一台每天几百个任务的设备长期运行会让它线性增长（相对任务库的 500 条上限，这是唯一还在长的文件）。旋转需要先定策略（按天/按大小的保留窗口、截断动作自身要不要写meta行、崩溃安全的截断方式），属于要产品口径的决定，因此记进 `docs/tasks.md` 的候选，而不是先塞一个半成品。**→ 已于第 59 轮实现，见 §3.25。**
+
+### 3.25 第 59 轮：三处由「基线跑出两个失败用例」牵出来的真实缺陷 + 审计文件自己的预算（2026-09-30）
+
+本轮起点不是功能清单，而是**基线测量**：根套件在干净 HEAD 上并不是 57/57 全绿——首跑 2 文件失败（`lock-takeover` 稳定失败、`membership-security` 之一为竞态），复跑失败文件换成了 `host-security-verify`。三个失败用例分别指向三处真实问题，逐个定位后连同审计文件的增长治理一起收口。
+
+**1. 锁心跳的最终归属校验用了 mtime，粒度不足（真缺陷）**
+`store.ts` 的 beat 在提交（rename）前用 `stat().mtimeMs` 比较「文件是否被改过」。Windows/NTFS 的时间戳粒度约 15ms（且两次写入可能拿到同一个戳），所以在这一个 tick 内落地的**外来锁会被漏检**，随后 rename 会把它覆盖掉——等于第二个写者被静默接替。改为**比较锁内容**（pid + 本次获取的 token）：不变量是「文件还是我们的」，而不是「字节没变」，因此自己下一次 beat 落地不会被误判。`host-security-verify.test.ts` 的 lostReason 断言随之更新（`taken over while heartbeating`）。
+
+**2. 心跳把「读不到锁文件」当成「锁没了」（真缺陷，独立复核提出）**
+改成读文件后，`readFile` 的瞬时失败（杀毒/备份占用导致 EBUSY/EPERM）会被当成「文件消失」→ `loseLock()` 永久退出持有。现在**只有 ENOENT 才算消失**，其他读取失败计一次 `heartbeatFailures` 并跳过本次 beat（与 `stat` 时代的行为一致）。顺带修掉一个潜伏问题：`refreshLock()` 直接调 beat、绕过串行链，而所有 beat 共用同一个 `.beat` 临时文件，两个并发 beat 可能发布截断的锁载荷；现在 `refreshLock()` 走与定时器相同的串行链。
+
+**3. `AuditLog` 首条记录可能永久丢失（真缺陷）**
+`apps/server/src/audit.ts` 用 `ready` 标志缓存「数据目录已建」——但 `mkdir` 与 `appendFile` 是两次 await，第一条 append 若在目录建好前失败，标志已经置位，**此后整个进程的审计行全部静默失败**（服务端审计从头就是空的）。改成每次 append 都 `mkdir`（已存在时为 no-op）；新增 `apps/server/src/audit.test.ts` 4 例（目录不存在时首条落盘、进程中途目录被删后仍能续写、sink 不可写时不打断请求路径且不抛、按序追加）。
+
+**4. 三处「读审计文件」的测试竞态**
+`membership-security` / `security-hardening` / `agent-intake-wiring` / `contact-tier` 里 8 处 `readFile(dataDir/audit.jsonl)` 直接在请求返回后读文件：审计写入排在请求路径之后的队列里，文件可能还没被创建 → 抛 ENOENT（就是本轮首跑看到的失败）。统一改为 `test-helpers.waitForAudit(dataDir, predicate)`：容忍 ENOENT、轮询到预算耗尽、返回最后看到的内容（失败时表现为「缺少那一行」而不是文件系统错误）。三项「再读一次要求内容完全相等」的断言被删除——它在本轮修竞态的同时又引入了一个新竞态。
+
+**5. 保留审计文件自己的预算（§3.24 的已知缺口，本轮实现）**
+新模块 `packages/agent-host/src/retention-audit.ts`：`rotateRetentionAudit(path, {maxLines, maxBytes, slackLines})`。要点：
+
+- **双预算**：行数（默认 1200）与字节（默认 1 MiB）。只有行预算时，几条超大批次会让文件远超字节上限却永不缩（独立复核实测：4 条粗行 158KB 对 40KB 预算，每行都触发一次「什么都没丢」的重写）——字节规则因此**按整批丢弃**直到放得下。
+- **高水位 + 滞后**：在 `maxLines + slack`（默认 +32）触发，裁回 `maxLines`。首版在预算处触发、只裁到预算，于是饱和后**每次任务写入都要重写整个文件**（复核实测：40 次追加 40 次重写、52MB 写放大、单次任务写入中位数 31.4ms vs 1.7ms）。现在一次裁剪换来 32 次纯追加。
+- **meta 行**：裁剪写入 `{"action":"task_store.retention_audit_rotated","reason":"lines|bytes|lines+bytes","droppedLines":N,"droppedTasks":[...]}`（最多 200 个 id + 精确的 `droppedTasksTruncated`），并保留上一条 note，这样「这段历史为什么从这里开始」可读；note 只接受 `droppedLines > 0` 的裁剪，且不会让 note 自己成为无界增长源。
+- **崩溃安全**：tmp 文件 → fsync → rename，断电只留旧文件或新文件。
+- **绝不让记账拖垮任务写入**：模块自身不抛（返回 `{error}`），存储层把裁剪与追加拆成两个独立 try——裁剪失败仍尝试追加，否则「真的淘汰了 N 条」会连一行痕迹都没有。
+- **计数可见**：`retentionStats()`/`status().storeIntegrity` 增 `retentionAuditRotations`、`retentionAuditLinesDropped`、`retentionAuditMaxLines/Bytes`；**界面（设置页与离线工作台）仍然只说「N 条」**，与 §3.24 的产品口径一致。
+
+**证据**：`retention-audit.test.ts` **14 例**（含水位滞后、字节规则、单批超大时不重写、note 上限、坏行不中断、预算非法值钳制、不可写时不抛）；`retention.test.ts` 15 → **17 例**（存储层驱动 60 次写入：行数不越水位、裁剪次数 < 写入数/4、note 里能追到被丢的 id）；`audit.test.ts` 新增 4 例；根套件 **57 文件 / 464 用例**、`tsc` 0 错、web **83 用例** + `vue-tsc` 0 错；真实 Electron `electron-workbench-check.cjs` **16 → 18 项**（种 2100 行饱和审计：裁剪确实发生、note 与 `retentionAuditLinesDropped` 一致、文件不超过 `retentionAuditMaxLines`、裁剪后最新批次仍在、被清理 id 只进文件不进页面）；桌面壳七项在 HEAD 上复跑 **91/91、退出码全 0**（lock 18、receipt-sync 21、host-smoke 6、workbench 18、quit 10、csp 5、nav 13）。**订正（2026-10-08 第 60 轮）**：原写「92/92」，逐项合计实为 91，且当时没有单条命令能复现该合计（第 60 轮补 `scripts/desktop-shell-checks.mjs` 并改 `acceptance.mjs`）。
+
+**独立复核（子代理，只读）**：逐条对抗 5 项改动，实测确认了 mtime 同戳（plain write 40/300、write+rename 27/300）与「重写放大」两项前提，并**否证了本设计的首版**（字节预算形同虚设、饱和后每次追加都重写、快速通道永不命中、note 可无界、预算未钳制、声明行数永久超 1）——这些否证直接变成上面第 5 条的改造与新增用例。
+
+**6. 窗口置顶的「成功」是假的（真缺陷，本轮末尾由桌面壳复跑抓出）**
+`electron-nav-check.mjs` 在同一份代码上出现 13/13 与 11/13 两种结果。探针（`BrowserWindow` + `setAlwaysOnTop(true)`，pinned 运行时 Electron 39.8.10）实测：**调用后 `isAlwaysOnTop()` 始终为 false**（立即、50ms、300ms 都是 false），而 `applyWindowAction` 无论结果如何都回 `{ok:true, result: windowState()}`——也就是说界面（与检查）被告知「已置顶」，实际没有。这类「把请求当成结果」的回报在本项目里已有明确口径（桌面壳的 `status()` 一律读窗口真实状态而不是本地标志位），因此改为：动作执行后**回读窗口状态并与请求比对**，不一致就返回 `{ok:false, error:'window_state_not_applied', result}`。`electron-nav-check.mjs` 的两条断言相应改为「必须报告真实状态，或明确失败，绝不谎报成功」（两种结局都通过，假 `ok:true` 不通过）。
+
+**边界**：置顶本身是否真的生效，取决于桌面会话有没有可用的窗口管理器/合成器——本机这个沙箱会话里 `setAlwaysOnTop` 不生效（窗口 `visible:false`），因此这里只能验证「不谎报」；「置顶真的把窗口钉在最前」仍需在真实桌面上人工确认（`docs/acceptance-guide.md` 已补该步骤）。
+
+**已知边界与未解**：① 复核测到「外来锁落在最后一次复查与 rename 之间」仍会被覆盖（60 次尝试中 36 次），这是 check-then-act 的固有窗口，本轮未消除；② ~~`electron-workbench-check` 里「种子行数 + 裁剪行数 = 2100」这条断言出现过 20 行的差额~~ **（第 60 轮收口，见 §3.26）**；③ 未在真实长跑设备上观察（>2000 批次的设备级行为由模块与存储层用例覆盖，不是实机观测）。
+
+### 3.26 第 60 轮：桌面壳证据收口——七项检查没有单一运行器，且 `acceptance.mjs` 用错了运行器（2026-10-08）
+
+复验第 59 轮时，「桌面壳七项 92/92」复现不出来。查下去不是某几项失败，而是**没有任何一条命令能跑出那个合计**——而且 `scripts/acceptance.mjs` 里那条命令本身就是错的。
+
+**1. 七项检查的运行时不同，但调用方只有一种（真缺陷）**
+七项里五项是 *node* 脚本，自己 spawn Electron（脚本头部写着 `Usage: node scripts/…`）：`electron-lock-check.mjs`、`electron-receipt-sync-check.mjs`、`electron-quit-check.mjs`、`electron-csp-check.mjs`、`electron-nav-check.mjs`；只有 `electron-workbench-check.cjs` 与 `electron-host-smoke.cjs` 是 *electron* 脚本（直接用 Electron API）。`acceptance.mjs` 却用 Electron 二进制启动**全部六项**（顺带漏掉了 `host-smoke`，所以是「六项」不是「七项」）。后果本机实测：`electron-lock-check.mjs` 在 Electron 下 `process.execPath` 是 `electron.exe`，它用来派生「存活持有者」与「已死 pid」的 `node -e` 辅助进程变成 Electron 调用，第二个场景永远等不到那行 stale 锁写入，**检查只打印前 5 项后无限卡住**——脚本里没有任何超时，所以「卡住」与「很慢」不可区分。
+
+**修法**：新增 `scripts/desktop-shell-checks.mjs`，把运行器选择收进**一张表**（每个脚本对应它自己声明的运行器），每项带超时（默认 300s，超时按**失败**报出并杀进程树），最后打印一行合计；`acceptance.mjs` 改为调用它。同时给五个 node 脚本加了运行器守卫：在 Electron 下立即打印原因并 `exit 2`，把「卡死」变成「明确失败」。
+
+**2. 合计本身是错的（证据订正）**
+第 59 轮记的「桌面壳七项 92/92」逐项合计实为 **91**（lock 18 + receipt-sync 21 + host-smoke 6 + workbench 18 + quit 10 + csp 5 + nav 13）。四处记录（`docs/tasks.md`、`docs/handoff-2026-09-18.md`、本矩阵 §3.25、`Prompt/2026-09-30-continue-project.md`）已订正为 91 并标注订正时间与原因。口径与「critical 门通过 ≠ 没有高危」一致：**一个不可复现的合计不是证据**。
+
+**3. 20 行种子差额收口**
+第 59 轮删掉的那条断言（「种子行数 + 裁剪行数 = 2100」）现在补回，并改写成两个数都取自读者会看的那两处（审计文件 + `status().storeIntegrity`）：**每个种子批次要么还在文件里、要么被裁剪计数，`kept + dropped === seeded`**。实测 **`kept=1196 dropped=904 seeded=2100`**，精确成立。那条旧断言不可恢复（第 59 轮从未提交，工作树里只有删掉后的状态），因此它的具体构造无法检视；但它当时的失败**不是数据缺陷**——同一批数字在当轮也自洽（第 59 轮自己记了 1196+904=2100），差额只可能出在断言的构造上。**边界**：这是「断言现在精确成立」，不是「已查明旧断言错在哪一行」。
+
+**4. 交接文档里的运行器指引本身是错的**
+`docs/handoff-2026-09-18.md` 原写 quit / csp / nav「必须用 `electron` 跑」，与这三个脚本自己的 `Usage: node …` 相反。本机实测三者在 `node` 下分别 10/10、5/5、13/13 全过（它们显式解析 `devElectron` 路径，不依赖 `process.execPath`），已改为「两个必须用 electron，其余五个用 node，一律走 `desktop-shell-checks.mjs`」。
+
+**证据**：`node scripts/desktop-shell-checks.mjs` → **92/92、退出码 0**（lock 18、receipt-sync 21、host-smoke 6、workbench 19、quit 10、csp 5、nav 13），**连跑两轮同结果**；`electron scripts/electron-lock-check.mjs` → 退出 2 + 明确原因；`node scripts/desktop-shell-checks.mjs --only lock --timeout-ms 15000` → 15s 后报 FAIL（超时）且不留残留进程。根套件 57 文件 / 464 用例、`tsc` 0 错、web 83 用例 + `vue-tsc` 0 错未受影响。
+
+**5. `receipt-sync` 的状态目录耦合（加固，不是仍可达的缺陷）**
+它用固定目录 `Temp/receipt-sync-check` 并在启动时 `rmSync(…, {force:true})` 重置，退出只杀直接子进程。**实测触发路径**：把五项 node 检查误用 `electron` 启动（正是第 1 条那个缺陷）后，误启动的实例留下 Electron 子进程占着 profile 目录，随后用 `node` 正确启动的 `receipt-sync` 在重置处抛 `EPERM … Temp\receipt-sync-check`，或退化成一份**更短的检查列表**（实测 `14/15 checks passed`，干净状态下 21/21）。修法：状态目录改为**每次运行唯一**（`mkdtempSync`）、退出按**进程树**杀（`taskkill /pid <pid> /T /F`）。
+
+**不夸大**：① 误启动这条路已由第 1 条的运行器守卫堵住，所以这不是修一个仍可达的缺陷，而是加固；② 旧行为（固定目录 + 只杀直接子进程）与 csp / nav / quit 相同，而这三者在**正确运行器**下实测零残留（退出后 3s / 15s 均为 0 个 Electron 进程），`receipt-sync` 改后同样零残留。**仍存的边界**：五项检查共用仓库内固定状态目录，**两个并发清扫会互相踩**——独立复核复现过一次纯由碰撞造成的假失败（csp 打印 `0/0`）。单条命令顺序跑可复现（连跑两轮同结果），并发不在本轮验收口径内，列为下一轮候选。
+
+**6. 运行器不再相信脚本自报的分母**
+上面那次退化是决定性的反例：脚本自报的 `14/15` **本身自洽**，一个只检查「N/M 都过」的合计会把 15 当成完整的 15 项吸收掉——合计照样全绿，而证据已经少了两成。所以 `desktop-shell-checks.mjs` 给七个脚本各钉了预期条数（18 / 21 / 6 / 19 / 10 / 5 / 13），分母不等于钉死值即判失败（`the script's assertion set changed`）。这与第 2 条同一个道理：**自洽的合计不等于完整的合计**。
+
+**边界**：本轮只改检查脚本与文档，未触碰产品源码；桌面壳七项仍受本机沙箱限制（无窗口管理器 → 置顶只能验证「不谎报」，见 §3.25 边界）。
 
 ## 4. 需要产品确认的语义（审计不确定项汇总）
-
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。
 2. 「拉黑」属于聊天域还是 Agent 权限域（是否等价于忽略级）？
 3. 「转发撤回」是否要求级联撤回所有副本？（当前设计：各自撤回自己的副本）
