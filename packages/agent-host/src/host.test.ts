@@ -77,6 +77,67 @@ async function waitFor(
 }
 
 describe('local agent host lifecycle', () => {
+  it('runs a queued task once, even when two dispatches overlap', async () => {
+    const root = await makeRoot();
+    const store = new MemoryAgentHostStore();
+    // Hold the SECOND dispatch's claim until the first has the task running. That is the
+    // window this pins, and it is load-dependent in the wild (one full-suite run had this
+    // task executed five times): a dispatch checks `active.size` BEFORE awaiting `claim`,
+    // so it can pass that guard while nothing is active, and then reach `claim` only after
+    // another dispatch has started the task. `claim` returns a RUNNING task held by the
+    // same holder idempotently - without bumping the version - so the follow-up
+    // compare-and-set matches and the executor runs the same task a second time,
+    // concurrently with the first.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstClaim = true;
+    const originalClaim = store.claim.bind(store);
+    store.claim = async (taskId, holder, leaseMs) => {
+      if (!firstClaim) await gate;
+      firstClaim = false;
+      return originalClaim(taskId, holder, leaseMs);
+    };
+
+    const calls: string[] = [];
+    const inner = new FakeHermesAdapter({ durationMs: 200 });
+    // Concurrency 2 on purpose: at 1 the limit re-check alone hides this, so the test would
+    // not pin the property that actually matters - the SAME task must never run twice.
+    const host = new LocalAgentHost({
+      deviceId: DEVICE,
+      agentId: AGENT,
+      workRoot: root,
+      store,
+      adapter: {
+        kind: inner.kind,
+        async run(request) {
+          calls.push(request.taskId);
+          return inner.run(request);
+        },
+      },
+      executorReason: 'fake executor in use for tests',
+      maxConcurrency: 2,
+      leaseMs: 5_000,
+      defaultTimeoutMs: 3_000,
+    });
+    await host.start();
+    const submitted = await host.submit(
+      baseTask({ taskId: 'overlap-1', workDir: join(root, 'overlap-1') }),
+    );
+    expect(submitted.state).toBe('queued');
+
+    const ticks = [host.tick(), host.tick()];
+    // The first dispatch has started the run; now let the parked one through.
+    await waitFor(async () => calls.length >= 1);
+    release?.();
+    await Promise.all(ticks);
+    await waitFor(async () => (await host.get('overlap-1'))?.state === 'succeeded');
+
+    expect(calls).toEqual(['overlap-1']);
+    await host.stop();
+  });
+
   it('runs a single-device task producing a verifiable artifact', async () => {
     const root = await makeRoot();
     const { host } = makeHost({ workRoot: root });

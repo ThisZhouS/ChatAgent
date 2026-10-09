@@ -353,4 +353,20 @@ pnpm dev
 
 **本轮验证**：根套件 **57 文件 / 470 用例**（+3）、`tsc`/`vue-tsc` 0 错、web 83 用例；重建 `agent-host.bundle.cjs` 后桌面壳七项 **92/92、退出码 0**（全程无窗口）。
 
-**新发现、本轮未处理**：**根套件在 HEAD 上并非稳定全绿**——实测 HEAD（7fc0e97）4 次跑挂 1 次（`security-regression.test.ts` 的 outbound 组织隔离），带本轮改动时另见 `authorization-refresh.test.ts` 与 `retention.test.ts` 各挂一次；**三次挂的是三个不同的用例**，且单独跑都通过，指向**并行执行下的资源争用**而不是某个用例坏了（`retention` 那次挂在 `auditFailures` 非 0，即瞬时文件系统错误被计入）。这与第 59 轮的起点是同一类问题，列为下一轮首要候选。
+**新发现、本轮未处理**：**根套件在 HEAD 上并非稳定全绿**——实测 HEAD（7fc0e97）4 次跑挂 1 次（`security-regression.test.ts` 的 outbound 组织隔离），带本轮改动时另见 `authorization-refresh.test.ts` 与 `retention.test.ts` 各挂一次；**三次挂的是三个不同的用例**，且单独跑都通过，指向**并行执行下的资源争用**而不是某个用例坏了（`retention` 那次挂在 `auditFailures` 非 0，即瞬时文件系统错误被计入）。**已在第 63 轮处理，见下。**
+
+## 第 63 轮：同一个任务被执行两次（根套件不稳定的真因）（2026-10-09，差距矩阵 §3.29）
+
+第 62 轮记的「根套件在 HEAD 上 4 次挂 1 次」不是用例坏了，是**宿主调度器的一个真缺陷**：**同一个任务会被执行两次，且两次并发**。
+
+**复现与证据**：先测频率——6 次全量跑挂 1 次（`authorization-refresh.test.ts` 的「holds new side-effect work…」，断言 `calls.sort()` 应等于 `['t-doc','t-running']`，实测 `t-doc` 出现 **5 次**）。单独跑该文件 25 次全绿，所以必须复现「并发调度」这个条件。
+
+**机制**：`dispatch()` 在 `await store.claim(...)` **之前**检查 `active.size`，而 `claim` 对「状态 running、租约持有人相同」的任务是**幂等返回**的（**不 bump version**）。于是：一个调度在 `active` 还空的时候通过了那道检查 → 等到它真正 `claim` 时，另一个调度已经把该任务跑起来了 → `claim` 幂等返回 running 记录 → `execute` 里的 `compareAndSet` 版本号**正好匹配** → 执行器**再跑一次**。负载越高，`list()`/`claim()` 的延迟抖动越大，越容易撞上——这正是它只在全量并行下偶发的原因。
+
+**修法**：在 `await claim` **之后**重新检查——`active.has(taskId)` 直接挡住「同一个任务跑第二次」，并补上并发上限的复查（此前只在 await 前查过一次）。生产默认 `maxConcurrency` 为 1（`main.cjs` 不设，`service.ts:212` 那个 2 是服务端 TaskEngine 的），该窗口在 1 下同样可达。
+
+**确定性复现**（新增 `host.test.ts` 用例）：把**第二次** `claim` 卡住，直到第一次已经跑起来（`waitFor(calls.length >= 1)`），再放行 → 修复前 `expected [ 'overlap-1', 'overlap-1' ] to deeply equal [ 'overlap-1' ]`。**注意并发度取 2**：在 1 下并发上限复查会先挡住它，用例就钉不住真正要钉的性质（同一个任务不得跑两次）。
+
+**变异验证**：去掉 `active.has` 检查 → 用例失败（`['overlap-1','overlap-1']`）；加回 → 通过。
+
+**效果**：修复后**连续 20 次全量跑全绿**（每次 471 用例；修复前 6 次挂 1 次）。**边界（不夸大）**：这直接解释了 `authorization-refresh` 那条（同一签名，已证明）；另两条（`security-regression`、`retention`）修复前各只见到一次、修复后 20 次未复现——**20 次不足以单独证明它们也被修好**，只能说与该修复相容。`retention` 那条的签名（`auditFailures` 非 0）指向瞬时文件系统错误被计入断言，是另一类原因，若复现应单独处理。

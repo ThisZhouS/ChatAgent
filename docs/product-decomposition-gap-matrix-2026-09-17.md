@@ -499,6 +499,20 @@
 
 **新发现、本轮未处理**：**根套件在 HEAD 上并非稳定全绿**。实测 HEAD（7fc0e97）4 次挂 1 次（`security-regression.test.ts` 的 outbound 组织隔离），带本轮改动时另见 `authorization-refresh.test.ts` 与 `retention.test.ts` 各挂一次；**三次挂的是三个不同用例**，且单独跑都通过，指向**并行执行下的资源争用**而非某个用例坏了（`retention` 那次挂在 `auditFailures` 非 0，即瞬时文件系统错误被计入）。与第 59 轮的起点同类，列为下一轮首要候选。
 
+### 3.29 第 63 轮：同一个任务被执行两次——根套件不稳定的真因（2026-10-09）
+
+第 62 轮记的「根套件在 HEAD 上 4 次挂 1 次」不是用例坏了，是**宿主调度器的真缺陷**：同一个任务会被**并发执行两次**。
+
+**机制**：`dispatch()`（`host.ts`）在 `await store.claim(...)` **之前**检查 `active.size`；而 `claim`（`store.ts`）对「状态 `running`、租约持有人相同」的任务是**幂等返回**的，**不 bump version**。于是：一个调度在 `active` 还空时通过了检查 → 等它真正 `claim` 时另一个调度已经把任务跑起来了 → `claim` 幂等返回 → `execute` 的 `compareAndSet` 版本号**正好匹配** → 执行器**再跑一次**。负载越高、`list()`/`claim()` 延迟抖动越大越容易撞上——这正是它只在全量并行下偶发的原因。
+
+**修法**：在 `await claim` 之后重新检查——`active.has(taskId)`（挡住「同一个任务跑第二次」）并补上并发上限复查（此前只在 await 前查）。生产 `maxConcurrency` 默认 1（`main.cjs` 不设；`service.ts:212` 的 2 是服务端 TaskEngine 的），该窗口在 1 下同样可达。
+
+**确定性复现**（`host.test.ts` 新增用例）：把**第二次** `claim` 卡住直到第一次已跑起来，再放行 → 修复前 `expected [ 'overlap-1', 'overlap-1' ] to deeply equal [ 'overlap-1' ]`。并发度取 **2**：在 1 下并发上限复查会先挡住，用例就钉不住真正要钉的性质。**变异验证**：去掉 `active.has` → 用例失败；加回 → 通过。
+
+**现场证据**：全量跑 6 次挂 1 次，失败签名是 `authorization-refresh.test.ts` 的 `calls.sort()` 里 `t-doc` 出现 **5 次**（应 1 次）；该文件单独跑 25 次全绿，所以必须复现「并发调度」这一条件。
+
+**效果与边界**：修复后**连续 20 次全量跑全绿**（471 用例/次）；修复前 6 次挂 1 次（若真频率仍是 25%，20 次全绿的概率约 0.3%）。**不夸大**：这直接解释 `authorization-refresh` 那条（同一签名，已证明）；另两条（`security-regression`、`retention`）修复前各只见到一次、修复后 20 次未复现——**20 次不足以单独证明它们也被修好**。`retention` 的签名（`auditFailures` 非 0，瞬时文件系统错误被计入断言）是另一类原因，若复现应单独处理。
+
 ## 4. 需要产品确认的语义（审计不确定项汇总）
 1. 「用户好友」分级指的是人际好友（成员↔成员），还是「用户↔AI 账号」关系？现有契约只有联系人列表与 `agentIds`。
 2. 「拉黑」属于聊天域还是 Agent 权限域（是否等价于忽略级）？

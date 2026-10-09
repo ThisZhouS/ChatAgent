@@ -636,6 +636,14 @@ export class LocalAgentHost {
         continue;
       }
       if (!claimed) continue; // somebody else owns it
+      // Re-check AFTER the await. The guard at the top of the loop was evaluated before
+      // this claim resolved, so another dispatch may have started this very task in the
+      // meantime - and `claim` hands a RUNNING task held by the same holder back
+      // idempotently, without bumping the version, so the compare-and-set in `execute`
+      // would match and the executor would run the same task a second time, concurrently.
+      // Measured: one full-suite run executed a single task five times.
+      if (this.active.has(claimed.taskId)) continue;
+      if (this.active.size >= maxConcurrency) return;
       // Fire and forget, but never unhandled: a store failure inside execute()
       // (including its terminal write) must land in lastError, not end the process.
       void this.execute(claimed, holder).catch((error) => {
