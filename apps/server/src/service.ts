@@ -2648,8 +2648,18 @@ export class ChatAgentService {
   // Audit ------------------------------------------------------------------
 
   /**
-   * Tail of the audit trail for organization admins. Entries are already
-   * truncated at write time and never contain tokens or payloads.
+   * Tail of the audit trail, scoped to the caller's organization.
+   *
+   * The trail is one file shared by every organization on the instance, and most lines
+   * carry an `organizationId` only by accident, so the organization is resolved from the
+   * AUTHORITATIVE source where one exists: the actor's own membership record. A line whose
+   * actor cannot be resolved falls back to the organization stamped at write time, and a
+   * line with neither is not shown at all — fail closed, because "we cannot tell whose line
+   * this is" must never mean "show it to every admin". Filtering happens before the tail is
+   * taken, so an admin gets the last N lines of *their* organization rather than whatever
+   * survives from the last N lines overall.
+   *
+   * Entries are already truncated at write time and never contain tokens or payloads.
    */
   async listAudit(
     principal: Principal,
@@ -2659,10 +2669,9 @@ export class ChatAgentService {
     const capped = Math.min(Math.max(limit, 1), 500);
     try {
       const raw = await readFile(this.config.auditFilePath, 'utf8');
-      const lines = raw.split('\n').filter((line) => line.trim() !== '');
-      return lines
-        .slice(-capped)
-        .reverse()
+      const entries = raw
+        .split('\n')
+        .filter((line) => line.trim() !== '')
         .map((line) => {
           try {
             return JSON.parse(line) as Record<string, unknown>;
@@ -2670,10 +2679,38 @@ export class ChatAgentService {
             return { action: 'unparsable', outcome: 'failed' };
           }
         });
+      const visible = await this.visibleAuditEntries(principal, entries);
+      return visible.slice(-capped).reverse();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw error;
     }
+  }
+
+  /**
+   * Keeps only the entries the caller's organization may see (see `listAudit`). The actor
+   * lookup is a membership read, not a field on the line, so a line cannot claim an
+   * organization it does not belong to.
+   */
+  private async visibleAuditEntries(
+    principal: Principal,
+    entries: Array<Record<string, unknown>>,
+  ): Promise<Array<Record<string, unknown>>> {
+    const visible: Array<Record<string, unknown>> = [];
+    for (const entry of entries) {
+      const actorId = typeof entry.actorId === 'string' ? entry.actorId : undefined;
+      if (actorId !== undefined) {
+        const actor = await this.directory.get(actorId);
+        // An actor we can place decides, whether or not the line named an organization.
+        if (actor) {
+          if (actor.organizationId === principal.organizationId) visible.push(entry);
+          continue;
+        }
+      }
+      const stamped = typeof entry.organizationId === 'string' ? entry.organizationId : undefined;
+      if (stamped !== undefined && sameOrganization(principal, stamped)) visible.push(entry);
+    }
+    return visible;
   }
 
   // Outbox ----------------------------------------------------------------

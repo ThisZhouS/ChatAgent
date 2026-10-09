@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -206,6 +206,79 @@ describe('V-02 a live holder keeps its lock', () => {
     // Not deleted, and not overwritten by our heartbeat.
     await expect(readFile(`${file}.lock`, 'utf8')).resolves.toBe(foreign);
     await rm(`${file}.lock`, { force: true });
+  });
+
+  it('reports a lock it cannot read as ambiguous, never as absent', async () => {
+    const root = await makeRoot();
+    const file = join(root, 'tasks.json');
+    const store = new JsonFileAgentHostStore(file);
+    await store.load();
+    await store.close();
+    // A lock path that EXISTS but cannot be read as a lock. `stat` still succeeds on it, which
+    // is the whole point: the classification must not depend on the read alone. (A directory
+    // is the portable way to reach that state; the production shape is a share mode that
+    // permits delete but denies read, which Node's fs cannot express.)
+    await mkdir(`${file}.lock`, { recursive: true });
+    const status = await store.inspectLock();
+    // Before: readFile failed -> `raw` undefined -> `no_lock` with `stale: true`, so
+    // `acquireLock` deleted the lock and started a second writer on one task file.
+    expect(status.state, JSON.stringify(status)).toBe('owner_unknown');
+    expect(status.stale, JSON.stringify(status)).toBe(false);
+    expect(status.ambiguous, JSON.stringify(status)).toBe(true);
+    await rm(`${file}.lock`, { recursive: true, force: true });
+  });
+
+  it('serializes whole commits, so a failed write cannot be undone by a concurrent one', async () => {
+    const root = await makeRoot();
+    const store = new JsonFileAgentHostStore(join(root, 'tasks.json'));
+    await store.load();
+
+    // The file write was already serialized; the READ-MODIFY-WRITE was not. A second commit
+    // starting while the first was in flight captured state the first was about to roll back,
+    // and its own write put that state on disk - so a record whose caller was told the write
+    // FAILED was still there, and executed after a restart. Overlapping commit bodies are
+    // exactly that window, so overlapping is the thing to pin. (The rewind test above only
+    // covers the sequential case, which is why this slipped through.)
+    const inner = store as unknown as {
+      commitNow: (taskId: string, next: LocalTaskRecord, previous?: LocalTaskRecord) => Promise<void>;
+    };
+    const original = inner.commitNow.bind(store);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    inner.commitNow = async (taskId, next, previous) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        return await original(taskId, next, previous);
+      } finally {
+        inFlight -= 1;
+      }
+    };
+
+    const at = new Date().toISOString();
+    const record = (taskId: string): LocalTaskRecord => ({
+      taskId,
+      deviceId: DEVICE,
+      agentId: AGENT,
+      goal: taskId,
+      kind: 'document',
+      state: 'queued',
+      workDir: root,
+      toolsets: [],
+      artifacts: [],
+      attempts: 0,
+      maxAttempts: 1,
+      createdAt: at,
+      updatedAt: at,
+      version: 1,
+    });
+
+    await Promise.all([store.put(record('c1')), store.put(record('c2')), store.put(record('c3'))]);
+    expect(
+      maxInFlight,
+      'commits overlapped: a rollback would be invisible to the next write',
+    ).toBe(1);
+    await store.close();
   });
 
   it('detects a foreign lock whose timestamp cannot be told apart from ours', async () => {

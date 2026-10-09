@@ -167,7 +167,9 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
     onStoreError,
   );
   const events = new NativeEventHub();
-  const audit = new AuditLog(config.auditFilePath);
+  // The deployment's organization is stamped on lines that do not name one, so a line can
+  // never be unattributable (see AuditLog; /api/audit is scoped to the caller's org).
+  const audit = new AuditLog(config.auditFilePath, config.auth.defaultOrganizationId);
   const limiter = new RateLimiter(DEFAULT_RATE_LIMITS);
   const streamLimiter = new StreamLimiter(8);
 
@@ -1370,7 +1372,21 @@ export async function buildApp(config: ServerConfig = loadConfig()): Promise<Fas
       return reply.code(400).send({ error: "decision must be 'approved' or 'rejected'" });
     }
     const reason = typeof body.reason === 'string' ? body.reason : undefined;
-    return service.decideApproval(request.principal, id, body.decision, reason);
+    const record = await service.decideApproval(request.principal, id, body.decision, reason);
+    // The human decision that unlocks a real outbound send belongs in the append-only
+    // trail, not only in the mutable approvals store: an operator reading audit.jsonl has
+    // to be able to see who authorized the send. Mirrors `outbox.resolved` below, which is
+    // the other half of the same pipeline. The free-text reason is deliberately not copied
+    // (the trail carries short identifiers and outcomes only).
+    audit.record({
+      action: 'approval.decided',
+      outcome: 'ok',
+      actorId: request.principal?.id,
+      target: id,
+      detail: body.decision,
+      ip: request.ip,
+    });
+    return record;
   });
 
   // Outbox ------------------------------------------------------------------

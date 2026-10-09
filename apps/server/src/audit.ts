@@ -22,7 +22,20 @@ const MAX_DETAIL = 200;
 export class AuditLog {
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    /**
+     * Organization stamped on lines whose event does not name one.
+     *
+     * The trail is a single file per instance while `organizationId` is a hard boundary
+     * everywhere else, so an unstamped line cannot be attributed at read time and would
+     * either leak to every admin or be visible to none. Stamping the deployment's
+     * organization keeps the read filter meaningful. It is only a fallback: a reader
+     * resolves the organization from the ACTOR's membership record first, which is
+     * authoritative even for a line that was stamped here.
+     */
+    private readonly defaultOrganizationId?: string,
+  ) {}
 
   record(event: AuditEvent): void {
     // Auditing must never break a request path.
@@ -42,7 +55,9 @@ export class AuditLog {
       action: truncate(event.action, 64),
       outcome: event.outcome,
       actorId: event.actorId ? truncate(event.actorId, 64) : undefined,
-      organizationId: event.organizationId ? truncate(event.organizationId, 64) : undefined,
+      organizationId: event.organizationId
+        ? truncate(event.organizationId, 64)
+        : this.defaultOrganizationId,
       target: event.target ? truncate(event.target, 128) : undefined,
       detail: event.detail ? truncate(event.detail, MAX_DETAIL) : undefined,
       ip: event.ip ? truncate(event.ip, 64) : undefined,

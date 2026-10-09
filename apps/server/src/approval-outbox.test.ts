@@ -10,7 +10,7 @@ import { buildMessageTools } from './agent';
 import { ApprovalStore, OutboxStore } from './approvals';
 import { MemberDirectory } from './auth';
 import { AccountStore, ArtifactStore, UploadedFileStore, DEFAULT_STORE_DEFAULTS } from './stores';
-import { createTestApp, devHeaders, poll } from './test-helpers';
+import { createTestApp, devHeaders, poll, waitForAudit } from './test-helpers';
 
 const ORG = DEFAULT_STORE_DEFAULTS.organizationId;
 const REQUESTER = 'u_req';
@@ -405,6 +405,12 @@ describe('Gate 4: approval path end to end', () => {
     });
     expect(approved.statusCode).toBe(200);
     expect(approved.json().status).toBe('approved');
+    // The human decision that unlocks a real outbound send belongs on the append-only
+    // trail, naming the approver - not only in the mutable approvals store. Mirrors
+    // `outbox.resolved` on the other half of the same pipeline.
+    const trail = await waitForAudit(test.dataDir, (text) => text.includes('approval.decided'));
+    expect(trail).toContain('approval.decided');
+    expect(trail).toContain(approvalId);
 
     const resumed = await app.inject({
       method: 'POST',

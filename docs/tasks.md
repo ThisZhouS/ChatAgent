@@ -328,3 +328,29 @@ pnpm dev
 **本轮验证**：根套件 **57 文件 / 467 用例**（+3）、`tsc`/`vue-tsc` 0 错、web **83 用例**；改过 `packages/agent-host` 后重建 `agent-host.bundle.cjs`，桌面壳七项复跑 **92/92、退出码 0**（lock 18、receipt-sync 21、host-smoke 6、workbench 19、quit 10、csp 5、nav 13）。
 
 **未验证（配额耗尽，既未确认也未否证，不得当作已解决）**：`GET /api/audit` 是否跨组织（若成立最严重）、审批决定是否不写审计、webhook 发送者是否恒被解析为 owner 档、审批的决定期与发送期规则是否互相矛盾；以及一条探针线索（外来锁是否会被心跳覆盖，疑似探针假象，见 `Temp/agent-probes/probe-log.txt`）。
+
+## 第 62 轮：把中断的审计跑完，并收下它确认的缺陷（2026-10-08，差距矩阵 §3.28）
+
+配额恢复后重跑扇出：2 个发现子代理（补第 61 轮没跑完的两个面：桌面壳检查、宿主存储与锁）+ 对**第 61 轮那五条未验证发现**的 3 人复核 + 综合。36 个子代理全部完成、0 错误。**仓库零改动**（第 61 轮把「只在仓库外的临时目录里复现」写成硬规则后，违规没再发生；本轮 `git status` 全程为空）。
+
+**确认并已修（每条都有会失败的用例）**
+
+- [x] **`GET /api/audit` 不按组织隔离**（跨租户读，最严重）：`listAudit` 只做 `requireOrgAdmin`，把全局 `audit.jsonl` 原样返回。**实测**：`org_other` 的 owner 用**真 token** 登录后 `GET /api/audit` 拿到了 `org_local` 的行。服务端其他所有列表面（`listOutbound`/`listMembers`/`listContacts`/`listApprovals`/`listOutbox`）都过 `sameOrganization`，只有这里没有。修法：`AuditLog` 增加默认组织（写时给没有组织的行盖章）+ `listAudit` 读时过滤，且**以行为人所属组织为准**（查成员记录，不信任行上的字段），查不到行为人的行按盖章组织判断，两者都没有则不展示（fail closed）。证据：新增 `security-hardening.test.ts` 用例（两个组织写同一个文件，各自只看到自己的）；**变异验证**：去掉过滤后 `org_local` 的管理员能看到 `u_theirs`。
+- [x] **失败的写入会被并发写入「撤销回滚」**（数据完整性）：`persist()` 在入队**之前**就抓快照，而 `commit()` 的回滚只恢复自己那条——于是第二个提交（快照里含着第一个的改动）把已回滚的状态写回磁盘。调用方被告知「写入失败」，磁盘上却留着，重启后（或调度器空闲时）该任务照跑。修法：把**整个读-改-写**串行化（`commitChain`），不只是文件写。证据：新增用例断言并发提交不重叠；**变异验证**：去掉串行化后 3 个提交重叠（`expected 3 to be 1`）。**边界**：该用例钉的是「提交不重叠」这一机制（并发下让磁盘写失败无法确定性构造），已在注释里写明。
+- [x] **审批决定不写审计**：`POST /api/approvals/:id/decision` 返回 200 并解锁一次真实外发，却不在 `audit.jsonl` 留任何痕迹（兄弟接口 `/api/outbox/:id/resolve` 有）。修法：补 `approval.decided`（行为人 + 决定，不抄自由文本 reason）。**变异验证**：改掉 action 名后用例失败。**订正**：决定本身在 `approvals.json` 里有记录（可变文件，非追加台账），这是审计完整性缺口而非「完全没记录」。
+- [x] **导航检查把「CDP 连接掉了」读成「宿主拒绝了未知命令」**（证据完整性）：`cdp.evaluate(...).catch(...)` 的兜底让 15s 超时/WebSocket 断开也满足 `ok !== true`，于是那一行在**没观测到宿主**的情况下打印 PASS。修法：去掉兜底并钉住真实拒绝码 `invalid_command`（与下方窗口动作那条一致）。**实测**：收紧后仍 13/13，说明宿主确实按名拒绝。
+- [x] **`acquireLock` 把「读不到的锁」当成「没有锁」**（fail-open）：`inspectLock` 把任何非 ENOENT 的读失败都塌成 `raw=undefined` → `no_lock`/`stale` → `acquireLock` 删掉**活持有者**的锁并成为第二个写者。修法：读失败时改用 `stat`（在拒绝读的共享模式下仍成功），「存在但读不到」判为 `owner_unknown`/`stale:false`/`ambiguous:true`，于是启动直接抛 `AgentHostStoreLockedError`（与心跳的 `readLock` 同一口径）。证据：新增用例（用目录作为「存在但读不到」的可移植构造）；**变异验证**：还原后状态变回 `no_lock`。
+- [x] **CSP 检查把「测不出来」当成「被拦住了」**（加固）：`inline === undefined || inline === false` 接受了探针超时/报错的结果。改为 `inlineState.ok && value === false`（相邻场景同样收紧为 `ok && value === true`）。
+
+**判为否证，不改（记录以免重蹈）**
+
+- **心跳「读与 rename 之间」的 check-then-act 窗口**（第 61 轮留下的探针线索）——**3/3 否证**。窗口是代码事实（读与 rename 之间确实没有 await），但**仓库里没有任何写入者能落在那里**：`tasks.json.lock` 的写者只有 `writeFile({flag:'wx'})`（文件在则失败）、beat 自己的 rename、`rm`、以及 `takeOverStoreLock` 的**改名移走**（路径变空，beat 会主动让位）。探针用的是裸 `writeFile` 覆盖一个**存在**的锁——生产代码不做这件事；且只在**同进程**内复现（跨进程 0/1400 次）。**探针假象，不修**。
+- **三处 shell 检查断言是字面量 `true`**——**2/3 否证**。事实为真（三行都是 `true`，名字都过度声称），但被声称的危害都有别处兜着（导航检查用 `Object.keys` 白名单钉死了窄桥）。属harness 卫生问题（约 3% 虚高），不是验证缺口。
+
+**复核三票分裂、按「未决」记录（不得当作已确认）**：webhook/IM 发送者恒被解析为 owner 档（`defaultTier` 对外部平台发送者不生效——需产品口径：外部发送者是否属于分级功能的适用范围）；审批「决定期」接受账号所有者、而「发送期」要求目录 owner/admin（需产品口径：账号所有者条款是否该存在；「反之亦然」那半被三票一致否证，决定期只会更宽松）；生产环境委托路径惰性（需产品决定：补签发路径还是隐藏该入口）。
+
+**同轮顺带修掉的用户可见问题**：桌面壳检查会驱动**真实应用**，于是每一项都在桌面上闪一个 ChatAgent 窗口、显示检查用的桩页面（导航检查里那一下还会把窗口指向 `/app.js`，浏览器把 JS 当源码渲染，窗口上出现 `window.__ready = 1;`）。修法：`main.cjs` 新增 `CHATAGENT_NO_WINDOW=1`（创建但不呈现窗口，渲染器与 CDP 照常），运行器为七项统一设置；导航检查**按设计**仍会短暂呈现窗口（它验的就是窗口状态），因此顺带把 `show` 也做成与 `pin` 同口径——**回读真实可见性，没生效就如实返回失败**，而不是假装成功。
+
+**本轮验证**：根套件 **57 文件 / 470 用例**（+3）、`tsc`/`vue-tsc` 0 错、web 83 用例；重建 `agent-host.bundle.cjs` 后桌面壳七项 **92/92、退出码 0**（全程无窗口）。
+
+**新发现、本轮未处理**：**根套件在 HEAD 上并非稳定全绿**——实测 HEAD（7fc0e97）4 次跑挂 1 次（`security-regression.test.ts` 的 outbound 组织隔离），带本轮改动时另见 `authorization-refresh.test.ts` 与 `retention.test.ts` 各挂一次；**三次挂的是三个不同的用例**，且单独跑都通过，指向**并行执行下的资源争用**而不是某个用例坏了（`retention` 那次挂在 `auditFailures` 非 0，即瞬时文件系统错误被计入）。这与第 59 轮的起点是同一类问题，列为下一轮首要候选。

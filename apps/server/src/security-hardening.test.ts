@@ -160,6 +160,48 @@ describe('audit trail', () => {
     expect(raw).not.toContain('alice-token');
     expect(raw).not.toContain('super-secret-token');
   });
+
+  it('shows an admin only their own organization, though the trail is one shared file', async () => {
+    const { app, dataDir } = await boot({
+      members: [
+        { id: 'u_ours', displayName: 'Ours', organizationId: 'org_local', roles: ['owner'], token: 'ours-token' },
+        { id: 'u_theirs', displayName: 'Theirs', organizationId: 'org_other', roles: ['owner'], token: 'theirs-token' },
+      ],
+    });
+    // Two organizations, one trail: each login appends to the same audit.jsonl.
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { memberId: 'u_ours', token: 'ours-token' },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { memberId: 'u_theirs', token: 'theirs-token' },
+    });
+    const raw = await waitForAudit(dataDir, (text) => text.includes('u_theirs'));
+    expect(raw, 'both organizations must write to one file for this test to mean anything').toContain(
+      'u_ours',
+    );
+
+    const listFor = async (token: string) =>
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/audit',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json() as Array<{ actorId?: string }>;
+
+    const ours = (await listFor('ours-token')).map((entry) => entry.actorId);
+    const theirs = (await listFor('theirs-token')).map((entry) => entry.actorId);
+    // organizationId is a hard boundary everywhere else in this service; the audit route
+    // must not be the one surface where an admin reads another organization's activity.
+    expect(ours).toContain('u_ours');
+    expect(ours).not.toContain('u_theirs');
+    expect(theirs).toContain('u_theirs');
+    expect(theirs).not.toContain('u_ours');
+  });
 });
 
 describe('session revocation', () => {

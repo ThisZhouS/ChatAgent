@@ -333,6 +333,8 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   private auditRotations = 0;
   private auditLinesDropped = 0;
   private auditQueue: Promise<void> = Promise.resolve();
+  /** Serializes whole commits (see `commit`): the rollback must be visible to the next one. */
+  private commitChain: Promise<void> = Promise.resolve();
 
   constructor(
     filePath: string,
@@ -703,6 +705,7 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   }
 
   async flush(): Promise<void> {
+    await this.commitChain;
     await this.queue;
     // A caller that flushes then reads the audit file must see the line.
     await this.auditQueue;
@@ -718,8 +721,25 @@ export class JsonFileAgentHostStore implements AgentHostStore {
    * Apply an in-memory change and make it durable. If the write fails the change
    * is rolled back: memory must never report an outcome the disk does not have,
    * or a "succeeded" task would silently re-run after a restart.
+   *
+   * The whole read-modify-write is serialized, not just the file write. It used to snapshot
+   * memory and only then queue the write, so a second commit that ran while the first was in
+   * flight captured state the first was about to roll back - and its own write put that
+   * state on disk. The caller of the failed write was told it had NOT been written, while the
+   * file said otherwise, and after a restart (or with the dispatcher idle) the task ran.
+   * The rewind test only covered the sequential case, which is why this slipped through.
    */
   private async commit(
+    taskId: string,
+    next: LocalTaskRecord,
+    previous: LocalTaskRecord | undefined,
+  ): Promise<void> {
+    const run = this.commitChain.then(() => this.commitNow(taskId, next, previous));
+    this.commitChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async commitNow(
     taskId: string,
     next: LocalTaskRecord,
     previous: LocalTaskRecord | undefined,
@@ -828,10 +848,33 @@ export class JsonFileAgentHostStore implements AgentHostStore {
   async inspectLock(): Promise<LockStatus> {
     let raw: string | undefined;
     let fileAgeMs: number | undefined;
+    let unreadable = false;
     try {
       raw = await readFile(this.lockPath, 'utf8');
-    } catch {
+    } catch (error) {
+      // Only ENOENT means "there is no lock". Any other read failure - EBUSY/EPERM while a
+      // scanner or a backup holds the file, or a share mode that permits delete but denies
+      // read - means the file may well be there and someone may well own it. Collapsing that
+      // to `raw = undefined` made `classifyLock` answer `no_lock`/stale, and `acquireLock`
+      // then deleted a LIVE holder's lock and started a second writer on one task file. Ask
+      // `stat` instead, which succeeds under a share mode that denies reads.
+      unreadable = (error as NodeJS.ErrnoException).code !== 'ENOENT';
       raw = undefined;
+    }
+    if (unreadable) {
+      const stillThere = await stat(this.lockPath).then(
+        (info) => info,
+        () => undefined,
+      );
+      if (stillThere) {
+        return {
+          state: 'owner_unknown',
+          stale: false,
+          ambiguous: true,
+          lockPath: this.lockPath,
+          reason: 'the lock file exists but could not be read',
+        };
+      }
     }
     if (raw !== undefined) {
       try {

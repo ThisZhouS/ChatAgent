@@ -15,7 +15,7 @@
  *
  * Usage: node scripts/electron-nav-check.mjs
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -58,6 +58,13 @@ const stub = createServer((req, res) => {
   if (req.url === '/app.js') {
     res.writeHead(200, { 'content-type': 'application/javascript' });
     res.end('window.__ready = 1;');
+    return;
+  }
+  // The same-origin navigation probe loads this, so it must be a real page: a window
+  // showing script source is indistinguishable from a crash to anyone watching.
+  if (req.url === '/same-origin.html') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end('<!doctype html><meta charset="utf-8"><title>same-origin</title><p>same-origin ok</p>');
     return;
   }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -222,12 +229,18 @@ async function main() {
         JSON.stringify(shape),
       );
 
-      const unknown = await cdp
-        .evaluate('window.chatagent.host.command({ type: "definitely-not-a-command" })')
-        .catch((error) => ({ ok: false, error: error.message }));
+      // No `.catch` fallback, and the refusal is pinned by name. A dropped CDP connection —
+      // a 15s evaluate timeout, or a torn WebSocket while the renderer tears down — used to
+      // be shaped into `{ok:false, error}` and accepted by an `ok !== true` assertion, so the
+      // row printed PASS for "the host refused it" without ever observing the host. The
+      // window-action check below pins its error the same way; the host's schema refusal is
+      // `invalid_command` (packages/agent-host/src/ipc.ts).
+      const unknown = await cdp.evaluate(
+        'window.chatagent.host.command({ type: "definitely-not-a-command" })',
+      );
       check(
         'an unknown host command is refused by the host, not accepted',
-        unknown && unknown.ok !== true,
+        unknown?.ok === false && unknown.error === 'invalid_command',
         JSON.stringify(unknown).slice(0, 200),
       );
 
@@ -305,12 +318,22 @@ async function main() {
         JSON.stringify(hidden),
       );
 
-      await cdp.evaluate('window.chatagent.window.set("show")');
+      const shown = await cdp.evaluate('window.chatagent.window.set("show")');
       const unpinned = await cdp.evaluate('window.chatagent.window.set("unpin")');
+      // Same contract as the pin check above, for the same reason: `show` is verified against
+      // the window's real visibility, so a session with no usable compositor reports the
+      // failure instead of claiming the window is on screen. Both outcomes pass here; a
+      // false `ok: true` does not. (The window is also created hidden under the shell checks,
+      // which is one way to land in the honest-failure branch - see CHATAGENT_NO_WINDOW.)
+      const showHonest =
+        (shown?.ok === true && shown.result?.visible === true) ||
+        (shown?.ok === false &&
+          shown.error === 'window_state_not_applied' &&
+          shown.result?.visible === false);
       check(
-        'showing and unpinning restore a normal window',
-        unpinned?.ok === true && unpinned.result?.pinned === false && unpinned.result?.visible === true,
-        JSON.stringify(unpinned),
+        'showing and unpinning report the real window state (never a faked success)',
+        showHonest && unpinned?.ok === true && unpinned.result?.pinned === false,
+        JSON.stringify({ shown, unpinned }),
       );
 
       // A window control takes a fixed verb; anything else is refused by name.
@@ -322,21 +345,39 @@ async function main() {
       );
 
       // 5. sanity: same-origin navigation is not blocked wholesale.
-      await cdp.evaluateSoft(`location.href = ${JSON.stringify(`${serverUrl}/app.js`)}`).catch(() => undefined);
+      //
+      // This navigates to an HTML page, not to /app.js. Pointing the window at a
+      // `application/javascript` resource made the browser render the script as source
+      // text, so anyone watching the desktop saw a window reading `window.__ready = 1;`
+      // and reasonably read it as a crash. The assertion only needs a same-origin URL.
+      await cdp
+        .evaluateSoft(`location.href = ${JSON.stringify(`${serverUrl}/same-origin.html`)}`)
+        .catch(() => undefined);
       await sleep(1500);
       const sameOrigin = await httpGetJson(debugPort, '/json/list');
       const urls = Array.isArray(sameOrigin) ? sameOrigin.filter((item) => item.type === 'page').map((item) => item.url) : [];
       check(
         'a same-origin navigation is still allowed (the guard is not a blanket block)',
-        urls.some((url) => String(url).includes('/app.js')),
+        urls.some((url) => String(url).includes('/same-origin.html')),
         urls.join(', '),
       );
     }
   } finally {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      // already gone
+    // Kill the whole tree, not just the launcher: Electron's renderer/GPU/utility children
+    // outlive `child.kill()`, so a run that is killed (the runner's timeout, Ctrl-C) used to
+    // leave a visible window on the desktop holding a stale stub page.
+    if (process.platform === 'win32' && child.pid !== undefined) {
+      try {
+        spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      } catch {
+        // already gone
+      }
+    } else {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
     }
     const deadline = Date.now() + 15000;
     while (child.exitCode === null && Date.now() < deadline) await sleep(200);

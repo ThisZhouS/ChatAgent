@@ -140,6 +140,15 @@ function hardenRemoteSession(serverUrl) {
   return remoteSession;
 }
 
+/**
+ * Start without presenting a window. The desktop shell checks drive the REAL app, so
+ * without this every one of them flashes a ChatAgent window on the employee's desktop
+ * showing whatever stub page the check serves. A hidden window still runs its renderer and
+ * is still reachable over CDP, which is all those checks need; the window-action check
+ * shows it on purpose, because window state is what it tests. Never set in normal use.
+ */
+const START_HIDDEN = process.env.CHATAGENT_NO_WINDOW === '1';
+
 function createWindow(serverUrl) {
   hardenRemoteSession(serverUrl);
   const win = new BrowserWindow({
@@ -147,6 +156,7 @@ function createWindow(serverUrl) {
     height: 840,
     minWidth: 960,
     minHeight: 640,
+    show: !START_HIDDEN,
     autoHideMenuBar: true,
     title: 'ChatAgent',
     webPreferences: {
@@ -768,6 +778,11 @@ function applyWindowAction(action) {
   // and have no effect, and reporting `ok: true` then would tell the user the window
   // is pinned while it is not (measured on this machine: the state stays false).
   const expect = { pin: true, unpin: false }[action];
+  // `show` is verified against the window's real visibility the same way `pin` is verified
+  // against `isAlwaysOnTop`: a window manager may accept the request and leave the window
+  // unmapped (no compositor: headless CI, a locked desktop, this sandbox), and reporting
+  // success then would tell the user the window is on screen while it is not.
+  const expectVisible = action === 'show' ? true : undefined;
   switch (action) {
     case 'pin':
       win.setAlwaysOnTop(true);
@@ -789,6 +804,9 @@ function applyWindowAction(action) {
   }
   const result = windowState();
   if (expect !== undefined && result.pinned !== expect) {
+    return { ok: false, error: 'window_state_not_applied', result };
+  }
+  if (expectVisible !== undefined && result.visible !== expectVisible) {
     return { ok: false, error: 'window_state_not_applied', result };
   }
   return { ok: true, result };
@@ -880,7 +898,16 @@ if (!hasSingleInstanceLock) {
     registerHostIpc(serverUrl);
     createTray(serverUrl);
 
-    showMainWindow(serverUrl);
+    // Under the shell checks the window is created but not presented. A later tray click,
+    // second instance or activate still shows it - that is a person asking for it.
+    if (START_HIDDEN) {
+      mainWindow = createWindow(serverUrl);
+      mainWindow.on('closed', () => {
+        mainWindow = null;
+      });
+    } else {
+      showMainWindow(serverUrl);
+    }
 
     app.on('activate', () => showMainWindow(serverUrl));
   });

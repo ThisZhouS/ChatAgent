@@ -103,7 +103,14 @@ function runCheck(check) {
         cwd: root,
         // The checks read this to point at the runtime under test, so a rehearsal
         // against another Electron build reaches the scripts they spawn too.
-        env: { ...process.env, CHATAGENT_ELECTRON_BIN: electronBin },
+        env: {
+          ...process.env,
+          // The checks drive the real app; without this each one flashes a ChatAgent window
+          // on the employee's desktop showing whatever stub page the check serves. The
+          // window-action check shows its window on purpose - that is what it tests.
+          CHATAGENT_NO_WINDOW: '1',
+          CHATAGENT_ELECTRON_BIN: electronBin,
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         detached: process.platform !== 'win32',

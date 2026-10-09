@@ -245,11 +245,14 @@ async function main() {
     // ---- scenario 1: the server sends no CSP ------------------------------
     mode = 1;
     await runScenario('no server CSP', async ({ cdp, external, logs, inlineState }) => {
-      const inline = inlineState.ok ? inlineState.value : undefined;
+      // `ok === false` means the probe could not be MEASURED (a 4s evaluate timeout, or a
+      // CDP error reply), which is not the same as measuring "the script did not run". The
+      // sibling scenario below pins a measured `true`, so accepting an unmeasured value here
+      // let a lost connection read as "the injected policy worked".
       check(
         'an inline script from the remote page is blocked by the injected CSP',
-        inline === undefined || inline === false,
-        `__inlineRan=${String(inline)}`,
+        inlineState.ok && inlineState.value === false,
+        `__inlineRan=${String(inlineState.value)} measured=${inlineState.ok}`,
       );
       check('a same-origin script still runs (the real app is a bundled SPA)', external === true);
       const status = await shellStatus(cdp, logs);
@@ -261,11 +264,10 @@ async function main() {
     // ---- scenario 2: the server sends its own CSP -------------------------
     mode = 2;
     await runScenario('server CSP', async ({ cdp, logs, inlineState }) => {
-      const inline = inlineState.ok ? inlineState.value : undefined;
       check(
         'a server-sent CSP is kept as-is (its own inline allowance still applies)',
-        inline === true,
-        `__inlineRan=${String(inline)} (server allowed inline)`,
+        inlineState.ok && inlineState.value === true,
+        `__inlineRan=${String(inlineState.value)} measured=${inlineState.ok} (server allowed inline)`,
       );
       const status = await shellStatus(cdp, logs);
       const shell = status?.result?.shell ?? {};
