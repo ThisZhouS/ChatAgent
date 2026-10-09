@@ -233,7 +233,10 @@ describe('host: continuous authorization refresh', () => {
     await host.refreshAuthorization();
     expect(registry.getDelegation('delegation-1')).toBeUndefined();
     await host.resume();
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // Wait for the dispatcher to reach the task rather than sleeping a fixed 150 ms: on a
+    // loaded parallel run the dispatch can take longer, and the assertion would then read a
+    // still-queued task and fail for the wrong reason.
+    await waitFor(async () => (await host.get('t-revoked'))?.state === 'failed');
     const after = await host.get('t-revoked');
     expect(calls).toEqual([]);
     expect(after?.state).toBe('failed');
@@ -344,7 +347,10 @@ describe('host: continuous authorization refresh', () => {
     await host.submit(input);
     await host.refreshAuthorization();
     await host.resume();
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // This asserts a NEGATIVE (the task stays queued), which a sleep cannot distinguish from
+    // "the dispatcher has not looked at it yet". Wait for the positive signal - the host
+    // reporting the task as held - and only then assert it was not started.
+    await waitFor(async () => ((await host.status()).authorization?.heldTasks ?? 0) >= 1);
     expect((await host.get('t-unknown'))?.state).toBe('queued');
     expect(registry.getDelegation('delegation-1')).toBeDefined();
     expect((await host.status()).authorization?.unverifiable).toBe(1);

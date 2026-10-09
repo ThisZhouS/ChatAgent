@@ -24,24 +24,36 @@ const skipE2e = args.includes('--skip-e2e');
 const portIndex = args.indexOf('--port');
 const port = portIndex === -1 ? '8787' : args[portIndex + 1];
 
+/**
+ * Per-step ceiling. A step that hangs must FAIL the run, not hang it: without this,
+ * `spawnSync` waits forever, and a stuck `ui-e2e` or `build` would freeze the whole
+ * acceptance chain with no output explaining why. Generous on purpose — the slowest
+ * step (client E2E) takes minutes, not seconds.
+ */
+const DEFAULT_STEP_TIMEOUT_MS = 20 * 60_000;
+
 /** Runs one step, streaming its output, and returns the interesting summary. */
 function run(label, command, commandArgs, options = {}) {
   const started = Date.now();
+  const timeoutMs = options.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
   console.log(`\n=== ${label} ===`);
   const result = spawnSync(command, commandArgs, {
     cwd: root,
     stdio: options.capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     shell: process.platform === 'win32',
     encoding: 'utf8',
+    timeout: timeoutMs,
     env: { ...process.env, ...(options.env ?? {}) },
   });
   // Child output carries ANSI colour codes; strip them before pattern matching.
   const output = options.capture
     ? `${result.stdout ?? ''}${result.stderr ?? ''}`.replace(/\[[0-9;]*m/g, '')
     : '';
-  const ok = result.status === 0;
+  // spawnSync kills a child that overruns its timeout and reports it as ETIMEDOUT here.
+  const timedOut = result.error?.code === 'ETIMEDOUT';
+  const ok = result.status === 0 && !timedOut;
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
-  let detail = `${seconds}s`;
+  let detail = timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `${seconds}s`;
   if (options.summary && output !== '') {
     const matches = [...output.matchAll(new RegExp(options.summary.source, 'g'))];
     if (matches.length > 0) {
